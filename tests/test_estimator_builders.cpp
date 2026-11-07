@@ -525,3 +525,47 @@ TEST_CASE("a result with a repeated key is refused before it reaches the writer"
     attrs.add_metadata("x", "one");  // scalars and metadata share HDF5 attributes
     CHECK_THROWS_WITH(attrs.check_unique_keys(), ContainsSubstring("duplicate"));
 }
+
+// ── Forward walking ─────────────────────────────────────────────────────────
+
+TEST_CASE("forward walking builds one labelled set per lag beside the mixed keys",
+          "[estimator_builders][forward_walking]") {
+    const System s(open_cell());
+    const std::vector<io::EstimatorItem> items{gofr(), gofr(), gofr("fine"),
+                                              io::DensitySpec{{}, 1.5, 4, false}};
+    const auto mixed = build_estimators(items, s.context(Sampler::dmc));
+    EstimatorContext pure = s.context(Sampler::dmc);
+    pure.forward_walking = true;
+    const auto per_lag = build_forward_walking_estimators(items, pure, 2, mixed);
+    REQUIRE(per_lag.size() == 2);
+    CHECK(labels_of(per_lag[0]) ==
+          std::vector<std::string>{"fw0", "2_fw0", "fine_fw0", "fw0"});
+    CHECK(labels_of(per_lag[1]) ==
+          std::vector<std::string>{"fw1", "2_fw1", "fine_fw1", "fw1"});
+}
+
+TEST_CASE("forward walking refuses density_matrix, which is off-diagonal",
+          "[estimator_builders][forward_walking]") {
+    const System s(open_cell());
+    const std::vector<io::EstimatorItem> items{
+        gofr(), io::DensityMatrixSpec{{}, {"e"}, {}, 1.0, 2, 1}};
+    const auto mixed = build_estimators(items, s.context(Sampler::dmc));
+    EstimatorContext pure = s.context(Sampler::dmc);
+    pure.forward_walking = true;
+    CHECK_THROWS_WITH(build_forward_walking_estimators(items, pure, 1, mixed),
+                      ContainsSubstring("density_matrix") && ContainsSubstring("off-diagonal"));
+}
+
+TEST_CASE("forward walking refuses keys a mixed estimator already writes",
+          "[estimator_builders][forward_walking]") {
+    const System s(open_cell());
+    // A mixed gofr named fw0 writes gofr_fw0_*, the keys of the unnamed one's lag 0.
+    const std::vector<io::EstimatorItem> items{gofr(), gofr("fw0")};
+    const auto mixed = build_estimators(items, s.context(Sampler::dmc));
+    EstimatorContext pure = s.context(Sampler::dmc);
+    pure.forward_walking = true;
+    CHECK_THROWS_WITH(build_forward_walking_estimators(items, pure, 1, mixed),
+                      ContainsSubstring("gofr_fw0") && ContainsSubstring("rename"));
+    // Only DMC with the forward-walking flag builds pure copies.
+    CHECK_THROWS(build_forward_walking_estimators(items, s.context(Sampler::dmc), 1, mixed));
+}

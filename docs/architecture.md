@@ -51,12 +51,12 @@ Three rules hold the layers apart:
 |---|---|---|
 | `src/io/` | YAML parsing, logging, results and checkpoint files | `Config` and the `*Spec` structs (`parser.h`), `Logger`, `write_run_result`, `write_config_snapshot`, `read_walkers`/`write_walkers`, `read_paths`/`write_paths` |
 | `src/builders/` | Translate specs into objects; one file per family | `build_component(spec, ctx)` overloads, `build_ewald`, `build_action`, `build_exchange_classes`, `build_estimator(spec, ctx)` overloads and `build_estimators` |
-| `src/qmc/` | Ground-state drivers and stage orchestration | `App`, `Driver`, `VMC`, `DMC` with `PopulationControl`, `LinearOptimize` with `CostFunction` and `LinearMethod`, `RunResult` |
+| `src/qmc/` | Ground-state drivers and stage orchestration | `App`, `Driver`, `VMC`, `DMC` with `PopulationControl` and `ForwardWalking`, `LinearOptimize` with `CostFunction` and `LinearMethod`, `RunResult` |
 | `src/pimc/` | Path-integral driver | `Pimc`, `PathSet`, `Action` and its `ActionComponent`s (`PrimitiveKineticAction`, `PrimitivePotentialAction`, `PairProductAction`, `FixedNodeRestriction`), `Move` (`BisectionMove`, `CentroidMove`, `SingleSliceMove`, `PermutationMove`, `JointPermutationMove`, `WormMove`) |
 | `src/wavefunction/` | Trial-wavefunction factors | `TrialWavefunction`, `WavefunctionComponent`, `PadeJastrow`, `RadialPairJastrow` (`DrummondJastrow`, `ZeroEnergyJastrow`), `KSpaceJastrow`, `NosanowJastrow`, `MoireJastrow`, `SlaterDeterminant`, `ComplexSlaterDeterminant`, `PairingDeterminant`, `CenterOfMassMomentum`, orbital sets |
 | `src/hamiltonian/` | Kinetic energy and potentials | `Hamiltonian`, `HamiltonianComponent`, `Kinetic`, `CoulombTerm`, `KeldyshTerm`, `ScreenedCoulombTerm`, `InversePowerTerm`, `EwaldTerm`, `HarmonicTrap`, `MoireTerm` |
 | `src/estimators/` | Optional observables | `Estimator`, `PairCorrelation`, `Density`, `CollectiveDensity`, `StructureFactor`, `ElectronHoleProximity`, `BraggOrder`, `BondOrder`, `DensityMatrix`, `MomentumDistribution`; block statistics `BlockMoments` and `EstimatorReblocking` |
-| `src/population/` | Configurations and geometry | `SimulationCell`, `ParticleGroup`, `ParticleBatch`, `WalkerSet`, `Walker`, `WalkerEnsemble`, `BatchedDistanceTable` |
+| `src/population/` | Configurations and geometry | `SimulationCell`, `ParticleGroup`, `ParticleBatch`, `WalkerSet`, `ConfigurationBatch`, `Walker`, `WalkerEnsemble`, `BatchedDistanceTable` |
 | `src/numerics/` | Shared mathematics | Random numbers (`XoshiroRandom`, `Random`, `stream_seed`), block statistics and reblocking (`statistics.h`), Ewald and long-range breakup, radial tables, special functions, quadrature |
 
 ## What happens in a run
@@ -203,6 +203,13 @@ that move walker state (determinant matrices, distance tables) use the worker
 team. The per-walker caches of every component (`log_psi_c_`, `grad_c_`,
 `lap_c_`, `value_c_`) follow their walkers through `permute_caches`. The node
 gate in `dmc.h` rejects moves that cross a node of a real trial.
+
+Pure estimators (`ForwardWalking`, `src/qmc/forward_walking.h`) hook into the
+same serial section: before branching they store a snapshot of the positions
+when one is due and measure the snapshots whose lag has come, through a
+`ConfigurationBatch` (positions and distance tables, no ψ) and the ordinary
+`Estimator::accumulate`; after branching they carry each snapshot's ancestor
+indices through the same source map as `permute_caches`.
 
 ### Linear optimizer
 

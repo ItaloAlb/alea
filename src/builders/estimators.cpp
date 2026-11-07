@@ -125,6 +125,14 @@ std::unique_ptr<Estimator> build_estimator(const io::DensityMatrixSpec& spec,
             "density_matrix is a VMC/DMC estimator: it takes ratios of the trial "
             "wavefunction psi_T at displaced configurations, and PIMC samples no "
             "psi_T (its one-body density matrix is momentum_distribution)");
+    // Forward walking weights a stored configuration R by its descendants,
+    // which yields ⟨Φ|O|Φ⟩ for O diagonal in R only; this ratio estimator is
+    // not, and it would need ψ_T at the ancestors, which are not kept.
+    if (ctx.forward_walking)
+        throw std::runtime_error(
+            "density_matrix cannot be forward-walked: it is off-diagonal (ratios of "
+            "psi_T at displaced configurations).  Measure it in a DMC stage without "
+            "forward_walking");
     return labelled(std::make_unique<DensityMatrix>(ctx.groups, spec.groups, spec.pairs,
                                                     spec.rmax, spec.n_bins, spec.every,
                                                     ctx.cell, ctx.dim),
@@ -145,6 +153,45 @@ std::vector<std::unique_ptr<Estimator>> build_estimators(
     }
     assign_output_labels(ests, named);
     return ests;
+}
+
+std::vector<std::vector<std::unique_ptr<Estimator>>> build_forward_walking_estimators(
+    std::span<const io::EstimatorItem> items, const EstimatorContext& ctx, std::size_t n_lags,
+    std::span<const std::unique_ptr<Estimator>> mixed) {
+    if (ctx.sampler != Sampler::dmc || !ctx.forward_walking)
+        throw std::logic_error(
+            "build_forward_walking_estimators: a DMC context with forward_walking set");
+    // The namespaces an instance writes, extended by its label.
+    const auto extended = [](const Estimator& e) {
+        std::vector<std::string> out = e.output_namespaces();
+        if (!e.output_label().empty())
+            for (std::string& ns : out) ns += "_" + e.output_label();
+        return out;
+    };
+    std::vector<std::string> taken;
+    for (const auto& e : mixed) {
+        const auto ns = extended(*e);
+        taken.insert(taken.end(), ns.begin(), ns.end());
+    }
+
+    std::vector<std::vector<std::unique_ptr<Estimator>>> per_lag(n_lags);
+    for (std::size_t i = 0; i < n_lags; ++i) {
+        per_lag[i] = build_estimators(items, ctx);
+        const std::string tag = "fw" + std::to_string(i);
+        for (auto& e : per_lag[i]) {
+            const std::string own = e->output_label();
+            e->set_output_label(own.empty() ? tag : own + "_" + tag);
+            for (const std::string& ns : extended(*e)) {
+                if (std::find(taken.begin(), taken.end(), ns) != taken.end())
+                    throw std::runtime_error(
+                        e->type() + ": the forward-walking key namespace '" + ns +
+                        "' is already written by an estimator of this stage; rename "
+                        "the estimator whose name ends in '" + tag + "'");
+                taken.push_back(ns);
+            }
+        }
+    }
+    return per_lag;
 }
 
 void assign_output_labels(std::span<const std::unique_ptr<Estimator>> ests,

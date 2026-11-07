@@ -35,11 +35,16 @@ namespace alea {
 enum class Sampler { vmc, dmc, pimc };
 
 // Everything a builder may read besides its own spec.
+//   forward_walking  the instance is a pure (forward-walking) copy of a DMC
+//                    observable (qmc/forward_walking.h): it is measured on
+//                    stored ancestor configurations with their descendants'
+//                    weights, so only a diagonal observable of R qualifies.
 struct EstimatorContext {
     std::span<const ParticleGroup> groups;
     const SimulationCell&          cell;
     std::size_t                    dim;
     Sampler                        sampler;
+    bool                           forward_walking = false;
 };
 
 [[nodiscard]] std::unique_ptr<Estimator> build_estimator(
@@ -82,5 +87,16 @@ struct EstimatorContext {
 // the YAML asked for.
 void assign_output_labels(std::span<const std::unique_ptr<Estimator>> ests,
                           std::span<const char> named);
+
+// The pure (forward-walking) copies of a DMC stage's `estimators:`, one set per
+// lag: each set is built from the same items with ctx.forward_walking (kinds
+// that cannot be forward-walked refuse) and labelled like the mixed instances,
+// then lag i appends "fw<i>" to every label (gofr_e_h → gofr_fw0_e_h, a named
+// `fine` → gofr_fine_fw0_e_h).  Refused when a pure key would coincide with a
+// key of `mixed`, the stage's own instances (a mixed estimator named `fw0`).
+[[nodiscard]] std::vector<std::vector<std::unique_ptr<Estimator>>>
+build_forward_walking_estimators(std::span<const io::EstimatorItem> items,
+                                 const EstimatorContext& ctx, std::size_t n_lags,
+                                 std::span<const std::unique_ptr<Estimator>> mixed);
 
 }  // namespace alea
