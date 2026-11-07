@@ -1,0 +1,62 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# 1-D free particle in a periodic box L = 4 at finite temperature via PIMC.
+#
+# One distinguishable particle (boltzmannon) with V = 0, m = 1.
+# beta = 2, M = 32 slices -> tau = 0.0625.
+#
+# Exact thermal energy from the partition function (momentum sum over the
+# periodic box, no approximation):
+#   Z      = sum_n exp(-beta * eps_n),   eps_n = (2 pi n / L)^2 / (2 m)
+#   E      = -d ln Z / d beta = sum_n eps_n exp(-beta eps_n) / Z
+#   E      = 0.1793245903520491        (d = 1)
+#
+# At tau = 0.0625 the min-image spring (which the code samples) agrees with
+# the full image sum to ~2e-8 in E — verified against the transfer-matrix
+# free energy of the discretized action — so this IS the code's exact target.
+#
+# Winding ergonomics: local moves can never flip the ring winding (a bond
+# would have to cross L/2, weight e^-32), so bisection draws lattice-offset
+# FRAMES; at levels: 5 the window is the full ring and a frame jump is
+# accepted with exp(-m L^2/(2 beta)) = e^-4, the physical sector weight.
+# <W^2> = 0.03533770482397546 per (particle, direction) is checked too.
+#
+# V = 0 exactly for this system, so the potential estimator must come out
+# identically zero (a strong check on the E = K + V split).
+project:
+  name: pimc_free_1d_pbc
+  seed: 54321
+
+system:
+  lattice:
+    type: periodic
+    dimension: 1
+    L: 4.0
+  particles:
+    - name: p
+      group: particle
+      type: boltzmannon
+      mass: 1.0
+      charge: 0
+      up: 1
+      down: 0
+
+hamiltonian:
+  terms: []
+
+qmc:
+  - method: pimc
+    threads: 2
+    samples: 24
+    time_step: 0.0625
+    beta: 2.0
+    equilibration_blocks: 50
+    accumulation_blocks: 400
+    steps_per_block: 20
+    sub_steps: 5
+    moves:
+      - bisection: { levels: 5, weight: 1.0 }
+      - centroid:  { step: 0.3, weight: 1.0 }
+    energy: thermodynamic

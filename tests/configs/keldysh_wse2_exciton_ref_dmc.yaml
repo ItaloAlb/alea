@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Monolayer WSe2 exciton REFERENCE for the trion binding test.
+#
+# Same physics as keldysh_wse2_dmc.yaml, but with a linear-method *optimized*
+# e-h Padé trial u(r)=a1 r/(1+b1 r) and the same τ / statistics as the trion
+# config.  Matching the trial quality (and hence the residual DMC time-step bias)
+# between the exciton and the trion is what makes their energy difference,
+#   E_b^trion = E(exciton) - E(trion),
+# reproduce the literature trion binding.  Optimized E_DMC ≈ -0.017322 Ha.
+project: { name: WSe2_exciton_ref, seed: 42, log: false, output: false }
+system:
+  lattice: { type: open, dimension: 2, L: 1.0 }
+  particles:
+    - { name: e, group: e_grp, type: fermions, mass: 0.34, charge: -1, up: 1, down: 0, initialization: uniform }
+    - { name: h, group: h_grp, type: fermions, mass: 0.34, charge: +1, up: 1, down: 0, initialization: uniform }
+wavefunction:
+  - jastrow: { type: padé, pair: [e_grp, h_grp], denominator: [0.0510367, -0.000337644], is_fixed: [true, true, true], can_flip_sign: [false, true, true], numerator: [-0.00162245] }
+hamiltonian:
+  terms:
+    - { type: rytova_keldysh, pair: [e_grp, h_grp], epsilon: 1.0, r0: 85.245 }
+qmc:
+  - method: dmc
+    random_walk: drift_diffusion
+    threads: 1
+    samples: 512
+    equilibration_blocks: 256
+    accumulation_blocks: 2048
+    steps_per_block: 10
+    sub_steps: 3
+    time_step: 0.05

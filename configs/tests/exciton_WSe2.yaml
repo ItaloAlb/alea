@@ -1,0 +1,80 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# ============================================================================
+# Monolayer WSe2 exciton — Rytova–Keldysh potential, Hartree atomic units.
+#
+# Two free particles (electron + hole) bound by the 2D Rytova–Keldysh
+# interaction.  The two-body ground-state energy E is the exciton (relative
+# motion) bound state; the binding energy is  E_b = -E  (×27.211386 → eV).
+#
+# Material parameters (suspended monolayer, ε = 1):
+#   effective masses  m_e = m_h = 0.34 m0
+#   screening length  r0 = 45.11 Å = 85.245 Bohr   (r0[Bohr] = r0[Å] / 0.529177)
+#   reference DMC binding energy ≈ 0.4667 eV
+#
+# Trial: ψ = exp(c·r), c = -sqrt(2 μ E_b) ≈ -0.076  (μ = m/2).  DMC projects the
+# nodeless ground state, so the energy is insensitive to c — it only sets the
+# variance / time-step bias.  For publication-grade accuracy, extrapolate E_b to
+# τ → 0 (run a few `time_step` values).
+# ============================================================================
+project:
+  name: exciton_WSe2
+  seed: 42
+  log: true
+  output: true
+
+system:
+  lattice: { type: open, dimension: 2, L: 1.0 }
+  particles:
+    - { name: e, group: electron_group, type: fermions, mass: 0.34, charge: -1, up: 1, down: 0, initialization: uniform }
+    - { name: h, group: hole_group,     type: fermions, mass: 0.34, charge: +1, up: 1, down: 0, initialization: uniform }
+
+wavefunction:
+  - jastrow:
+      type: padé
+      pair: [electron_group, hole_group]
+      numerator: [-0.011552]
+      denominator: [0.152]
+      is_fixed: [false, false]
+      can_flip_sign: [false, true]
+
+hamiltonian:
+  terms:
+    - { type: rytova_keldysh, pair: [electron_group, hole_group], epsilon: 1.0, r0: 85.245 }
+
+qmc:
+  # - method: optimizer
+  #   type: linear
+  #   random_walk: metropolis
+  #   device: cpu
+  #   threads: 0                # use all cores
+  #   samples: 256              # total walkers, split across threads
+  #   equilibration_blocks: 128
+  #   accumulation_blocks: 512
+  #   steps_per_block: 10
+  #   sub_steps: 1
+  #   time_step: 0.1           # tau (small to avoid r≈0 divergence)
+  #   max_iterations: 30
+  #   psi_step_tol: 1e-3
+  #   energy_tol: 1e-6
+  #   num_shifts: 3               # candidate shifts per iteration
+  #   max_param_change: 0.3       # cap on relative parameter change
+  #   cost_increase_tol: 0.0      # tolerance for cost-function increase
+  #   target_shift_i: -1.0        # target shift (-1 = disabled)
+  #   max_failed_attempts: 5      # max retries before aborting iteration
+  #   shift_i: 0.1                # starting identity shift
+  #   shift_s: 0.0                # starting overlap shift
+  #   rescale: 0.5                # step-size damping factor
+
+  - method: dmc
+    random_walk: langevin
+    device: cpu
+    threads: 0
+    samples: 2048
+    equilibration_blocks: 256
+    accumulation_blocks: 20248
+    steps_per_block: 20
+    sub_steps: 5
+    time_step: 0.05

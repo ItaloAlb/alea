@@ -1,0 +1,66 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# ============================================================================
+# Race detector for the periodic fold scratch under DMC crowd parallelism.
+#
+# DMC shares ONE TrialWavefunction and ONE WalkerSet across crowds (unlike VMC,
+# which clones both per thread).  The minimum-image machinery keeps per-pair
+# scratch in that shared state — BatchedDistanceTable::delta_ and
+# WavefunctionComponent::fold_delta_/fold_delta_old_ — and is race-free only
+# because concurrent crowds write disjoint [w_begin, w_end) slices of it.
+#
+# That is an argument, not a proof.  If it were wrong, the corruption would be
+# intermittent and nearly impossible to diagnose from a physics result.  This
+# config runs DMC at 4 threads with a periodic cell and a Padé Jastrow, which is
+# exactly the workload that touches all three fold sites (evaluate_batch,
+# ratio_batch, apply_move_batch) plus the distance table's own fold.
+#
+# Two runs with this seed and thread count must agree BIT FOR BIT: DMC's only
+# OpenMP construct writes per-thread results into rs[t] and combines them
+# sequentially, so there is no reduction-order freedom to excuse a difference.
+#
+# No Hamiltonian terms: the potentials only ever read scalar distances, so they
+# add nothing to the race surface, and leaving them out keeps the run fast and
+# free of any chance of a blow-up masking the comparison.
+# ============================================================================
+project:
+  name: periodic_dmc_determinism
+  seed: 20260921
+  log: false
+  output: false
+
+system:
+  lattice: { type: periodic, dimension: 2, shape: hexagonal, rs: 1.5 }
+  particles:
+    - { name: e, group: electron_group, type: fermions, mass: 1.0, charge: -1,
+        up: 3, down: 0, initialization: uniform }
+    - { name: h, group: hole_group, type: fermions, mass: 1.0, charge: +1,
+        up: 3, down: 0, initialization: uniform }
+
+# Drummond u-terms: with no potential there is no Ewald term, and a periodic
+# Padé is then refused (it would need an image sum to pair with).  A cutoff
+# within the Wigner-Seitz inradius (3.5 here) is its own exact image sum and
+# exercises the same three fold sites.  The image-summed (Ewald) path has its
+# own race detector, periodic_dmc_determinism_ewald.yaml.
+wavefunction:
+  - jastrow: { type: drummond, pair: [electron_group, hole_group], params: [0.3],
+               is_fixed: [true], truncation: 3, cutoff: 3.0, cutoff_fixed: true }
+  - jastrow: { type: drummond, pair: [electron_group, electron_group], params: [-0.2],
+               is_fixed: [true], truncation: 3, cutoff: 3.0, cutoff_fixed: true }
+
+hamiltonian:
+  terms: []
+
+qmc:
+  - method: dmc
+    random_walk: drift_diffusion
+    device: cpu
+    threads: 4
+    samples: 256
+    equilibration_blocks: 16
+    accumulation_blocks: 32
+    steps_per_block: 5
+    sub_steps: 2
+    time_step: 0.02

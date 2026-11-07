@@ -1,0 +1,246 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# =============================================================================
+# 2-D POLARIZED ELECTRON GAS — FLUID PHASE — rs = 40, N = 61
+#
+# One half of a Wigner-crystallization calculation.  Run this together with
+# `heg2d_crystal_rs40.yaml`, which is the SAME system with the same cell, the
+# same Hamiltonian and the same statistics, differing only in the phase its
+# trial wavefunction describes.  The physics comes out of the DIFFERENCE of the
+# two fixed-node DMC energies:
+#
+#     E_fluid(rs) - E_crystal(rs) > 0  ⇒  the crystal is the ground state
+#
+# Reference: Tanatar & Ceperley, Phys. Rev. B 39, 5005 (1989) put the crossing at
+# rs = 37 ± 5 with plane-wave nodes (rs = 31 ± 1 with backflow, Drummond & Needs,
+# PRL 102, 126402 (2009) — backflow is not implemented here, so TC89 is the
+# like-for-like comparison).
+#
+# This is the rs = 40 pair.  The first rs = 30 and rs = 40 DMC runs are INVALID
+# (population-control limit cycle, see "CORRECTED DIAGNOSIS" below); only their
+# VMC energies stand: ΔE_VMC = E_fluid − E_crystal ≈ −2.5 mHa at rs = 30 and
+# +3.87(1) mHa at rs = 40, i.e. a VMC-level crossing near rs ≈ 34.  rs = 40 sits
+# at the upper edge of TC89's window: the crystal should win in DMC by a margin
+# this calculation can resolve. If it does not, that is itself the more
+# important result (finite size is then the likely limiting systematic).
+#
+# ── Units ────────────────────────────────────────────────────────────────────
+# Hartree atomic units: mass 1, charge ∓1, so energies are Ha and lengths are
+# Bohr. Multiply by 2 for Ry, the unit most of the 2-D HEG literature uses.
+# The static triangular-lattice reference is -1.106103/rs Ha = -2.212206/rs Ry.
+#
+# ── Why N = 61 ───────────────────────────────────────────────────────────────
+# N must simultaneously close a shell of the cell's reciprocal lattice (fluid
+# determinant) and be a Loeschian number p²+pq+q² (crystal supercell) — both
+# properties of N and the cell SHAPE, independent of rs, so N = 61 carries over
+# unchanged from rs = 30.  See that config's header for the full argument and
+# for why finite size (not rs) is the dominant systematic in the crossing.
+#
+# ── Trial wavefunction ───────────────────────────────────────────────────────
+# ψ = det{cos/sin(k_i·r_j)} · exp(Σ_{i<j} u(r_ij))
+#
+# The determinant fixes the nodes (free-particle nodes, exactly TC89's choice) —
+# it has NO rs-dependent parameter, so nothing here needs re-tuning at all.
+#
+# The Drummond-Towler-Needs u-term's cusp is DERIVED (P-wave, Γ = 1/3, same
+# argument as at rs = 30). It is NODELESS and POSITIVE, so — unlike the crystal's
+# α — it cannot move the fixed-node energy; it only buys variance and a smaller
+# time-step bias.  Its rs = 30 tuning (c = 0.80 in α0 = c·Γ/(3L²), cutoff
+# L = 3.5·rs) is carried over by scaling L with rs.  This is NOT an exact
+# rescaling (kinetic ∝ 1/rs², potential ∝ 1/rs, so the optimal c and L/rs drift
+# slightly with rs), but any residual mistuning only costs variance, never the
+# fixed-node energy:
+#
+#     L(40)  = 3.5 × 40 = 140.0
+#     α0(40) = 0.80 × (1/3) / (3 × 140²) = 4.535147e-06
+#
+# L stays well inside the new WS inradius (297.5 at rs=40, up from 223.1 at
+# rs=30 — scales linearly with rs, same as every other length here).
+#
+# ── Hamiltonian ──────────────────────────────────────────────────────────────
+# A single `coulomb` term in a periodic cell becomes ONE cell-wide Ewald term
+# (Natoli-Ceperley optimized breakup). The cell is charged (61 electrons, no
+# holes), so the uniform neutralizing background makes the energy exist at all.
+# ewald_tol was already shown insensitive at rs=30 (1e-4/1e-6/1e-8 agreed); no
+# reason to expect that to change at rs=40, so it is carried over unchanged.
+#
+# ── Statistics: why the blocks are the length they are ───────────────────────
+# steps_per_block · sub_steps · time_step is the imaginary time per block, and it
+# must exceed the system's relaxation time or the reported error bar is a lie.
+# The slowest mode is the long-wavelength plasmon, t_relax ∝ rs^1.5 (density
+# n ∝ rs^-2, k_min ∝ rs^-1, ω = sqrt(2π n k_min) ∝ rs^-1.5): at rs=30 this gave
+# t_relax ≈ 180; at rs=40, t_relax ≈ 180 × (40/30)^1.5 ≈ 277.
+#
+# steps_per_block/time_step are carried over UNCHANGED from rs=30 (400
+# imaginary-time units/block, ≈1.4-2x the new t_relax rather than the old
+# 2x margin) rather than inflated to match — see the time-step note below for
+# why tau itself is not being touched, and the DMC drivers' own comments for
+# what to check (acc_population/acc_block_energy) before trusting the error bar.
+# If the reblocked correlation length (tools/reblock.py) comes back long, the
+# fix is more steps_per_block on a re-run, not a different tau.
+#
+# ── Time step: why tau stays at 2 and 1, not rescaled by rs² ──────────────────
+# The rs=30 header argued tau ~ rs² is the natural DMC scale (diffusion step
+# sqrt(tau/m) against the box; branching weight tau·sigma(E_L)). That argument
+# still holds DIRECTIONALLY at rs=40 — but literally rescaling tau by (40/30)² =
+# 16/9 is not needed: the safety criterion is a loose inequality (sqrt(tau) <<
+# rs), satisfied MORE comfortably at rs=40 with tau UNCHANGED than at rs=30.
+# tau = 2.0 and tau = 1.0 are kept exactly as before.
+#
+# Population control — CORRECTED DIAGNOSIS (2026-09-27). The first rs=30/rs=40
+# runs sat PERMANENTLY at the branch() floor/ceiling. The cause was NOT a weak
+# `feedback`: the old E_T = E_ref − ln(W/N)/feedback had loop gain
+# tau·sub_steps/feedback = 4 (rs=30) and 10 (rs=40, feedback 0.4 made it WORSE),
+# far above the stability limit 2 — a period-2 limit cycle, E_T ~10 Ha off, every
+# walker at the old E_T-centred weight clamp, i.e. no projection at all. Those
+# DMC energies are invalid. Fixed in the code: `feedback` is gone, replaced by
+# the dimensionless `population_generations` (g, default 10, gain 1/g at ANY
+# tau), and the branching window is centred on E_ref as in QMCPACK.
+#
+# TWO time steps, always, so the bias is measured rather than assumed. If ΔE(2)
+# and ΔE(1) agree inside their (reblocked) error bars, quote ΔE and stop.
+#
+# ── How to read the pair (this is not one number, it is a difference) ────────
+# Do NOT quote either phase's energy on its own. What to compute:
+#
+#     ΔE(τ) = E_fluid(τ) - E_crystal(τ)     at τ = 2 and at τ = 1
+#
+#   • ΔE(2) and ΔE(1) agree inside error bars ⇒ the bias is common to both
+#     phases and cancels; quote ΔE and its sign. ΔE > 0 means the crystal has
+#     won at this density.
+#   • They disagree ⇒ add a third, smaller τ (e.g. 0.5, steps_per_block: 400,
+#     same 400 units/block) before believing any sign.
+#
+# Reblock BOTH phases' DMC energy series (tools/reblock.py) before comparing —
+# at rs=30 the naive error was honest to within 1.01-1.16x here, but that is not
+# guaranteed to hold at a different rs/samples and costs nothing to check.
+#
+# ── VMC references ────────────────────────────────────────────────────────────
+# First rs=40 run (VMC, valid): fluid -1.472301(10), crystal -1.476172(8) Ha,
+# acceptance 0.41 / 0.44. The crystal's α was optimized once by the linear
+# method and is now frozen (see that config); the fluid has no nodal parameter
+# to optimize (see "Trial wavefunction" above). Read the VMC
+# block's own energy off THIS run before trusting the DMC drivers below — the
+# check that matters is unchanged: each DMC energy must come in AT OR BELOW its
+# own phase's VMC energy from the same run, and VMC acceptance should again land
+# near 0.45-0.5 (time_step was rescaled by (40/30)^2 = 16/9 from rs=30's 150.0
+# specifically to hold that ratio fixed; if acceptance drifts far from that
+# range, something about the guide moved and needs a look before trusting
+# anything downstream).
+#
+# ── What to check before trusting the output ─────────────────────────────────
+# 1. DMC energy below the VMC energy of the SAME phase (same run, see above).
+# 2. Acceptance: VMC near 0.45-0.5, DMC >= 0.99.
+# 3. Crystal only: the `density` grid must show 61 sharp peaks on a triangular
+#    pattern (see that config's header) — a blurred map is a melted crystal.
+# 4. Population control: acc_population / eq_population in each DMC's .h5
+#    should fluctuate around ~samples, and acc_etrial should sit within a few
+#    mHa of acc_block_energy. A population constant at a branch() bound, or
+#    E_T far from E, is the limit cycle described above.
+# 5. Error bars: reblock (tools/reblock.py) every DMC energy series before
+#    comparing phases — see "How to read the pair" above.
+#
+# ── Measured cost ─────────────────────────────────────────────────────────────
+# samples = 1024 on every driver (as at rs=30). DMC cost scales close to
+# linearly in the LIVE population x accumulation_blocks x steps_per_block.
+# Earlier timings are distorted by the population limit cycle: the first rs=40
+# runs (128 cores) alternated 410 <-> 4097 walkers every step (mean ~2250) and
+# took ~10h per DMC tau=2 driver (fluid 22m VMC, crystal 42m VMC + 5h26m
+# optimizer). At a healthy ~1024 walkers expect roughly 2.2x less:
+# ~4-5h for tau=2 and ~9h for tau=1 (twice the steps), i.e. ~14h per phase
+# with the crystal's optimizer now dropped — well inside the 72h limit.
+# =============================================================================
+project:
+  name: heg2d_fluid_rs40
+  seed: 20260923
+  log: true
+  output: true          # one .h5 per driver under results/<name>/<timestamp>/
+
+system:
+  lattice:
+    type: periodic
+    dimension: 2
+    shape: hexagonal    # smallest finite-size error in 2-D, and the only shape a
+                        # triangular crystal can tile — the crystal config needs
+                        # it, so the fluid must use it too for a fair difference
+    rs: 40.0            # density: A = N π rs², so ρ = N/V is what is held fixed
+    ewald_tol: 1.0e-6
+  particles:
+    - { name: e, group: electron_group, type: fermions, mass: 1.0, charge: -1,
+        up: 61, down: 0, initialization: uniform }
+
+wavefunction:
+  # Fluid nodes: a closed shell of the reciprocal lattice (k = 0 plus shells up
+  # to the 61st orbital). No centers, no widths — the k-points are the cell's.
+  - slater:
+      group: electron_group
+      orbitals: { type: plane_wave }
+  # Correlation hole. cusp is derived (P-wave, Γ = 1/3): do NOT set it here.
+  - jastrow:
+      type: drummond
+      pair: [electron_group, electron_group]
+      params: [4.535147e-06]        # α0 = c·Γ/(3L²), c=0.80 (rs=30 tuning), exact rescale
+      is_fixed: [true]
+      truncation: 3                 # C = 3 → continuous local energy at r = L
+      cutoff: 140.0                 # L = 3.5 x rs, inside the WS inradius 297.5
+      cutoff_fixed: true
+
+hamiltonian:
+  terms:
+    - { type: coulomb, pair: [electron_group, electron_group], epsilon: 1.0 }
+
+qmc:
+  # 1. Variational reference. time_step is the Metropolis proposal variance
+  #    (not an imaginary time), rescaled from rs=30's 150.0 by (40/30)^2 to hold
+  #    the proposal-to-cell-size ratio fixed — should again land acceptance near
+  #    0.456; a very different value means something else moved.
+  - method: vmc
+    random_walk: metropolis
+    device: cpu
+    threads: 0
+    samples: 1024
+    equilibration_blocks: 40
+    accumulation_blocks: 200
+    steps_per_block: 10
+    sub_steps: 2
+    time_step: 266.7
+    estimators:
+      - { type: gofr, rmax: 293.0, n_bins: 110 }
+      - { type: density, rmax: 297.0, n_bins: 48 }
+
+  # 2. Fixed-node DMC, coarser of the two time steps.
+  #
+  #    Population control: see the header ("CORRECTED DIAGNOSIS"). The default
+  #    population_generations (g = 10) is used; check acc_population fluctuates.
+  - method: dmc
+    random_walk: drift_diffusion
+    device: cpu
+    threads: 0
+    samples: 1024
+    equilibration_blocks: 20
+    accumulation_blocks: 40
+    steps_per_block: 100
+    sub_steps: 2
+    time_step: 2.0
+    walkers_out: heg2d_fluid_rs40_tau2.h5
+    estimators:
+      - { type: gofr, rmax: 293.0, n_bins: 110 }
+      - { type: density, rmax: 297.0, n_bins: 48 }
+
+  # 3. Same run at half the time step — the bias, measured rather than assumed.
+  - method: dmc
+    random_walk: drift_diffusion
+    device: cpu
+    threads: 0
+    samples: 1024
+    equilibration_blocks: 20
+    accumulation_blocks: 40
+    steps_per_block: 200
+    sub_steps: 2
+    time_step: 1.0
+    walkers_out: heg2d_fluid_rs40_tau1.h5
+    estimators:
+      - { type: gofr, rmax: 293.0, n_bins: 110 }
+      - { type: density, rmax: 297.0, n_bins: 48 }

@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Analytic finite-M/continuum validation; no interactions or exchange.
+project: { name: pimc_convergence_ho, seed: 12345, output: true, log: false }
+system:
+  lattice: { type: open, dimension: 1, L: 3.0 }
+  particles:
+    - { name: p, group: particle, type: boltzmannon, mass: 1.0, charge: 0, up: 1 }
+hamiltonian:
+  terms:
+    - { type: harmonic_trap, omega: 1.0 }
+qmc:
+  - method: pimc
+    threads: 4
+    samples: 32
+    beta: 2.0
+    time_step: 0.5
+    equilibration_blocks: 128
+    accumulation_blocks: 512
+    steps_per_block: 20
+    sub_steps: 4
+    moves:
+      - bisection: { levels: 2, weight: 1.0 }
+      - centroid: { step: 0.5, weight: 1.0 }
+    energy: thermodynamic

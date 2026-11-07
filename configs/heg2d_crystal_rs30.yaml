@@ -1,0 +1,185 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# =============================================================================
+# 2-D POLARIZED ELECTRON GAS — WIGNER CRYSTAL PHASE — rs = 30, N = 61
+#
+# The other half of the crystallization calculation.  Read the header of
+# `heg2d_fluid_rs30.yaml` first: everything about the cell, the units, the choice
+# of N, the Ewald term, the block lengths and the two time steps is identical and
+# is explained there.  Only the trial wavefunction differs, and it must: the two
+# runs are the same Hamiltonian in the same box, and the crossing of their
+# fixed-node DMC energies is the crystallization condition.
+#
+# KEEP EVERY SHARED KNOB IN LOCK-STEP WITH THE FLUID CONFIG.  The quantity of
+# interest is a difference of order 1e-5 Ha/electron on top of a total near
+# -0.031 Ha/electron, so a systematic that is not common to both runs does not
+# cancel and goes straight into the answer.  If you change samples, blocks, τ,
+# ewald_tol or N here, change them there too.
+#
+# ── Trial wavefunction ───────────────────────────────────────────────────────
+# ψ = det{exp(-α|r_j - c_i|²)} · exp(Σ_{i<j} u(r_ij))
+#
+# One Gaussian per site of the triangular lattice commensurate with the cell.
+# `sites: triangular` generates them: N = 61 = 5²+5·4+4² is Loeschian, so the
+# cell is a superlattice of the site lattice — here a ROTATED one (q ≠ 0), which
+# is the normal case and is why the sizes that work are Loeschian rather than
+# perfect squares.  Site spacing d = 1.9046 rs = 57.14.
+#
+# r - c is folded to the MINIMUM IMAGE, which is what makes a Gaussian at a fixed
+# center legal under periodic boundaries at all: without the fold, a site near
+# the cell edge loses half its orbital to the position wrapping and ψ is
+# discontinuous.  The neglected images are O(exp(-α R_ws²)) — unresolvable here.
+#
+# Walkers are SEEDED ON THE SITES (plus a jitter of one Gaussian width).  This is
+# not cosmetic: from uniform positions almost every particle would start far from
+# every center, the determinant would be numerically singular, and the run would
+# either blow up or spend its equilibration recovering.
+#
+# ── α is a variational parameter, and it sets the nodes ──────────────────────
+# α fixes the localization: σ = 1/sqrt(4α) is the spread of an electron about its
+# own site.  Because it is inside a DETERMINANT it also moves the nodal surface,
+# so the fixed-node DMC energy depends on it and it has to be optimized, not
+# guessed.  VMC scan at rs = 30, N = 61 (E/N in Ha, α in units of the Einstein
+# estimate 0.4/rs^1.5 = 2.43e-3):
+#
+#   a/guess   sigma/d    E/N (Ha)
+#     0.45     0.264   -0.031522(3)
+#     0.60     0.229   -0.031574(3)   <-- used here
+#     0.70     0.212   -0.031552(3)
+#     0.85     0.192   -0.031444(3)
+#     1.00     0.177   -0.031302(3)
+#
+# The optimum sits at σ/d ≈ 0.229, ABOVE the Lindemann ratio 0.17 at
+# which a 2-D crystal melts — i.e. at rs = 30 this crystal is already marginal,
+# which is exactly what a crossing near rs ≈ 30-37 looks like from the solid side.
+# α is pinned here at the scanned optimum. (Since milestone-2-nc-breakup α IS
+# optimizable by the linear method — `alpha_fixed: false` + a `parameters: nodal`
+# optimizer stage, as in the rs = 40/60 configs; the rs = 40 optimum came out at
+# 0.554 of the Einstein estimate, consistent with this scan's 0.60.)
+#
+# The fluid config's header also carries, for BOTH phases: how to read the pair
+# (the difference ΔE(τ), not either energy alone), the four checks to run on the
+# output before trusting it, the VMC reference energies each DMC must beat, the
+# measured cost, and the known limitation that α was optimized in VMC rather than
+# in DMC.  Read it.
+#
+# ── Diagnostics ──────────────────────────────────────────────────────────────
+# The `density` estimator is the one that matters here: under periodic boundaries
+# it bins FRACTIONAL coordinates, so its n_bins x n_bins grid is the cell itself
+# and 61 peaks on a triangular pattern is direct visual proof that the projected
+# state is still a crystal at the end of the run.  A blurred map means the
+# crystal melted during DMC and the energy is not a crystal energy at all — the
+# single most important thing to check before trusting the difference.
+# (`rmax` is ignored on the periodic path; it only matters for open cells.)
+# =============================================================================
+project:
+  name: heg2d_crystal_rs30
+  seed: 20260923
+  log: true
+  output: true
+
+system:
+  lattice:
+    type: periodic
+    dimension: 2
+    shape: hexagonal
+    rs: 30.0
+    ewald_tol: 1.0e-6
+  particles:
+    - { name: e, group: electron_group, type: fermions, mass: 1.0, charge: -1,
+        up: 61, down: 0, initialization: uniform }
+
+wavefunction:
+  # Crystal nodes: one Gaussian per commensurate triangular site.  up + down must
+  # equal the group size — a Wigner-crystal site holds ONE electron, so the spin
+  # blocks take disjoint sites rather than a shared orbital pool.
+  - slater:
+      group: electron_group
+      orbitals:
+        type: gaussian
+        sites: triangular
+        alpha: 0.001460593486680443
+  # Same DTN form and same derived P-wave cusp (Γ = 1/3) as the fluid; the
+  # determinant vanishes linearly at coalescence here too.  L is shorter than the
+  # fluid's because the electrons are localized and the hole has less work to do.
+  - jastrow:
+      type: drummond
+      pair: [electron_group, electron_group]
+      params: [3.08641975308642e-05]
+      is_fixed: [true]
+      truncation: 3
+      cutoff: 60.0
+      cutoff_fixed: true
+
+hamiltonian:
+  terms:
+    - { type: coulomb, pair: [electron_group, electron_group], epsilon: 1.0 }
+
+qmc:
+  # (No optimizer stage: α is the scanned optimum above, frozen, and the
+  #  Jastrow is fixed, so an optimizer here would have nothing to move. To
+  #  re-optimize α, add `alpha_fixed: false` to the slater block and a
+  #  `method: optimizer, type: linear, parameters: nodal, max_iterations: 20`
+  #  driver with the VMC settings below — see heg2d_crystal_rs60.yaml.)
+  - method: vmc
+    random_walk: metropolis
+    device: cpu
+    threads: 0
+    samples: 1024
+    equilibration_blocks: 40
+    accumulation_blocks: 200
+    steps_per_block: 10
+    sub_steps: 2
+    time_step: 150.0
+    estimators:
+      - { type: gofr, rmax: 220.0, n_bins: 110 }
+      - { type: density, rmax: 223.0, n_bins: 48 }
+
+  # Fixed-node DMC at τ = 2, 1, 0.5 — identical schedule to the fluid config
+  # (see its "UPDATE 2026-09-28" note). 400 imaginary-time units per block.
+  - method: dmc
+    random_walk: drift_diffusion
+    device: cpu
+    threads: 0
+    samples: 1024
+    equilibration_blocks: 20
+    accumulation_blocks: 80
+    steps_per_block: 100
+    sub_steps: 2
+    time_step: 2.0
+    walkers_out: heg2d_crystal_rs30_tau2.h5
+    estimators:
+      - { type: gofr, rmax: 220.0, n_bins: 110 }
+      - { type: density, rmax: 223.0, n_bins: 48 }
+
+  - method: dmc
+    random_walk: drift_diffusion
+    device: cpu
+    threads: 0
+    samples: 1024
+    equilibration_blocks: 5
+    accumulation_blocks: 80
+    steps_per_block: 200
+    sub_steps: 2
+    time_step: 1.0
+    walkers_out: heg2d_crystal_rs30_tau1.h5
+    estimators:
+      - { type: gofr, rmax: 220.0, n_bins: 110 }
+      - { type: density, rmax: 223.0, n_bins: 48 }
+
+  - method: dmc
+    random_walk: drift_diffusion
+    device: cpu
+    threads: 0
+    samples: 1024
+    equilibration_blocks: 5
+    accumulation_blocks: 80
+    steps_per_block: 400
+    sub_steps: 2
+    time_step: 0.5
+    walkers_out: heg2d_crystal_rs30_tau05.h5
+    estimators:
+      - { type: gofr, rmax: 220.0, n_bins: 110 }
+      - { type: density, rmax: 223.0, n_bins: 48 }

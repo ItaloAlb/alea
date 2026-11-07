@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# 2D e-h exciton (Coulomb), equal masses m=1, Drummond–Towler–Needs cusp Jastrow.
+#
+# The exact ground state is ψ = exp(-r) with E = -1 Ha.  The Drummond u-term's
+# cusp Γ is auto-derived from the Coulomb residue (Γ = 2μ q_e q_h/(ε(d-1)) = -1),
+# so the e–h Kato cusp is satisfied and the DMC local energy is finite at
+# coalescence.  DMC then projects the nodeless ground state to E = -1, exactly as
+# the cusp-correct Padé does — the Drummond cusp stabilizes DMC just like Padé.
+#
+# Unlike the cutoff-free Padé u = -r (the exact eigenstate → zero variance), the
+# finite-range Drummond is only cusp-correct, so it carries a small variance and
+# a small time-step bias; both vanish as the trial → exact and as τ → 0.
+project: {name: exciton_2d_drummond_dmc, seed: 42, output: false}
+system:
+  lattice: {type: open, dimension: 2, L: 1.0}
+  particles:
+    - {name: e, group: electron_group, type: fermions, mass: 1.0, charge: -1, up: 1, down: 0, initialization: uniform}
+    - {name: h, group: hole_group, type: fermions, mass: 1.0, charge: 1, up: 1, down: 0, initialization: uniform}
+wavefunction:
+  - jastrow: {type: drummond, pair: [electron_group, hole_group], params: [0.0], is_fixed: [true], truncation: 3, cutoff: 8.0, cutoff_fixed: true}
+hamiltonian:
+  terms:
+    - {type: coulomb, pair: [electron_group, hole_group], epsilon: 1.0}
+qmc:
+  - {method: dmc, random_walk: drift_diffusion, threads: 1, samples: 512, equilibration_blocks: 128, accumulation_blocks: 256, steps_per_block: 20, sub_steps: 3, time_step: 0.02}

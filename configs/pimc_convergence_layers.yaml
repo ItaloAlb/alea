@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Distinguishable electron-hole layers at fixed total density.
+# All six carrier kinetic terms and ee/hh/eh interactions are retained.
+# Common epsilon permits periodic Ewald; no minimum-image interaction truncation.
+# The e-h layer separation makes attraction bounded. No trap or BO limit.
+# This is a convergence pilot, not a fermionic or bound-fraction calculation.
+project: { name: pimc_convergence_layers, seed: 764393, output: true, log: false }
+system:
+  lattice: { type: periodic, dimension: 2, rs: 1.5, shape: square, ewald_tol: 1.0e-6 }
+  particles:
+    - { name: e, group: electrons, type: boltzmannon, mass: [1.0, 2.0], charge: -1, z: 0.0, up: 3 }
+    - { name: h, group: holes, type: boltzmannon, mass: [3.0, 5.0], charge: 1, z: 1.0, up: 3 }
+hamiltonian:
+  terms:
+    - { type: coulomb, pair: [electrons, electrons], epsilon: 4.0 }
+    - { type: coulomb, pair: [holes, holes], epsilon: 4.0 }
+    - { type: coulomb, pair: [electrons, holes], epsilon: 4.0 }
+qmc:
+  - method: pimc
+    threads: 4
+    samples: 8
+    beta: 0.5
+    time_step: 0.0625
+    equilibration_blocks: 128
+    accumulation_blocks: 256
+    steps_per_block: 5
+    sub_steps: 6
+    moves:
+      - bisection: { levels: 3, weight: 1.0 }
+      - centroid: { step: 0.6, weight: 1.0 }
+      - single_slice: { step: 0.25, weight: 1.0 }
+    energy: thermodynamic

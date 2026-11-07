@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# 2D e-h exciton, exact ground state ψ = exp(-r) (linear Jastrow c = -1).
+# The e-h pair correlation is then analytic:
+#   g_eh(r) ∝ |ψ(r)|² = e^{-2r}      → slope of ln g_eh(r) vs r is -2
+#   P(r) ∝ g_eh(r)·(2πr) ∝ r e^{-2r} → ⟨r⟩ = 1 (2D)
+project: {name: exciton_2d_gofr, seed: 42, output: false}
+system:
+  lattice: {type: open, dimension: 2, L: 1.0}
+  particles:
+    - {name: e, group: electron_group, type: fermions, mass: 1.0, charge: -1, up: 1, down: 0, initialization: uniform}
+    - {name: h, group: hole_group, type: fermions, mass: 1.0, charge: 1, up: 1, down: 0, initialization: uniform}
+wavefunction:
+  - jastrow: {type: padé, pair: [electron_group, hole_group] }
+hamiltonian:
+  terms:
+    - {type: coulomb, pair: [electron_group, hole_group], epsilon: 1.0}
+qmc:
+  - {method: vmc, random_walk: metropolis, device: cpu, threads: 0,
+     samples: 128, equilibration_blocks: 20, accumulation_blocks: 60,
+     steps_per_block: 20, sub_steps: 4, time_step: 0.1,
+     estimators: [{type: gofr, rmax: 6.0, n_bins: 60}]}

@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Monolayer MoS2 exciton: Rytova–Keldysh potential, Hartree atomic units.
+# r0[Bohr] = r0[Å] / 0.529177;  masses in m0;  binding energy = -E (→ eV ×27.211386).
+project: { name: MoS2, seed: 42, log: false, output: false }
+system:
+  lattice: { type: open, dimension: 2, L: 1.0 }
+  particles:
+    - { name: e, group: e_grp, type: fermions, mass: 0.50, charge: -1, up: 1, down: 0, initialization: uniform }
+    - { name: h, group: h_grp, type: fermions, mass: 0.50, charge: +1, up: 1, down: 0, initialization: uniform }
+wavefunction:
+  - jastrow: { type: padé, pair: [e_grp, h_grp], numerator: [-0.02], denominator: [0.2], is_fixed: [true, true], can_flip_sign: [false, true] }
+hamiltonian:
+  terms:
+    - { type: rytova_keldysh, pair: [e_grp, h_grp], epsilon: 1.0, r0: 78.367 }
+qmc:
+  - method: dmc
+    random_walk: drift_diffusion
+    threads: 1                 # single-thread: deterministic + avoids parallel-DMC fragility
+    samples: 512
+    equilibration_blocks: 128
+    accumulation_blocks: 256
+    steps_per_block: 10
+    sub_steps: 3
+    time_step: 0.05

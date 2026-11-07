@@ -1,0 +1,54 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# 1-D quantum harmonic oscillator at finite temperature via PIMC.
+#
+# One distinguishable particle (boltzmannon) in V = ½ω²x² with ω = 1, m = 1.
+# β = 2, M = 8 slices → τ = 0.25.
+#
+# Exact discretized energy (M-slice normal modes):
+#   E = d·τ·ω²/M · Σ_{k=0}^{M-1} 1/(4 sin²(πk/M) + τ²ω²)
+#   = 0.6523800866955113  (for d=1, beta=2, M=8, omega=1)
+#
+# The PIMC must reproduce this value within reblocked error bars, NOT the
+# continuum value E_cont = d·ω/(2·tanh(βω/2)) = 0.6565176267803425.  The
+# difference is the Trotter error of the primitive action, which vanishes as
+# M → ∞.
+project:
+  name: pimc_ho_1d
+  seed: 12345
+
+system:
+  lattice:
+    type: open
+    dimension: 1
+    L: 3.0
+  particles:
+    - name: p
+      group: particle
+      type: boltzmannon
+      mass: 1.0
+      charge: 0
+      up: 1
+      down: 0
+
+hamiltonian:
+  terms:
+    - type: harmonic_trap
+      omega: 1.0
+
+qmc:
+  - method: pimc
+    threads: 2
+    samples: 64
+    time_step: 0.25
+    beta: 2.0
+    equilibration_blocks: 100
+    accumulation_blocks: 400
+    steps_per_block: 20
+    sub_steps: 1
+    moves:
+      - bisection: { levels: 2, weight: 1.0 }
+      - centroid:  { step: 0.5, weight: 1.0 }
+    energy: thermodynamic

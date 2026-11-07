@@ -1,0 +1,123 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# =============================================================================
+# 2-D DIPOLAR BOSONS — GAS PHASE — n r0² = 256, N = 64
+#
+# One point of Fig. 1 of G. E. Astrakharchik, J. Boronat, I. L. Kurbakov and
+# Yu. E. Lozovik, Phys. Rev. Lett. 98, 060405 (2007): dipoles polarized
+# perpendicular to the plane, H = −½ Σ ∇² + Σ_{i<j} 1/r_ij³.  The companion
+# file dipoles_2d_solid_n256.yaml is the solid at the same density, in the same
+# cell, with the same N — keep every shared knob in lock-step, because near the
+# transition (n r0² = 290(30)) the two energies differ by only ~0.1%.
+#
+# ── Units ────────────────────────────────────────────────────────────────────
+# mass 1 and strength 1 make lengths r0 = M C_dd/(4πħ²) and energies ħ²/(M r0²).
+# The density enters only through the cell: rs = 1/√(π n r0²), here
+# 1/√(256π) = 0.0352618...  Other densities: change rs (and the time steps,
+# which scale as 1/(n r0²), and the starting matching_radius, which scales
+# roughly as the spacing (n r0²)^{-1/2}).
+#
+# ── The 1/r³ tail under periodic boundaries ──────────────────────────────────
+# 1/r³ in 2-D converges absolutely, so there is no Ewald term: every pair is
+# taken at its minimum image over the whole Wigner–Seitz cell, and the images
+# outside it as a uniform continuum (g = n), included in E_L and logged.  For a
+# perfect triangular crystal this tail scheme's error falls as N^{-3/2}
+# (6.9e-4 relative at N = 64).  The paper instead cuts at L/2 and adds the tail
+# with g = n beyond it, so its finite-N values differ from these; only the
+# extrapolations E(N) = E_th + C/√N to N → ∞ are comparable.
+#
+# ── Trial wavefunction ───────────────────────────────────────────────────────
+# A Jastrow only, so ψ_T > 0: bosonic, nodeless, and DMC is exact up to time
+# step and population.  zero_energy is the paper's f₂: the two-body
+# zero-energy solution K₀(2√(r0/r)) inside R_match, joined to the phonon tail
+# C₂ exp(−C₃/r − C₃/(2r_c − r)), flat from the cutoff r_c = R_WS (the
+# Wigner–Seitz inradius) on.  It cancels the 1/r³ core in E_L.  R_match is the
+# one variational parameter; the start below is a short VMC optimization
+# (512 walkers, N = 64): R_match = 0.0459, E/N = 23229 (VMC).
+#
+# ── Reference ────────────────────────────────────────────────────────────────
+# The paper's thermodynamic-limit fit of its DMC data,
+#   E/N = 4.536 x^{3/2} + 4.38 x^{5/4} + 1.2 x^{1/2},   x = n r0²,
+# gives E/N = 23084 at x = 256 (solid: 23101).  One N does not give E_th:
+# repeat with several N and extrapolate in 1/√N.
+# =============================================================================
+project:
+  name: dipoles_2d_gas_n256
+  seed: 20261024
+  log: true
+  output: true
+
+system:
+  lattice: { type: periodic, dimension: 2, shape: hexagonal, rs: 0.03526184897173477 }
+  particles:
+    - { name: d, group: dipoles, type: bosons, mass: 1.0, up: 64, down: 0,
+        initialization: uniform }
+
+wavefunction:
+  - jastrow: { type: zero_energy, pair: [dipoles, dipoles], matching_radius: 0.0459,
+               matching_radius_fixed: false }
+
+hamiltonian:
+  terms:
+    - { type: inverse_power, pair: [dipoles, dipoles], strength: 1.0, exponent: 3 }
+
+qmc:
+  # 1. R_match by the linear method.
+  - method: optimizer
+    type: linear
+    max_iterations: 10
+    random_walk: metropolis
+    device: cpu
+    threads: 0
+    samples: 1024
+    equilibration_blocks: 20
+    accumulation_blocks: 50
+    steps_per_block: 10
+    sub_steps: 2
+    time_step: 0.0003
+
+  # 2. Variational reference at the optimized R_match.
+  - method: vmc
+    random_walk: metropolis
+    device: cpu
+    threads: 0
+    samples: 1024
+    equilibration_blocks: 20
+    accumulation_blocks: 200
+    steps_per_block: 10
+    sub_steps: 2
+    time_step: 0.0003
+    estimators:
+      - { type: gofr, rmax: 0.13, n_bins: 65 }
+
+  # 3-4. DMC at two time steps (τ ∝ 1/(n r0²)); keep the pair and check that
+  # they agree, or extrapolate τ → 0.
+  - method: dmc
+    random_walk: drift_diffusion
+    device: cpu
+    threads: 0
+    samples: 1024
+    equilibration_blocks: 40
+    accumulation_blocks: 200
+    steps_per_block: 20
+    sub_steps: 2
+    time_step: 0.00001
+    estimators:
+      - { type: gofr, rmax: 0.13, n_bins: 65 }
+      - { type: sofk, kmax: 160.0 }   # k/√n up to 10: past the peak at ≈ 6.6
+
+  - method: dmc
+    random_walk: drift_diffusion
+    device: cpu
+    threads: 0
+    samples: 1024
+    equilibration_blocks: 20
+    accumulation_blocks: 200
+    steps_per_block: 40
+    sub_steps: 2
+    time_step: 0.000005
+    estimators:
+      - { type: gofr, rmax: 0.13, n_bins: 65 }
+      - { type: sofk, kmax: 160.0 }   # k/√n up to 10: past the peak at ≈ 6.6

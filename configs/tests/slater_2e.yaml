@@ -1,0 +1,57 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+project:
+  name: slater_2e
+  seed: 42
+  log: false
+  output: false
+
+# Two same-spin electrons in 2D described by a Slater determinant of two fixed
+# Gaussian orbitals (a 2x2 spin-up block; no spin-down block).  This is the first
+# sign-changing trial: the DMC fixed-node gate enforces the determinant's node.
+system:
+  lattice:
+    type: open
+    dimension: 2
+    L: 1.0
+
+  particles:
+    - name: e
+      group: electron_group
+      type: fermions
+      mass: 1.0
+      charge: -1
+      up: 2          # 2 spin-up electrons -> 2x2 up determinant
+      down: 0        # no spin-down block
+      initialization: uniform
+
+wavefunction:
+  # ψ_det = det(D_up); block size (2) comes from the group's up count, and the
+  # up block uses the first `up` orbitals of this shared (restricted) pool.
+  - slater:
+      group: electron_group
+      orbitals:
+        type: gaussian
+        centers: [[-1.0, 0.0], [1.0, 0.0]]
+        alphas:  [0.7, 0.7]
+
+hamiltonian:
+  terms:
+    # Kinetic + e-e Coulomb repulsion (ε = 1).
+    - type: coulomb
+      pair: [electron_group, electron_group]
+      epsilon: 1.0
+
+qmc:
+  - method: vmc
+    random_walk: langevin
+    device: cpu
+    threads: 0
+    samples: 256
+    equilibration_blocks: 64
+    accumulation_blocks: 256
+    steps_per_block: 20
+    sub_steps: 5
+    time_step: 0.02

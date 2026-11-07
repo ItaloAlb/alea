@@ -1,0 +1,86 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Build and full test suite on Linux with GCC 11 (Ubuntu 22.04), the oldest
+# compiler the code must support, plus the Python checks of tools/. ccache
+# keeps rebuilds of the fetched dependencies (HDF5 above all) cheap. Release
+# builds use -march=native, so the compiler cache is keyed by the runner's CPU
+# model: an object built for one CPU is never reused on another.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 300
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 2G
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y ninja-build ccache
+
+      - name: CPU model
+        id: cpu
+        run: echo "model=$(grep -m1 'model name' /proc/cpuinfo | sha256sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-${{ runner.os }}-gcc11-${{ steps.cpu.outputs.model }}-${{ github.sha }}
+          restore-keys: ccache-${{ runner.os }}-gcc11-${{ steps.cpu.outputs.model }}-
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Quick start
+        run: ./build/alea tests/configs/exciton_2d_cusp_m1.yaml
+
+      - name: Configure tests
+        run: >
+          cmake -S tests -B build/tests -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build tests
+        run: cmake --build build/tests -j
+
+      - name: Test
+        run: ctest --test-dir build/tests --output-on-failure -j "$(nproc)"
+
+      - name: Compiler cache statistics
+        if: always()
+        run: ccache --show-stats
+
+  python-checks:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install numpy scipy
+
+      - name: Python checks
+        run: python -m unittest discover -s tests -p "test_*.py" -v

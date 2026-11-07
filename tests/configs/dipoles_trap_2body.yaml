@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# ============================================================================
+# Two bosonic dipoles in a 2-D harmonic trap: H = Σ_i [−½∇_i² + ½ω²r_i²] + 1/r³.
+#
+# Units r0 and ħ²/(M r0²) (mass 1, strength 1), as in Astrakharchik et al.,
+# PRL 98, 060405 (2007).  ω = 2000 holds the pair at r ≈ (6/ω²)^{1/5} ≈ 0.067,
+# the lattice spacing of the 2-D crystal at n r0² = 256: the same competition
+# of kinetic energy and 1/r³ core, and the same time step, as the many-body
+# runs near the gas–solid transition.
+#
+# Exact E = 12044.7791588900 (tests/references/inverse_power_trap_exact.py --omega 2000
+# --strength 1 --exponent 3; centre of mass ω plus the m = 0 relative level).
+#
+# Trial: zero_energy pair factor (K0 core, cancels 1/r³ in E_L) times a Nosanow
+# factor with both centres at the trap centre.  R_match and α come from a
+# linear-method optimization (VMC 12071.7(9), 27 above exact).  ψ_T > 0, so
+# DMC is exact up to time step and population.  The default branch cutoff
+# cuts no walker here (e_cut ≥ 15σ up to τ = 8e-5), so the bias is the time
+# step's: +0.33(8) at τ = 1e-5 over 72 seeds, and below +0.7 at 4e-5 and
+# 8e-5 (2026-10-25).  Unlike the old cutoff e_cut = 2/√τ: it tapered 23% and
+# 44% of the walker sweeps at those two steps and gave +3.2 and +8.8.
+# ============================================================================
+project: { name: dipoles_trap_2body, seed: 20261024, log: false, output: false }
+
+system:
+  lattice: { type: open, dimension: 2, L: 1.0 }
+  particles:
+    - { name: d, group: dipoles, type: bosons, mass: 1.0, up: 2, down: 0 }
+
+wavefunction:
+  - jastrow: { type: zero_energy, pair: [dipoles, dipoles], matching_radius: 0.0918, cutoff: 0.3 }
+  - nosanow: { group: dipoles, centers: [[0.0, 0.0], [0.0, 0.0]], alpha: 874.0 }
+
+hamiltonian:
+  terms:
+    - { type: harmonic_trap, omega: 2000.0 }
+    - { type: inverse_power, pair: [dipoles, dipoles], strength: 1.0, exponent: 3 }
+
+qmc:
+  - { method: vmc, random_walk: metropolis, device: cpu, threads: 2, samples: 256,
+      equilibration_blocks: 20, accumulation_blocks: 100, steps_per_block: 10,
+      sub_steps: 2, time_step: 0.0005 }
+  - { method: dmc, random_walk: drift_diffusion, device: cpu, threads: 2, samples: 512,
+      equilibration_blocks: 40, accumulation_blocks: 400, steps_per_block: 25,
+      sub_steps: 2, time_step: 0.00001 }

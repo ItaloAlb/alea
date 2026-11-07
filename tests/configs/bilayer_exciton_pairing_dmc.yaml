@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# One electron-hole pair in a bilayer (layers d = 0.4 apart), equal masses,
+# Coulomb epsilon = 1, open cell: the isolated exciton of López Ríos et al.,
+# PRL 120, 177701 (2018).
+#
+# The trial is a 1x1 pairing determinant, psi = phi(r_e - r_h), with phi the
+# cuspless cutoff polynomial (1 - r/L)^3 (1 + 3r/L) (c0 = 1), times a
+# cuspless e-h Drummond Jastrow (the pair never coalesces, so the builder
+# derives Gamma = 0).  phi > 0 for r < L and vanishes beyond: with L = 20 a0*
+# against an exciton r.m.s. size of 2 a0*, that wall costs ~e^{-2 kappa L} with
+# kappa = 0.71, negligible.  The ground state is nodeless, so DMC projects to
+# the exact energy, -0.5065190623 Ha* from tests/references/pair_bound_state.py (the
+# paper's VMC: -0.5065191(2)).
+project: {name: bilayer_exciton_pairing_dmc, seed: 7, output: false}
+system:
+  lattice: {type: open, dimension: 2, L: 1.0}
+  particles:
+    - {name: e, group: e, type: fermions, mass: 1.0, charge: -1, up: 1, down: 0, initialization: uniform}
+    - {name: h, group: h, type: fermions, mass: 1.0, charge: 1, up: 1, down: 0, z: 0.4, initialization: uniform}
+wavefunction:
+  - pairing:
+      blocks: [{rows: e, columns: h}]
+      orbital: {poly_order: 2, cutoff: 20.0, cutoff_fixed: true}
+  - jastrow: {type: drummond, pair: [e, h], params: [-0.002], is_fixed: [true], truncation: 3, cutoff: 8.0, cutoff_fixed: true}
+hamiltonian:
+  terms:
+    - {type: coulomb, pair: [e, h], epsilon: 1.0}
+qmc:
+  - {method: dmc, random_walk: drift_diffusion, threads: 1, samples: 512, equilibration_blocks: 128, accumulation_blocks: 256, steps_per_block: 20, sub_steps: 3, time_step: 0.01}

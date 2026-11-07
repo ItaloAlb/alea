@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# ============================================================================
+# NON-INTERACTING CRYSTAL DETERMINANT — the Gaussian-site analytic anchor.
+#
+# 7 polarised fermions, one narrow Gaussian per commensurate triangular site
+# (N = 7 = 2²+2·1+1², a ROTATED commensurate crystal), no interaction.
+#
+# With α large enough that neighbouring orbitals do not overlap, the determinant
+# collapses to the diagonal product ∏_i exp(−α|r_i − c_i|²) and each particle is
+# an independent 2-D Gaussian, for which
+#
+#   E_L = 2α − 2α²r²,   ⟨r²⟩ = 1/(2α)   ⇒   ⟨E_L⟩ = α   per particle,
+#
+# so E = N·α = 7·8 = 56 exactly.  The neglected exchange is O(exp(−α d²)²) with
+# d = 1.9046 rs the site spacing — about 1e-13 here, far below the tolerance.
+#
+# What this tests is the plumbing the geometry unit tests cannot: that the
+# generated sites reach the determinant one-per-particle (duplicated sites would
+# make the matrix singular), that the up block takes disjoint sites, and that the
+# walkers are SEEDED on their sites — from uniform positions this determinant
+# starts numerically singular.
+# ============================================================================
+project: {name: periodic_2d_crystal_free, seed: 42, log: false, output: false}
+
+system:
+  lattice: {type: periodic, dimension: 2, shape: hexagonal, rs: 1.0}
+  particles:
+    - {name: e, group: electron_group, type: fermions, mass: 1.0, charge: -1,
+       up: 7, down: 0, initialization: uniform}
+
+wavefunction:
+  - slater: {group: electron_group,
+             orbitals: {type: gaussian, sites: triangular, alpha: 8.0}}
+
+hamiltonian:
+  terms: []            # kinetic only (added automatically)
+
+qmc:
+  - {method: vmc, random_walk: metropolis, threads: 2, samples: 128,
+     equilibration_blocks: 32, accumulation_blocks: 64,
+     steps_per_block: 10, sub_steps: 2, time_step: 0.05}

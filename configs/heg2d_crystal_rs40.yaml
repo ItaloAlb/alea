@@ -1,0 +1,214 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# =============================================================================
+# 2-D POLARIZED ELECTRON GAS — WIGNER CRYSTAL PHASE — rs = 40, N = 61
+#
+# The other half of the crystallization calculation.  Read the header of
+# `heg2d_fluid_rs40.yaml` first: everything about the cell, the units, the choice
+# of N, the Ewald term, the block lengths and the two time steps is identical and
+# is explained there.  Only the trial wavefunction differs, and it must: the two
+# runs are the same Hamiltonian in the same box, and the crossing of their
+# fixed-node DMC energies is the crystallization condition.
+#
+# This is the rs = 40 pair, one step past rs = 30 (see `heg2d_crystal_rs30.yaml`).
+# The first DMC runs of both pairs are invalid (population-control limit cycle —
+# see the fluid config's "CORRECTED DIAGNOSIS"); at the VMC level the crystal
+# already wins at rs = 40 by 3.87(1) mHa. The literature crossing is rs = 37±5
+# (Tanatar & Ceperley 1989), so the DMC gap here should be resolvable.
+#
+# KEEP EVERY SHARED KNOB IN LOCK-STEP WITH THE FLUID CONFIG.  If you change
+# samples, blocks, τ, ewald_tol or N here, change them there too.
+#
+# ── Trial wavefunction ───────────────────────────────────────────────────────
+# ψ = det{exp(-α|r_j - c_i|²)} · exp(Σ_{i<j} u(r_ij))
+#
+# One Gaussian per site of the triangular lattice commensurate with the cell.
+# `sites: triangular` generates them: N = 61 = 5²+5·4+4² is Loeschian, so the
+# cell is a superlattice of the site lattice — here a ROTATED one (q ≠ 0), which
+# is the normal case and is why the sizes that work are Loeschian rather than
+# perfect squares.  Site spacing d = 1.9046 rs = 76.18 (was 57.14 at rs = 30 —
+# the crystal is more dilute, so the sites are proportionally further apart).
+#
+# r - c is folded to the MINIMUM IMAGE, which is what makes a Gaussian at a fixed
+# center legal under periodic boundaries at all.  Walkers are SEEDED ON THE SITES
+# (plus a jitter of one Gaussian width) for the same reason as at rs = 30: from
+# uniform positions the determinant would be numerically singular at start.
+#
+# ── α was OPTIMIZED once, now frozen ─────────────────────────────────────────
+# Result (run 2026-09-26_20-18-29-14, 0_optimizer.h5): the linear method
+# converged in 8/20 iterations (5h26m on 128 cores) from α = 9.4876e-4 to
+#
+#     α* = 8.760020e-4        E_VMC = -1.476210 Ha (optimizer), -1.476172(8) (VMC)
+#
+# The optimizer is pure VMC, so the DMC population-control bug found on
+# 2026-09-27 did not affect it; α* is frozen below (alpha_fixed: true) and the
+# optimizer stage is dropped to save that time on re-runs. The history of how
+# α was chosen follows.
+#
+# ── (history) α is optimized, not hand-scanned ────────────────────────────────
+# At rs = 30, α was found by a manual VMC scan (see that config's header) and the
+# result — σ/d ≈ 0.229, ABOVE the Lindemann melting ratio 0.17 — was itself the
+# signal that the crystal was already marginal there.  Re-running that scan by
+# hand at every new rs was always the wrong long-term plan: α sits inside the
+# determinant, so it moves the nodes and genuinely changes the fixed-node DMC
+# energy, and re-scanning it manually cannot be skipped without risking exactly
+# the failure mode this run is testing for (an under-optimized crystal looking
+# artificially worse than it is).
+#
+# `milestone-2-nc-breakup` (merged into main) made α optimizable by the linear
+# method: `alpha_fixed: false` below hands it to the FIRST qmc: driver, an
+# `optimizer` stage with `parameters: nodal` (only determinant-owned parameters
+# move — the Jastrow, fixed below, is untouched by this stage regardless of its
+# own is_fixed flag). The starting guess is the Einstein estimate scaled the same
+# way the rs = 30 optimum was described there (0.60 of α_Einstein = 0.4/rs^1.5):
+#
+#     α_start = 0.60 × 0.4 / 40^1.5 = 9.4876e-4
+#
+# This is a STARTING GUESS, not a measurement — unlike at rs = 30, nothing here
+# has been cross-checked against an independent scan.  The optimizer's own
+# validation (N = 7, rs = 30-equivalent test in the branch that added this) found
+# it converges to within ~2% of an independent VMC scan optimum, with the
+# remaining gap attributed to the linear method's O(1/√N) linearization error —
+# expected to shrink at N = 61.  Trust the DIRECTION (crystal below its own VMC
+# energy in every DMC driver below) more than the exact converged α; if the
+# optimizer's `max_iterations` is exhausted without converging, that is itself
+# information (rerun with more iterations before trusting the sign).
+#
+# param_tol is left at its default (1e-3): α is optimized internally as α = e^θ
+# (sign-locked, always positive), so both param_tol and max_param_change act on
+# the RELATIVE step in θ — the same convention documented in the rs = 30 crystal
+# config for exactly this reason.
+#
+# ── Jastrow: analytically rescaled, not re-scanned ────────────────────────────
+# Same DTN form and derived P-wave cusp (Γ = 1/3) as the fluid. Unlike α, this
+# term is NODELESS and POSITIVE, so it cannot move the fixed-node energy at all —
+# it only buys variance and a smaller time-step bias. That means, unlike α, its
+# rs = 30 tuning (c = 1.000 in α0 = c·Γ/(3L²), cutoff L = 2·rs) rescales EXACTLY
+# with no new scan needed, because the whole rs-dependence is carried by L:
+#
+#     L(40)  = 2 × 40 = 80.0
+#     α0(40) = 1.000 × (1/3) / (3 × 80²) = 1.7361111e-05
+#
+# (No optimizer stage for the Jastrow here — the rs = 30 crystal header notes
+# that a fresh linear-method run on it moved the guide by nothing measurable at
+# rs = 30, and it cannot touch the answer this run cares about either way.)
+#
+# ── Diagnostics ──────────────────────────────────────────────────────────────
+# The `density` estimator is the one that matters here: under periodic boundaries
+# it bins FRACTIONAL coordinates, so its n_bins x n_bins grid is the cell itself
+# and 61 peaks on a triangular pattern is direct visual proof that the projected
+# state is still a crystal at the end of the run. A blurred map means the crystal
+# melted during DMC and the energy is not a crystal energy at all.
+# (`rmax` is ignored on the periodic path; it only matters for open cells.)
+# =============================================================================
+project:
+  name: heg2d_crystal_rs40
+  seed: 20260923
+  log: true
+  output: true
+
+system:
+  lattice:
+    type: periodic
+    dimension: 2
+    shape: hexagonal
+    rs: 40.0
+    ewald_tol: 1.0e-6
+  particles:
+    - { name: e, group: electron_group, type: fermions, mass: 1.0, charge: -1,
+        up: 61, down: 0, initialization: uniform }
+
+wavefunction:
+  # Crystal nodes: one Gaussian per commensurate triangular site.  up + down must
+  # equal the group size — a Wigner-crystal site holds ONE electron.
+  - slater:
+      group: electron_group
+      orbitals:
+        type: gaussian
+        sites: triangular
+        alpha: 8.760020e-4     # linear-method optimum (see header), frozen
+        alpha_fixed: true
+  # Same DTN form and same derived P-wave cusp (Γ = 1/3) as the fluid; the
+  # determinant vanishes linearly at coalescence here too.
+  - jastrow:
+      type: drummond
+      pair: [electron_group, electron_group]
+      params: [1.7361111e-05]   # α0 = c·Γ/(3L²), c=1.000 (rs=30 tuning), exact rescale
+      is_fixed: [true]
+      truncation: 3
+      cutoff: 80.0              # L = 2 x rs
+      cutoff_fixed: true
+
+hamiltonian:
+  terms:
+    - { type: coulomb, pair: [electron_group, electron_group], epsilon: 1.0 }
+
+qmc:
+  # (The `optimizer` stage for alpha was removed after its first run — see the
+  #  header, "α was OPTIMIZED once, now frozen". To re-optimize, set
+  #  alpha_fixed: false and restore a `method: optimizer, type: linear,
+  #  parameters: nodal` driver here, with the VMC block settings below and
+  #  max_iterations: 20.)
+
+  # 1. Variational reference: the number each DMC must come in below, plus an
+  #    acceptance check. time_step is the Metropolis proposal variance, rescaled
+  #    from rs=30's 150.0 by (40/30)^2 = 16/9 to hold the proposal-step-to-cell
+  #    ratio fixed, so acceptance should again land near the rs=30 value (0.467)
+  #    — if it doesn't, something else about the guide moved and needs a look.
+  - method: vmc
+    random_walk: metropolis
+    device: cpu
+    threads: 0
+    samples: 1024
+    equilibration_blocks: 40
+    accumulation_blocks: 200
+    steps_per_block: 10
+    sub_steps: 2
+    time_step: 266.7
+    estimators:
+      - { type: gofr, rmax: 293.0, n_bins: 110 }
+      - { type: density, rmax: 297.0, n_bins: 48 }
+
+  # 2. Fixed-node DMC, coarser of the two time steps.
+  #
+  #    Population control: the first rs=30/rs=40 runs sat PERMANENTLY at a
+  #    branch() bound because the old `feedback` had loop gain
+  #    tau·sub_steps/feedback = 4-10 (unstable above 2) — a period-2 limit cycle
+  #    with no projection; those DMC energies are invalid. See the fluid
+  #    config's header ("CORRECTED DIAGNOSIS"). `feedback` is gone; the default
+  #    dimensionless population_generations (g = 10, gain 1/g) is used here.
+  #    time_step is NOT rescaled by rs^2: rs=40 only makes the safety criterion
+  #    sqrt(tau) << rs easier to satisfy. Check acc_population fluctuates and
+  #    acc_etrial stays near acc_block_energy.
+  - method: dmc
+    random_walk: drift_diffusion
+    device: cpu
+    threads: 0
+    samples: 1024
+    equilibration_blocks: 20
+    accumulation_blocks: 40
+    steps_per_block: 100
+    sub_steps: 2
+    time_step: 2.0
+    walkers_out: heg2d_crystal_rs40_tau2.h5
+    estimators:
+      - { type: gofr, rmax: 293.0, n_bins: 110 }
+      - { type: density, rmax: 297.0, n_bins: 48 }
+
+  # 3. Same run at half the time step — the bias, measured rather than assumed.
+  - method: dmc
+    random_walk: drift_diffusion
+    device: cpu
+    threads: 0
+    samples: 1024
+    equilibration_blocks: 20
+    accumulation_blocks: 40
+    steps_per_block: 200
+    sub_steps: 2
+    time_step: 1.0
+    walkers_out: heg2d_crystal_rs40_tau1.h5
+    estimators:
+      - { type: gofr, rmax: 293.0, n_bins: 110 }
+      - { type: density, rmax: 297.0, n_bins: 48 }

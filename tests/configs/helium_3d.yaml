@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Helium atom in 3D: nucleus (hole) q=+2, M→∞, two electrons q=-1, m=1.
+# Kato cusp conditions:
+#   e-h: a_1 = -q_e * q_h / 2 = -(-1)(+2) = -2  (3D, mu=1)
+#   e-e: a_1 = -q_e² / 2 = -(-1)²/2 = +0.5      (3D, mu=0.5)
+# Exact non-relativistic ground state: E_0 ≈ -2.904 a.u.
+# With these two-parameter Kato-satisfying Jastrows, VMC gives E ≈ -2.90.
+project: {name: helium_3d, seed: 42}
+system:
+  lattice: {type: open, dimension: 3, L: 1.0}
+  particles:
+    - {name: e, group: electron_group, type: fermions, mass: 1.0, charge: -1, up: 1, down: 1, initialization: uniform}
+    - {name: n, group: nucleus, type: fermions, mass: 10000.0, charge: +2, up: 1, down: 0, initialization: uniform}
+wavefunction:
+  - jastrow: {type: padé, pair: [electron_group, nucleus], denominator: [0.0], is_fixed: [true]}
+  - jastrow: {type: padé, pair: [electron_group, electron_group], denominator: [0.5], is_fixed: [true]}
+hamiltonian:
+  terms:
+    - {type: coulomb, pair: [electron_group, nucleus], epsilon: 1.0}
+    - {type: coulomb, pair: [electron_group, electron_group], epsilon: 1.0}
+qmc:
+  # Fast config: tight sample for quick regression testing.
+  - {method: vmc, random_walk: metropolis, device: cpu, threads: 0, samples: 256, equilibration_blocks: 32, accumulation_blocks: 64, steps_per_block: 10, sub_steps: 2, time_step: 0.05}

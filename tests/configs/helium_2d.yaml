@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Helium atom in 2D: nucleus (hole) q=+2, M→∞, two electrons q=-1, m=1.
+# Kato cusp conditions (2D: a_1 = 2 μ q_i q_j / (ε·(d-1))):
+#   e-n: a_1 = 2·1·(-1)(+2) / 1 = -4
+#   e-e: a_1 = 2·0.5·(-1)(-1) / 1 = +1.0
+# Exact non-relativistic ground state: E_0 ≈ -11.90 a.u.
+#   [source: https://arxiv.org/pdf/quant-ph/0203150]
+project: {name: helium_2d, seed: 42}
+system:
+  lattice: {type: open, dimension: 2, L: 1.0}
+  particles:
+    - {name: e, group: electron_group, type: fermions, mass: 1.0, charge: -1, up: 1, down: 1, initialization: uniform}
+    - {name: n, group: nucleus, type: fermions, mass: 10000.0, charge: +2, up: 1, down: 0, initialization: uniform}
+wavefunction:
+  - jastrow: {type: padé, pair: [electron_group, nucleus], denominator: [0.145], is_fixed: [true]}
+  - jastrow: {type: padé, pair: [electron_group, electron_group], denominator: [1.27], is_fixed: [true]}
+hamiltonian:
+  terms:
+    - {type: coulomb, pair: [electron_group, nucleus], epsilon: 1.0}
+    - {type: coulomb, pair: [electron_group, electron_group], epsilon: 1.0}
+qmc:
+  # Fast config: tight sample for quick regression testing.
+  - {method: vmc, random_walk: metropolis, device: cpu, threads: 0, samples: 256, equilibration_blocks: 32, accumulation_blocks: 64, steps_per_block: 10, sub_steps: 2, time_step: 0.05}

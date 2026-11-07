@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Same exact-ground-state exciton as exciton_2d_gofr.yaml, run with DMC.
+# ψ is exact → weights stay ~1, so the mixed g(r) still matches g_eh(r) ∝ e^{-2r}.
+project: {name: exciton_2d_gofr_dmc, seed: 42, output: false}
+system:
+  lattice: {type: open, dimension: 2, L: 1.0}
+  particles:
+    - {name: e, group: electron_group, type: fermions, mass: 1.0, charge: -1, up: 1, down: 0, initialization: uniform}
+    - {name: h, group: hole_group, type: fermions, mass: 1.0, charge: 1, up: 1, down: 0, initialization: uniform}
+wavefunction:
+  - jastrow: {type: padé, pair: [electron_group, hole_group] }
+hamiltonian:
+  terms:
+    - {type: coulomb, pair: [electron_group, hole_group], epsilon: 1.0}
+qmc:
+  - {method: dmc, random_walk: drift_diffusion, device: cpu, threads: 0,
+     samples: 256, equilibration_blocks: 40, accumulation_blocks: 120,
+     steps_per_block: 10, sub_steps: 3, time_step: 0.01,
+     estimators: [{type: gofr, rmax: 6.0, n_bins: 60}]}

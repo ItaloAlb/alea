@@ -1,0 +1,143 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+project:
+  name: lithium
+  seed: 42
+  log: false
+  output: false
+
+# Lithium atom (1s² 2s¹, Z = 3) — a Slater–Jastrow trial that exercises the full
+# pipeline: Jastrow optimization → VMC → fixed-node DMC.  The two same-spin
+# electrons make the fermion node nontrivial, so the Slater determinant (and the
+# DMC fixed-node gate) are doing real work here.
+#
+# Orbitals are crude single Gaussians at the clamped nucleus (no 2s radial node,
+# no e–n cusp), so this is a PIPELINE test, not a benchmark: the energy is
+# variational and sits well above the exact −7.478 Ha.  The e–n cusp is supplied
+# by the e–n Jastrow.
+#
+# Typical run (3 stages, sharing one trial):
+#   optimize: E ≈ −7.24 Ha   (linear method tunes the Jastrow at fixed nodes)
+#   vmc:      E ≈ −6.90 Ha   (var ≈ 8, bound)
+#   dmc:      E ≈ −7.47 Ha   (fixed-node; exact is −7.478, so ~0.2% above it)
+# Fixed-node DMC is stable here thanks to the Umrigar drift rescaling in DMC::sweep
+# (umrigar_drift_scale, green_function.h): without it the raw Langevin drift flings
+# walkers into the fermion-node singularity and DMC collapses.  Verified sound on a
+# 1-electron Li²⁺ ion too (VMC/DMC both exact −4.5 Ha).
+
+system:
+  lattice:
+    type: open
+    dimension: 3
+    L: 3.0            # electrons seeded uniformly in [-1.5, 1.5]^3 around the nucleus
+
+  particles:
+    # 3 electrons: 2 spin-up (1s↑, 2s↑) + 1 spin-down (1s↓) → indices [0,3).
+    - name: e
+      group: electron_group
+      type: fermions
+      mass: 1.0
+      charge: -1
+      up: 2
+      down: 1
+      initialization: uniform
+
+    # Clamped Born–Oppenheimer nucleus at the origin (the Slater orbital centers).
+    # `initialization: fixed` seeds it at the origin; the huge mass freezes it
+    # there (inv_mass ≈ 0 → no drift/diffusion, no kinetic energy).  Index 3.
+    - name: Li
+      group: nucleus_group
+      type: fermions
+      mass: 1.0e6
+      charge: +3
+      up: 1
+      down: 0
+      initialization: fixed
+
+wavefunction:
+  # ψ_det = det(D_up)·det(D_down) over the electrons.  Restricted shared pool of
+  # two Gaussian orbitals (a tight "1s", a diffuse "2s") centered on the nucleus:
+  # the up block (2 electrons) uses {1s, 2s}; the down block (1 electron) uses {1s}.
+  - slater:
+      group: electron_group
+      orbitals:
+        type: gaussian
+        centers: [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+        alphas:  [2.0, 0.12]      # tight 1s, diffuse 2s (distinct → non-singular det)
+
+  # e–n correlation / cusp: u(r) = a1·r/(1 + b1·r).  Kato cusp (3D):
+  #   a1 = 2·μ·q_e·q_n/(ε·(d-1)) = 2·1·(-1)(+3)/(1·2) = -3   (fixed)
+  # b1 is the one optimizable parameter (sign-locked > 0 to keep the denominator
+  # positive).
+  - jastrow:
+      type: padé
+      pair: [electron_group, nucleus_group]
+      denominator: [1.0]
+      is_fixed: [false]
+      can_flip_sign: [false]
+
+  # e–e correlation / cusp: u(r) = a1·r/(1 + b1·r).  Antiparallel Kato cusp (3D):
+  #   a1 = 2·½·(1)/(1·2) = +0.5   (fixed; the determinant handles parallel-spin Pauli)
+  - jastrow:
+      type: padé
+      pair: [electron_group, electron_group]
+      denominator: [1.0]
+      is_fixed: [false]
+      can_flip_sign: [false]
+
+hamiltonian:
+  terms:
+    - type: coulomb           # electron–nucleus attraction (q_e·q_n = -3)
+      pair: [electron_group, nucleus_group]
+      epsilon: 1.0
+    - type: coulomb           # electron–electron repulsion (q_e·q_e = +1)
+      pair: [electron_group, electron_group]
+      epsilon: 1.0
+
+qmc:
+  # 1) Optimize the Jastrow (b1's) at fixed nodes via the linear method.
+  - method: optimizer
+    type: linear
+    random_walk: langevin
+    device: cpu
+    threads: 0
+    samples: 256
+    equilibration_blocks: 30
+    accumulation_blocks: 60
+    steps_per_block: 10
+    sub_steps: 1
+    time_step: 0.01
+    max_iterations: 10
+    energy_tol: 1e-5
+    num_shifts: 3
+    max_param_change: 0.3
+    shift_i: 0.1
+    shift_s: 0.0
+    rescale: 0.5
+
+  # 2) VMC with the optimized trial.
+  - method: vmc
+    random_walk: langevin
+    device: cpu
+    threads: 0
+    samples: 256
+    equilibration_blocks: 50
+    accumulation_blocks: 200
+    steps_per_block: 20
+    sub_steps: 2
+    time_step: 0.01
+
+  # 3) Fixed-node DMC (the gate is automatically active for the sign-changing
+  #    determinant) — projects to the fixed-node ground state.
+  - method: dmc
+    random_walk: langevin
+    device: cpu
+    threads: 0
+    samples: 512
+    equilibration_blocks: 100
+    accumulation_blocks: 200
+    steps_per_block: 20
+    sub_steps: 2
+    time_step: 0.005

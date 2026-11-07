@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# ============================================================================
+# Two electrons in a parabolic dot + magnetic field: spin SINGLET, exact.
+#
+# m = 1, q = −1, eps = 1, B = 1, ω₀ = √(3/4)  →  W = √(ω₀² + B²/4) = 1.
+# Relative |m| = 0 at W = 1/(2s+1) = 1 has the closed form
+#     R = (1 + r) e^{−r²/4},   E_rel = (s+2)/(2s+1) = 2,
+# and m = 0 feels no (B/2)m shift, so E = W + E_rel = 3 exactly.
+#
+# Trial: both electrons in the l = 0 Fock–Darwin orbital (real, nodeless) times
+# a Padé Jastrow with the wrong shape (a = 1 is the S-wave cusp).  DMC projects
+# the exact state; the field enters only through the |qA|²/2m term here.
+# ============================================================================
+project: { name: dot2e_singlet, seed: 20260929, log: false, output: false }
+
+system:
+  lattice: { type: open, dimension: 2, L: 1.0 }
+  particles:
+    - { name: e, group: electrons, type: fermions, mass: 1.0, charge: -1, up: 1, down: 1 }
+
+wavefunction:
+  - slater: { group: electrons, orbitals: { type: fock_darwin, l: [0], beta: 1.0 } }
+  - jastrow: { type: padé, pair: [electrons, electrons], denominator: [2.0], is_fixed: [true] }
+
+hamiltonian:
+  terms:
+    - { type: harmonic_trap, omega: 0.8660254037844386 }
+    - { type: magnetic_field, B: 1.0 }
+    - { type: coulomb, pair: [electrons, electrons], epsilon: 1.0 }
+
+qmc:
+  - { method: vmc, random_walk: metropolis, device: cpu, threads: 2, samples: 256,
+      equilibration_blocks: 20, accumulation_blocks: 100, steps_per_block: 10,
+      sub_steps: 2, time_step: 0.5 }
+  - { method: dmc, random_walk: drift_diffusion, device: cpu, threads: 2, samples: 512,
+      equilibration_blocks: 40, accumulation_blocks: 100, steps_per_block: 10,
+      sub_steps: 2, time_step: 0.005 }

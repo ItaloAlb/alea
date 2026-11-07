@@ -1,0 +1,173 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# =============================================================================
+# 2-D POLARIZED ELECTRON GAS — WIGNER CRYSTAL PHASE — rs = 60, N = 61
+#
+# The crystal half of the rs = 60 pair. Read `heg2d_fluid_rs60.yaml` first: the
+# cell, units, N, Ewald term, block lengths and time steps are shared and are
+# explained there. Only the trial wavefunction differs.
+#
+# KEEP EVERY SHARED KNOB IN LOCK-STEP WITH THE FLUID CONFIG.
+#
+# Why rs = 60: at rs = 40 the two phases came out degenerate (ΔE = +0.45(42)
+# mHa total at τ→0), exactly as TC89's own rs = 40 numbers are (+8(9) μRy/e
+# after N→∞). TC89's fits (Table IV) give at rs = 60 a crystal advantage of
+# +17 μHa/e (≈ 1.0 mHa for N = 61) in the thermodynamic limit — large enough
+# to survive the N = 61 finite-size shift toward the fluid (≈ -11 μHa/e at
+# rs = 40). This run is the check that the machinery reproduces a CLEAR crystal
+# win, not a tie.
+#
+# ── Trial wavefunction ───────────────────────────────────────────────────────
+# ψ = det{exp(-α|r_j - c_i|²)} · exp(Σ_{i<j} u(r_ij)), one Gaussian per site of
+# the commensurate triangular lattice (N = 61 is Loeschian), r - c folded to the
+# minimum image, walkers seeded on the sites. Site spacing d = 1.9046 rs = 114.3.
+#
+# ── α: re-optimized at this rs ───────────────────────────────────────────────
+# α sits in the determinant, so it moves the nodes and changes the fixed-node
+# energy: it must be optimized at every rs. Starting guess = the rs = 40 linear-
+# method optimum rescaled by the harmonic (Einstein) law α ∝ rs^-1.5:
+#
+#     α_start = 8.760020e-4 × (40/60)^1.5 = 4.768352e-4
+#
+# (the rs = 40 optimum was 0.554 of the Einstein estimate 0.4/rs^1.5, and the
+# rs = 30 scan optimum 0.60, so this start already sits near the expected ratio.)
+# `alpha_fixed: false` hands α to the optimizer stage (parameters: nodal); the
+# optimized α carries into every driver after it. At rs = 40 this took 8/20
+# iterations (5h26m on 128 cores). Once converged, freeze the result here
+# (alpha_fixed: true) and drop the optimizer on re-runs, as was done at rs = 40.
+# If max_iterations is exhausted without converging, rerun before trusting ΔE.
+#
+# ── Jastrow: exact rescale of the rs = 30/40 tuning ──────────────────────────
+# Same DTN form, derived P-wave cusp (Γ = 1/3), c = 1.000, L = 2 rs:
+#
+#     L(60)  = 120.0
+#     α0(60) = 1.000 × (1/3) / (3 × 120²) = 7.7160494e-06
+#
+# Nodeless and positive: it cannot move the fixed-node energy, only variance and
+# time-step bias.
+#
+# ── Diagnostics ──────────────────────────────────────────────────────────────
+# `density` must show 61 sharp triangular peaks in every DMC driver (a blurred
+# map is a melted crystal). `rmax` is ignored on the periodic path.
+# =============================================================================
+project:
+  name: heg2d_crystal_rs60
+  seed: 20260923
+  log: true
+  output: true
+
+system:
+  lattice:
+    type: periodic
+    dimension: 2
+    shape: hexagonal
+    rs: 60.0
+    ewald_tol: 1.0e-6
+  particles:
+    - { name: e, group: electron_group, type: fermions, mass: 1.0, charge: -1,
+        up: 61, down: 0, initialization: uniform }
+
+wavefunction:
+  - slater:
+      group: electron_group
+      orbitals:
+        type: gaussian
+        sites: triangular
+        alpha: 4.768352e-4     # rs=40 optimum × (40/60)^1.5 — optimized below
+        alpha_fixed: false
+  - jastrow:
+      type: drummond
+      pair: [electron_group, electron_group]
+      params: [7.7160494e-06]   # α0 = c·Γ/(3L²), c = 1.000, exact rescale
+      is_fixed: [true]
+      truncation: 3
+      cutoff: 120.0             # L = 2 x rs
+      cutoff_fixed: true
+
+hamiltonian:
+  terms:
+    - { type: coulomb, pair: [electron_group, electron_group], epsilon: 1.0 }
+
+qmc:
+  # 0. Linear-method optimization of α only (nodal parameters). Same VMC block
+  #    settings as the VMC reference below; time_step = 150 × (60/30)² = 600
+  #    holds the proposal-to-cell ratio of rs = 30/40.
+  - method: optimizer
+    type: linear
+    parameters: nodal
+    max_iterations: 20
+    random_walk: metropolis
+    device: cpu
+    threads: 0
+    samples: 1024
+    equilibration_blocks: 40
+    accumulation_blocks: 100
+    steps_per_block: 10
+    sub_steps: 2
+    time_step: 600.0
+
+  # 1. Variational reference at the optimized α. Expect acceptance ≈ 0.44.
+  - method: vmc
+    random_walk: metropolis
+    device: cpu
+    threads: 0
+    samples: 1024
+    equilibration_blocks: 40
+    accumulation_blocks: 200
+    steps_per_block: 10
+    sub_steps: 2
+    time_step: 600.0
+    estimators:
+      - { type: gofr, rmax: 440.0, n_bins: 110 }
+      - { type: density, rmax: 446.0, n_bins: 48 }
+
+  # 2-4. Fixed-node DMC at τ = 4, 2, 1 (see the fluid header for why these τ
+  #      and why 800 imaginary-time units per block). Each driver starts from
+  #      the previous driver's population (automatic carry-over), so only the
+  #      first needs a long equilibration.
+  - method: dmc
+    random_walk: drift_diffusion
+    device: cpu
+    threads: 0
+    samples: 1024
+    equilibration_blocks: 20
+    accumulation_blocks: 80
+    steps_per_block: 100
+    sub_steps: 2
+    time_step: 4.0
+    walkers_out: heg2d_crystal_rs60_tau4.h5
+    estimators:
+      - { type: gofr, rmax: 440.0, n_bins: 110 }
+      - { type: density, rmax: 446.0, n_bins: 48 }
+
+  - method: dmc
+    random_walk: drift_diffusion
+    device: cpu
+    threads: 0
+    samples: 1024
+    equilibration_blocks: 5
+    accumulation_blocks: 80
+    steps_per_block: 200
+    sub_steps: 2
+    time_step: 2.0
+    walkers_out: heg2d_crystal_rs60_tau2.h5
+    estimators:
+      - { type: gofr, rmax: 440.0, n_bins: 110 }
+      - { type: density, rmax: 446.0, n_bins: 48 }
+
+  - method: dmc
+    random_walk: drift_diffusion
+    device: cpu
+    threads: 0
+    samples: 1024
+    equilibration_blocks: 5
+    accumulation_blocks: 80
+    steps_per_block: 400
+    sub_steps: 2
+    time_step: 1.0
+    walkers_out: heg2d_crystal_rs60_tau1.h5
+    estimators:
+      - { type: gofr, rmax: 440.0, n_bins: 110 }
+      - { type: density, rmax: 446.0, n_bins: 48 }

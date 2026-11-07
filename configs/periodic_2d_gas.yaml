@@ -1,0 +1,60 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# ============================================================================
+# NON-INTERACTING 2D GAS IN A PERIODIC CELL — the Milestone 1 geometry check.
+#
+# No Hamiltonian terms beyond the kinetic one and no Jastrow, so ψ = 1 and the
+# walkers sample the cell uniformly: an ideal gas.  Its pair-correlation
+# function is flat, g(r) = 1, out to the Wigner–Seitz inradius.
+#
+# That single number validates the whole periodic stack at once:
+#   • minimum-image distances     — an unfolded r would pile counts up at large
+#                                   r and starve the small-r bins
+#   • position wrapping           — walkers must stay in the cell
+#   • the ρ = N/V normalisation   — without the cell-volume factor g(r) would
+#                                   sit at some arbitrary constant, not 1
+#
+# The cell is specified by DENSITY rather than by size: `rs` is the mean
+# inter-particle spacing, so the area follows from N (A = N π rs² in 2-D) and
+# ρ = N/V is held fixed.  That is exactly the knob you hold while pushing N up
+# toward the thermodynamic limit — raise `up` and the cell grows with it.
+#
+# NOTE: adding any long-range term (coulomb / rytova_keldysh / screened_coulomb)
+# to a periodic cell is rejected until the Ewald sum lands, because the sum of a
+# 1/r tail over the periodic images is only conditionally convergent.
+# ============================================================================
+project:
+  name: periodic_2d_gas
+  seed: 42
+  log: true
+  output: true
+
+system:
+  lattice:
+    type: periodic
+    dimension: 2
+    shape: hexagonal   # smallest finite-size error in 2-D
+    rs: 1.0            # density parameter → A = N π rs²
+  particles:
+    - { name: e, group: electron_group, type: fermions, mass: 1.0, charge: -1,
+        up: 16, down: 0, initialization: uniform }
+
+wavefunction: []       # ψ = 1: an ideal gas
+
+hamiltonian:
+  terms: []            # kinetic only (added automatically)
+
+qmc:
+  - method: vmc
+    random_walk: metropolis
+    device: cpu
+    threads: 4
+    samples: 512
+    equilibration_blocks: 64
+    accumulation_blocks: 512
+    steps_per_block: 10
+    sub_steps: 2
+    time_step: 0.4
+    estimators: [{type: gofr, rmax: 2.0, n_bins: 40}]

@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Analytic finite-cell ideal-gas reference. rs sets TOTAL 2D density.
+# This validates size control and winding, not electron-hole interactions.
+project: { name: pimc_convergence_free_gas, seed: 54321, output: true, log: false }
+system:
+  lattice: { type: periodic, dimension: 2, rs: 1.0, shape: square }
+  particles:
+    - { name: p, group: particle, type: boltzmannon, mass: 1.0, charge: 0, up: 2 }
+hamiltonian: { terms: [] }
+qmc:
+  - method: pimc
+    threads: 4
+    samples: 24
+    beta: 2.0
+    time_step: 0.03125
+    equilibration_blocks: 128
+    accumulation_blocks: 512
+    steps_per_block: 20
+    sub_steps: 12
+    moves:
+      - bisection: { levels: 6, weight: 1.0 }
+      - centroid: { step: 0.5, weight: 1.0 }
+    energy: thermodynamic

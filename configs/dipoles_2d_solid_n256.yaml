@@ -1,0 +1,120 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# =============================================================================
+# 2-D DIPOLAR BOSONS — SOLID PHASE — n r0² = 256, N = 64
+#
+# The other half of the gas–solid comparison of Astrakharchik et al., Phys.
+# Rev. Lett. 98, 060405 (2007), Fig. 1.  Read the header of
+# dipoles_2d_gas_n256.yaml first: units, density, the periodic 1/r³ tail and
+# the reference fits are the same.  Only the trial wavefunction differs.
+#
+# KEEP EVERY SHARED KNOB IN LOCK-STEP WITH THE GAS CONFIG (cell, N, time
+# steps, blocks): the transition is decided by an energy difference of ~0.1%.
+#
+# ── Trial wavefunction ───────────────────────────────────────────────────────
+# The paper's solid trial: the same zero-energy pair factor times the Nosanow
+# factor exp(−α Σ_i |r_i − R_i|²), particle i on site i of a triangular
+# lattice.  `sites: triangular` generates the N sites commensurate with the
+# hexagonal cell, which needs a Loeschian N = p² + pq + q² (64 = 8²); the
+# walkers start on them.
+#
+# The Nosanow factor is not symmetric under exchange but it is positive, so
+# DMC has no node to fix and its exact τ → ∞ limit would be the bosonic ground
+# state.  Within a run the walkers stay in the crystalline basin; the energy is
+# that of the metastable crystal, as in the paper.  R_match and α are optimized
+# before DMC, as the paper does.
+#
+# Start values from a short VMC optimization (512 walkers, N = 64):
+# R_match = 0.0211, α = 1085, E/N = 23019 (VMC).  α corresponds to a
+# Lindemann ratio γ = √(1/(2α))/a = 0.32 of the trial (a the lattice spacing);
+# the paper's DMC value at the transition is γ = 0.230(6).
+#
+# ── Diagnostic ───────────────────────────────────────────────────────────────
+# The `density` estimator bins fractional coordinates under PBC, so its
+# 48 x 48 grid is the cell: 64 sharp peaks on a triangular pattern show the
+# projected state is still a crystal.  A blurred map means it melted and the
+# energy is not a crystal energy.
+# =============================================================================
+project:
+  name: dipoles_2d_solid_n256
+  seed: 20261024
+  log: true
+  output: true
+
+system:
+  lattice: { type: periodic, dimension: 2, shape: hexagonal, rs: 0.03526184897173477 }
+  particles:
+    - { name: d, group: dipoles, type: bosons, mass: 1.0, up: 64, down: 0,
+        initialization: uniform }
+
+wavefunction:
+  - jastrow: { type: zero_energy, pair: [dipoles, dipoles], matching_radius: 0.0211,
+               matching_radius_fixed: false }
+  - nosanow: { group: dipoles, sites: triangular, alpha: 1085.0, alpha_fixed: false }
+
+hamiltonian:
+  terms:
+    - { type: inverse_power, pair: [dipoles, dipoles], strength: 1.0, exponent: 3 }
+
+qmc:
+  # 1. R_match and α by the linear method.
+  - method: optimizer
+    type: linear
+    max_iterations: 10
+    random_walk: metropolis
+    device: cpu
+    threads: 0
+    samples: 1024
+    equilibration_blocks: 20
+    accumulation_blocks: 50
+    steps_per_block: 10
+    sub_steps: 2
+    time_step: 0.0003
+
+  # 2. Variational reference at the optimized parameters.
+  - method: vmc
+    random_walk: metropolis
+    device: cpu
+    threads: 0
+    samples: 1024
+    equilibration_blocks: 20
+    accumulation_blocks: 200
+    steps_per_block: 10
+    sub_steps: 2
+    time_step: 0.0003
+    estimators:
+      - { type: gofr, rmax: 0.13, n_bins: 65 }
+      - { type: density, rmax: 0.27, n_bins: 48 }
+
+  # 3-4. DMC at two time steps, the same as the gas.
+  - method: dmc
+    random_walk: drift_diffusion
+    device: cpu
+    threads: 0
+    samples: 1024
+    equilibration_blocks: 40
+    accumulation_blocks: 200
+    steps_per_block: 20
+    sub_steps: 2
+    time_step: 0.00001
+    estimators:
+      - { type: gofr, rmax: 0.13, n_bins: 65 }
+      - { type: sofk, kmax: 160.0 }   # k/√n up to 10: past the Bragg peak at ≈ 6.6
+      - { type: density, rmax: 0.27, n_bins: 48 }
+
+  - method: dmc
+    random_walk: drift_diffusion
+    device: cpu
+    threads: 0
+    samples: 1024
+    equilibration_blocks: 20
+    accumulation_blocks: 200
+    steps_per_block: 40
+    sub_steps: 2
+    time_step: 0.000005
+    estimators:
+      - { type: gofr, rmax: 0.13, n_bins: 65 }
+      - { type: sofk, kmax: 160.0 }   # k/√n up to 10: past the Bragg peak at ≈ 6.6
+      - { type: density, rmax: 0.27, n_bins: 48 }

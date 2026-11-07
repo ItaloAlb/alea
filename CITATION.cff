@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+# SPDX-License-Identifier: GPL-3.0-or-later
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata from this file."
+type: software
+title: "Alea"
+abstract: >-
+  Alea is a quantum Monte Carlo code for condensed matter calculations in
+  two- or three-dimensional materials. It contains variational Monte Carlo,
+  diffusion Monte Carlo and path-integral Monte Carlo drivers. It targets
+  excitonic complexes in transition-metal dichalcogenides, indirect excitons
+  in bilayers, electrons in moiré superlattices and the two-dimensional
+  electron gas.
+version: "0.1.0"
+date-released: "2026-11-06"
+license: GPL-3.0-or-later
+repository-code: "https://github.com/ItaloAlb/alea"
+authors:
+  - given-names: "Italo Carneiro"
+    family-names: "Albuquerque"
+    orcid: "https://orcid.org/0009-0007-3550-1787"
+    affiliation: "Universidade Federal do Ceará (UFC)"
+keywords:
+  - "quantum Monte Carlo"
+  - "diffusion Monte Carlo"
+  - "path-integral Monte Carlo"
+  - "excitons"
+  - "two-dimensional materials"
+  - "electron gas"

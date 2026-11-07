@@ -1,0 +1,61 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# ============================================================================
+# PERIODIC 2-D ELECTRON-HOLE GAS — a first system with Ewald summation.
+#
+# 8 electrons + 8 holes in a hexagonal cell.  The cell is neutral (Σq = 0),
+# the condition under which the k = 0 term of the reciprocal sum vanishes on
+# its own; a charged cell would need a neutralizing background.
+#
+# The Coulomb interaction is summed over ALL periodic images by Ewald, not
+# truncated at the minimum image.  A single `coulomb` term switches Ewald on
+# for the whole cell: the reciprocal half couples every charge through one
+# structure factor, so it does not split by group pair.
+#
+# The density is set by `rs`: A = N π rs² in 2-D.  This is the parameter held
+# fixed while N grows towards the thermodynamic limit.
+# ============================================================================
+project:
+  name: periodic_2d_ehgas
+  seed: 42
+  log: true
+  output: true
+
+system:
+  lattice:
+    type: periodic
+    dimension: 2
+    shape: hexagonal
+    rs: 2.0
+    ewald_tol: 1.0e-6
+  particles:
+    - { name: e, group: electron_group, type: fermions, mass: 1.0, charge: -1,
+        up: 8, down: 0, initialization: uniform }
+    - { name: h, group: hole_group, type: fermions, mass: 1.0, charge: +1,
+        up: 8, down: 0, initialization: uniform }
+
+wavefunction:
+  - jastrow: { type: padé, pair: [electron_group, hole_group], denominator: [0.3], is_fixed: [true],
+               can_flip_sign: [false] }
+  - jastrow: { type: padé, pair: [electron_group, electron_group], denominator: [0.4], is_fixed: [true],
+               can_flip_sign: [false] }
+  - jastrow: { type: padé, pair: [hole_group, hole_group], denominator: [0.4], is_fixed: [true],
+               can_flip_sign: [false] }
+
+hamiltonian:
+  terms:
+    - { type: coulomb, pair: [electron_group, hole_group], epsilon: 1.0 }
+
+qmc:
+  - method: vmc
+    random_walk: langevin
+    device: cpu
+    threads: 4
+    samples: 256
+    equilibration_blocks: 64
+    accumulation_blocks: 256
+    steps_per_block: 10
+    sub_steps: 2
+    time_step: 0.02

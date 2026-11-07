@@ -1,0 +1,93 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# 2D exciton with the spatial-density estimator: VMC + DMC on the same grid so
+# tools/plot_density.py can render the wavefunction density and the pure
+# extrapolation 2·ρ_DMC − ρ_VMC.
+#
+#   ./build/alea configs/tests/exciton_density.yaml
+#   python3 tools/plot_density.py results/exciton_density/<ts>/1_dmc.h5 \
+#           --radial --extrapolate results/exciton_density/<ts>/0_vmc.h5
+#
+# Note: the density grid is lab-frame, so a free complex's centre of mass
+# diffuses and smears the image (with equal masses ~75% of the density leaves
+# a [-8, 8]² grid over this run; a merely heavy hole instead collapses onto a
+# few ancestral positions through DMC branching genealogy).  The hole below is
+# frozen at the origin (`initialization: fixed` + huge mass, the lithium.yaml
+# nucleus pattern), so the electron heatmap is the exciton wavefunction around
+# the hole, ∫ρ dV ≈ 1 on the grid, and E_DMC → −2 (2D donor limit, μ = 1).
+# Alternatives that pin the density: a one-body potential (moire) or the fixed
+# holes of the coulomb_limit study.
+
+project:
+  name: exciton_density
+  seed: 42
+  log: true
+  output: true   # write one HDF5 results file per driver under results/<name>/<timestamp>/
+
+system:
+  lattice:
+    type: open
+    dimension: 2
+    L: 1.0
+
+  particles:
+    - name: e
+      group: electron_group
+      type: fermions
+      mass: 1.0
+      charge: -1
+      up: 1
+      down: 0
+      initialization: uniform
+
+    - name: h
+      group: hole_group
+      type: fermions
+      mass: 1.0e6    # inv_mass ≈ 0 → no drift/diffusion: frozen at the origin
+      charge: +1
+      up: 1
+      down: 0
+      initialization: fixed   # seed at the origin (lithium.yaml nucleus pattern)
+
+wavefunction:
+  - jastrow:
+      type: padé
+      pair: [electron_group, hole_group]
+
+hamiltonian:
+  terms:
+    - type: coulomb
+      pair: [electron_group, hole_group]
+      epsilon: 1.0
+
+qmc:
+  - method: vmc
+    random_walk: metropolis
+    device: cpu
+    threads: 0
+    samples: 512
+    equilibration_blocks: 128
+    accumulation_blocks: 256
+    steps_per_block: 20
+    sub_steps: 10
+    time_step: 0.01
+    estimators:
+      - { type: gofr,    rmax: 8.0, n_bins: 80 }
+      - { type: density, rmax: 8.0, n_bins: 64 }   # grid [-8, 8]², 64×64 cells
+
+  - method: dmc
+    random_walk: langevin
+    device: cpu
+    threads: 0
+    samples: 1024
+    equilibration_blocks: 128
+    accumulation_blocks: 256
+    steps_per_block: 20
+    sub_steps: 10
+    time_step: 0.01
+    # walkers_out: wk.h5   # optional: checkpoint cloud for plot_density.py --walkers
+    estimators:
+      - { type: gofr,    rmax: 8.0, n_bins: 80 }
+      - { type: density, rmax: 8.0, n_bins: 64 }

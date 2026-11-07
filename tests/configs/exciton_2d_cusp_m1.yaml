@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# 2D e-h exciton, equal masses m=1, linear Jastrow u(r)=c·r with c=-1.
+# Cusp satisfied (c = -m): E_L is constant → exact ground state.
+# Analytic: <E_L> = c²/m + 2c = -1.0  (variance ≈ 0).
+project: {name: exciton_2d_cusp_m1, seed: 42}
+system:
+  lattice: {type: open, dimension: 2, L: 1.0}
+  particles:
+    - {name: e, group: electron_group, type: fermions, mass: 1.0, charge: -1, up: 1, down: 0, initialization: uniform}
+    - {name: h, group: hole_group, type: fermions, mass: 1.0, charge: 1, up: 1, down: 0, initialization: uniform}
+wavefunction:
+  - jastrow: {type: padé, pair: [electron_group, hole_group] }
+hamiltonian:
+  terms:
+    - {type: coulomb, pair: [electron_group, hole_group], epsilon: 1.0}
+qmc:
+  # Zero variance at the cusp → exact for any sample size; kept small for speed.
+  - {method: vmc, random_walk: metropolis, device: cpu, threads: 0, samples: 32, equilibration_blocks: 5, accumulation_blocks: 10, steps_per_block: 10, sub_steps: 2, time_step: 0.05}

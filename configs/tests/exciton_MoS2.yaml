@@ -1,0 +1,57 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# ============================================================================
+# Monolayer MoS2 exciton — Rytova–Keldysh potential, Hartree atomic units.
+#
+# Two free particles (electron + hole) bound by the 2D Rytova–Keldysh
+# interaction.  The two-body ground-state energy E is the exciton (relative
+# motion) bound state; the binding energy is  E_b = -E  (×27.211386 → eV).
+#
+# Material parameters (suspended monolayer, ε = 1):
+#   effective masses  m_e = m_h = 0.50 m0
+#   screening length  r0 = 41.47 Å = 78.367 Bohr   (r0[Bohr] = r0[Å] / 0.529177)
+#   reference DMC binding energy ≈ 0.5514 eV
+#
+# Trial: ψ = exp(c·r), c = -sqrt(2 μ E_b) ≈ -0.100  (μ = m/2).  DMC projects the
+# nodeless ground state, so the energy is insensitive to c — it only sets the
+# variance / time-step bias.  For publication-grade accuracy, extrapolate E_b to
+# τ → 0 (run a few `time_step` values).
+# ============================================================================
+project:
+  name: exciton_MoS2
+  seed: 42
+  log: true
+  output: true
+
+system:
+  lattice: { type: open, dimension: 2, L: 1.0 }
+  particles:
+    - { name: e, group: electron_group, type: fermions, mass: 0.50, charge: -1, up: 1, down: 0, initialization: uniform }
+    - { name: h, group: hole_group,     type: fermions, mass: 0.50, charge: +1, up: 1, down: 0, initialization: uniform }
+
+wavefunction:
+  - jastrow:
+      type: padé
+      pair: [electron_group, hole_group]
+      numerator: [-0.02]
+      denominator: [0.2]
+      is_fixed: [true, true]
+      can_flip_sign: [false, true]
+
+hamiltonian:
+  terms:
+    - { type: rytova_keldysh, pair: [electron_group, hole_group], epsilon: 1.0, r0: 78.367 }
+
+qmc:
+  - method: dmc
+    random_walk: drift_diffusion
+    device: cpu
+    threads: 4                  # capped at 4 (machine is unstable under heavier load)
+    samples: 2048
+    equilibration_blocks: 256
+    accumulation_blocks: 512
+    steps_per_block: 10
+    sub_steps: 3
+    time_step: 0.05

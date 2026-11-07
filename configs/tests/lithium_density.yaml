@@ -1,0 +1,133 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Lithium (1s² 2s¹) with per-particle density grids: lithium.yaml plus
+# `{type: density, per_particle: true}` on the VMC and DMC stages, so each
+# electron gets its own histogram (density_electron_group_p0/p1/p2).
+#
+#   ./build/alea configs/tests/lithium_density.yaml
+#   python3 tools/plot_density.py results/lithium_density/<ts>/2_dmc.h5 --radial
+#
+# Spin channels (particle order: up electrons first, then down):
+#   p0, p1 = spin-up   → together sample |1s|² + |2s|² (labels exchangeable)
+#   p2     = spin-down → pure |1s|²
+# so ρ_2s ≈ (p0 + p1) − p2.  The trial "2s" is a nodeless diffuse Gaussian
+# (see lithium.yaml header), so expect a diffuse 2s shell without the radial
+# node of the true orbital.
+
+project:
+  name: lithium_density
+  seed: 42
+  log: true
+  output: true
+
+system:
+  lattice:
+    type: open
+    dimension: 3
+    L: 3.0            # electrons seeded uniformly in [-1.5, 1.5]^3 around the nucleus
+
+  particles:
+    # 3 electrons: 2 spin-up (1s↑, 2s↑) + 1 spin-down (1s↓) → indices [0,3).
+    - name: e
+      group: electron_group
+      type: fermions
+      mass: 1.0
+      charge: -1
+      up: 2
+      down: 1
+      initialization: uniform
+
+    # Clamped Born–Oppenheimer nucleus at the origin (the Slater orbital centers).
+    - name: Li
+      group: nucleus_group
+      type: fermions
+      mass: 1.0e6
+      charge: +3
+      up: 1
+      down: 0
+      initialization: fixed
+
+wavefunction:
+  # ψ_det = det(D_up)·det(D_down); up block {1s, 2s}, down block {1s}.
+  - slater:
+      group: electron_group
+      orbitals:
+        type: gaussian
+        centers: [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+        alphas:  [2.0, 0.12]      # tight 1s, diffuse 2s (distinct → non-singular det)
+
+  # e–n cusp Jastrow: a1 = -3 fixed by Kato, b1 optimizable.
+  - jastrow:
+      type: padé
+      pair: [electron_group, nucleus_group]
+      denominator: [1.0]
+      is_fixed: [false]
+      can_flip_sign: [false]
+
+  # e–e cusp Jastrow: antiparallel a1 = +0.5 fixed, b1 optimizable.
+  - jastrow:
+      type: padé
+      pair: [electron_group, electron_group]
+      denominator: [1.0]
+      is_fixed: [false]
+      can_flip_sign: [false]
+
+hamiltonian:
+  terms:
+    - type: coulomb
+      pair: [electron_group, nucleus_group]
+      epsilon: 1.0
+    - type: coulomb
+      pair: [electron_group, electron_group]
+      epsilon: 1.0
+
+qmc:
+  # 1) Optimize the Jastrow b1's at fixed nodes.
+  - method: optimizer
+    type: linear
+    random_walk: langevin
+    device: cpu
+    threads: 0
+    samples: 256
+    equilibration_blocks: 30
+    accumulation_blocks: 60
+    steps_per_block: 10
+    sub_steps: 1
+    time_step: 0.01
+    max_iterations: 10
+    energy_tol: 1e-5
+    num_shifts: 3
+    max_param_change: 0.3
+    shift_i: 0.1
+    shift_s: 0.0
+    rescale: 0.5
+
+  # 2) VMC with the optimized trial (|ψ_T|² densities, for extrapolation).
+  - method: vmc
+    random_walk: langevin
+    device: cpu
+    threads: 0
+    samples: 256
+    equilibration_blocks: 50
+    accumulation_blocks: 200
+    steps_per_block: 20
+    sub_steps: 2
+    time_step: 0.01
+    estimators:
+      - { type: density, rmax: 6.0, n_bins: 80, per_particle: true }
+
+  # 3) Fixed-node DMC (mixed-estimator densities).
+  - method: dmc
+    random_walk: langevin
+    device: cpu
+    threads: 0
+    samples: 512
+    equilibration_blocks: 100
+    accumulation_blocks: 200
+    steps_per_block: 20
+    sub_steps: 2
+    time_step: 0.005
+    estimators:
+      - { type: density, rmax: 6.0, n_bins: 80, per_particle: true }

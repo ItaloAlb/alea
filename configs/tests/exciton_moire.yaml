@@ -1,0 +1,69 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+project:
+  name: exciton_moire
+  seed: 42
+  log: true
+  output: false
+
+system:
+  lattice:
+    type: open
+    dimension: 2
+    L: 1.0
+
+  particles:
+    - name: e
+      group: electron_group
+      type: fermions
+      mass: 1.0
+      charge: -1
+      up: 1
+      down: 0
+      initialization: uniform
+
+    - name: h
+      group: hole_group
+      type: fermions
+      mass: 1.0
+      charge: +1
+      up: 1
+      down: 0
+      initialization: uniform
+
+wavefunction:
+  - jastrow:
+      type: padé
+      pair: [electron_group, hole_group]
+
+hamiltonian:
+  terms:
+    - type: coulomb
+      pair: [electron_group, hole_group]
+      epsilon: 1.0
+
+    # One-body moiré potential V(r) = V0 + 2 Ṽ Σ_i cos(g_i·r + φ).
+    # The three reciprocal vectors g_i are the first shell of a triangular moiré
+    # superlattice of period a_M (|g| = 4π/(√3 a_M), 120° apart, rotated by theta0).
+    # Each particle of the listed groups feels its own moiré potential.
+    - type: moire
+      group: [electron_group, hole_group]
+      V0: 0.0
+      Vtilde: 0.05
+      phi: -1.5708        # -π/2
+      a_M: 10.0           # moiré period (Bohr)
+      theta0: 0.0         # optional orientation (rad), default 0
+
+qmc:
+  - method: vmc
+    random_walk: metropolis
+    device: cpu
+    threads: 4
+    samples: 256
+    equilibration_blocks: 64
+    accumulation_blocks: 256
+    steps_per_block: 20
+    sub_steps: 2
+    time_step: 0.05

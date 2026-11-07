@@ -1,0 +1,97 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+project:
+  name: exciton
+  seed: 42
+  log: true
+  output: true   # write one HDF5 results file per driver under results/<name>/<timestamp>/
+
+system:
+  lattice:
+    type: open # type of lattices. open means no lattice. only supported type for now.
+    dimension: 2
+    L: 1.0
+
+  particles:
+    - name: e
+      group: electron_group
+      type: fermions
+      mass: 1.0
+      charge: -1
+      up: 1
+      down: 0
+      initialization: uniform
+
+    - name: h
+      group: hole_group
+      type: fermions
+      mass: 1.0
+      charge: +1
+      up: 1
+      down: 0
+      initialization: uniform
+
+wavefunction:
+  # u(r) = a₁r / (1 + b₁r).  a₁ is the Kato cusp, derived from the Hamiltonian
+  # (−1 here) and never set in the config.  b₁ = 0 makes ψ = e^{−r}, the exact
+  # e–h ground state (E_L = −1), so the optimizer below should drive b₁ to 0.
+  - jastrow:
+      type: padé
+      pair: [electron_group, hole_group] # name of the particle groups that this Jastrow factor applies to
+      denominator: [0.5]      # b₁..b_M  (`numerator:` would hold a₂..a_N)
+      is_fixed: [false]       # whether each coefficient is fixed during optimization
+      can_flip_sign: [true]   # whether each coefficient may change sign during optimization
+
+hamiltonian:
+  terms:
+    - type: coulomb
+      pair: [electron_group, hole_group]
+      epsilon: 1.0
+
+qmc:
+  - method: optimizer
+    type: linear
+    random_walk: metropolis
+    device: cpu
+    threads: 0                # use all cores
+    samples: 256              # total walkers, split across threads
+    equilibration_blocks: 128
+    accumulation_blocks: 512
+    steps_per_block: 10
+    sub_steps: 1
+    time_step: 0.1           # tau (small to avoid r≈0 divergence)
+    max_iterations: 30
+    energy_tol: 1e-6
+    num_shifts: 3               # candidate shifts per iteration
+    max_param_change: 0.3       # cap on relative parameter change
+    cost_increase_tol: 0.0      # tolerance for cost-function increase
+    target_shift_i: -1.0        # target shift (-1 = disabled)
+    max_failed_attempts: 5      # max retries before aborting iteration
+    shift_i: 0.1                # starting identity shift
+    shift_s: 0.0                # starting overlap shift
+    rescale: 0.5                # step-size damping factor
+
+  # - method: vmc
+  #   random_walk: metropolis # type of random walk used to the new proposed move. Options are: "langevin" and "metropolis".
+  #   device: cpu # for now, only cpu execution should be avaiable, but gpu support is planned for the future.
+  #   threads: 0  # use all available CPU cores
+  #   samples: 512 # number of walkers used in the WalkerEnsemble.
+  #   equilibration_blocks: 512 # number of blocks used for equilibration, dont contribute to the statistics.
+  #   accumulation_blocks: 2048 # number of blocks used to accumulate statistics and the total number of samples.
+  #   steps_per_block: 100 # number of steps per block, used to evaluate the mean of each block.
+  #   sub_steps: 10 # number of sub-steps: steps that dont contribute to the statistics but are used to decorrelate the samples.
+  #   time_step: 0.01
+
+  - method: dmc
+    random_walk: langevin # type of random walk used to the new proposed move. Options are: "langevin" and "metropolis".
+    device: cpu # for now, only cpu execution should be avaiable, but gpu support is planned for the future.
+    threads: 0  # use all available CPU cores
+    samples: 2048 # number of walkers used in the WalkerEnsemble.
+    equilibration_blocks: 512 # number of blocks used for equilibration, dont contribute to the statistics.
+    accumulation_blocks: 512 # number of blocks used to accumulate statistics and the total number of samples.
+    steps_per_block: 100 # number of steps per block, used to evaluate the mean of each block.
+    sub_steps: 10 # number of sub-steps: steps that dont contribute to the statistics but are used to decorrelate the samples.
+    time_step: 0.01
+    

@@ -1,0 +1,59 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# ============================================================================
+# Bilayer-MoS2 exciton — SCREENED-COULOMB potential from a multilayer dielectric
+# stack (fast-screened-coulomb library, ETM method; Cavalcante PRB 97, 125427).
+# Hartree atomic units (the library returns Rydberg; the term applies the ½
+# Ry→Hartree factor so it is consistent with the kinetic/Coulomb/Keldysh terms).
+#
+# Stack (bottom → top): vacuum / MoS2 / MoS2 / vacuum, ε = [1, 14, 14, 1].
+# Interfaces at z = [-3, 3, 9] Bohr; the source (charge) layer 2 is centred at the
+# origin and spans z ∈ [-3, 3].  target_layer: 0 → direct exciton (e and h in the
+# same layer), so z_offset is unused.  This is the library's documented bilayer
+# example and is the multilayer generalization of `rytova_keldysh` — try the
+# single-layer `exciton_MoS2.yaml` for the Rytova–Keldysh special case.
+#
+# Trial: ψ = exp(c·r); DMC projects the nodeless ground state, so the energy is
+# insensitive to c (it only sets variance / time-step bias).  Extrapolate E_b to
+# τ → 0 for publication-grade accuracy.
+# ============================================================================
+project:
+  name: exciton_screened_bilayerMoS2
+  seed: 42
+  log: true
+  output: true
+
+system:
+  lattice: { type: open, dimension: 2, L: 1.0 }
+  particles:
+    - { name: e, group: electron_group, type: fermions, mass: 0.50, charge: -1, up: 1, down: 0, initialization: uniform }
+    - { name: h, group: hole_group,     type: fermions, mass: 0.50, charge: +1, up: 1, down: 0, initialization: uniform }
+
+wavefunction:
+  - jastrow:
+      type: padé
+      pair: [electron_group, hole_group]
+
+hamiltonian:
+  terms:
+    - type: screened_coulomb
+      pair: [electron_group, hole_group]
+      epsilons:   [1.0, 14.0, 14.0, 1.0]   # per-layer ε, bottom → top
+      interfaces: [-3.0, 3.0, 9.0]          # N-1 interface positions (Bohr)
+      source_layer: 2                       # charge layer c (1-based)
+      target_layer: 0                       # 0 → direct exciton (t = c)
+      fit_tol: 0.1                          # % sampled value and force targets
+
+qmc:
+  - method: dmc
+    random_walk: drift_diffusion
+    device: cpu
+    threads: 4
+    samples: 2048
+    equilibration_blocks: 256
+    accumulation_blocks: 512
+    steps_per_block: 10
+    sub_steps: 3
+    time_step: 0.05

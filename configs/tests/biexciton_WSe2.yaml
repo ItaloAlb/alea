@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# ============================================================================
+# Monolayer WSe2 biexciton (XX = 2e + 2h) — Rytova–Keldysh, Hartree atomic units.
+#
+# All spins paired (e↑e↓, h↑h↓) → nodeless spatial ground state → DMC is exact.
+# Biexciton binding (XX → X + X dissociation):  E_b(XX) = 2·E(X) − E(XX) > 0.
+#
+# TRIAL — the binding hinges on LOCALIZING the 4-body complex so DMC projects the
+# bound biexciton instead of leaking into two free excitons (cf. the thesis
+# "Application of QMC to Excitonic and Electronic Systems", Eqs. 3.4–3.6, p.45-46).
+# The e-h Padé carries a NEGATIVE r² numerator term (a2<0):
+#       u_eh(r) = (a1 r + a2 r²)/(1 + b1 r)  →  (a2/b1) r → −∞,
+# so ψ decays at large e-h separation (thesis: "wave function small where e-h
+# separations are large; two separate excitons emerge when c6 or c8 → 0").  The
+# parameters are fixed (not variance-optimized — that drifts to the dissociated
+# state, thesis p.46); the ground state then emerges at the DMC level.
+#
+#   m_e = m_h = 0.34 m0 ;  r0 = 45.11 Å = 85.245 Bohr ;  published DMC E_b ≈ 20.0 meV
+#   this implementation: E_b ≈ 21.1 meV (2048 walkers, τ=0.05, single seed)
+#   Ref: Mayers, Berkelbach, Hybertsen & Reichman, PRB 92, 161404(R) (2015).
+# ============================================================================
+project: { name: biexciton_WSe2, seed: 42, log: true, output: true }
+
+system:
+  lattice: { type: open, dimension: 2, L: 1.0 }
+  particles:
+    - { name: e, group: e_grp, type: fermions, mass: 0.34, charge: -1, up: 1, down: 1, initialization: uniform }
+    - { name: h, group: h_grp, type: fermions, mass: 0.34, charge: +1, up: 1, down: 1, initialization: uniform }
+
+wavefunction:
+  # e-h: localizing Padé — a1 (short-range attraction, from exciton ref) + a2<0 (r² localizer).
+  - jastrow: { type: padé, pair: [e_grp, h_grp], numerator: [-0.0008], denominator: [0.02], is_fixed: [true, true], can_flip_sign: [false, true] }
+  # e-e / h-h: short-range repulsion (correlation hole).
+  - jastrow: { type: padé, pair: [e_grp, e_grp], denominator: [0.634127, 0.0841067], is_fixed: [true, true, true], can_flip_sign: [false, true, true], numerator: [0.0991078] }
+  - jastrow: { type: padé, pair: [h_grp, h_grp], denominator: [1.10839, 0.259228], is_fixed: [true, true, true], can_flip_sign: [false, true, true], numerator: [0.298816] }
+
+hamiltonian:
+  terms:
+    - { type: rytova_keldysh, pair: [e_grp, h_grp], epsilon: 1.0, r0: 85.245 }
+    - { type: rytova_keldysh, pair: [e_grp, e_grp], epsilon: 1.0, r0: 85.245 }
+    - { type: rytova_keldysh, pair: [h_grp, h_grp], epsilon: 1.0, r0: 85.245 }
+
+qmc:
+  - { method: dmc, random_walk: drift_diffusion, threads: 0, samples: 2048, equilibration_blocks: 512, accumulation_blocks: 1024, steps_per_block: 10, sub_steps: 3, time_step: 0.05 }

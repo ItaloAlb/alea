@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# ============================================================================
+# Fixed-phase DMC in a magnetic field: one electron in a parabolic dot.
+#
+# m = 0.7, q = −1, ω₀ = 0.5, B = 1.3  →  ω_c = qB/m = −1.857142857,
+# Ω = √(ω₀² + ω_c²/4) = 0.9973...,  exact l = −1 level  E = 2Ω + ω_c/2.
+#
+# The trial is the l = −1 Fock–Darwin orbital with a DELIBERATELY wrong width
+# (β = 0.4 instead of mΩ ≈ 0.698).  Its phase −θ is exact — the Fock–Darwin
+# state of that angular momentum has it — so fixed-phase DMC must project the
+# modulus to the exact state and return E exactly (up to time step), while VMC
+# on the wrong width sits above it.  This exercises the vector potential in the
+# local energy, the phase planes, drift and branching together.
+# ============================================================================
+project:
+  name: fock_darwin_dot
+  seed: 20260929
+  log: false
+  output: false
+
+system:
+  lattice: { type: open, dimension: 2, L: 1.0 }
+  particles:
+    - { name: e, group: electrons, type: fermions, mass: 0.7, charge: -1, up: 1, down: 0 }
+
+wavefunction:
+  - slater: { group: electrons, orbitals: { type: fock_darwin, l: [-1], beta: 0.4 } }
+
+hamiltonian:
+  terms:
+    - { type: harmonic_trap, omega: 0.5 }
+    - { type: magnetic_field, B: 1.3 }
+
+qmc:
+  - method: vmc
+    random_walk: metropolis
+    device: cpu
+    threads: 2
+    samples: 256
+    equilibration_blocks: 20
+    accumulation_blocks: 100
+    steps_per_block: 10
+    sub_steps: 2
+    time_step: 1.0
+
+  - method: dmc
+    random_walk: drift_diffusion
+    device: cpu
+    threads: 2
+    samples: 512
+    equilibration_blocks: 40
+    accumulation_blocks: 100
+    steps_per_block: 10
+    sub_steps: 2
+    time_step: 0.01

@@ -1,0 +1,60 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# ============================================================================
+# Twisted-boundary 2-D electron gas: the end-to-end fixed-phase test.
+#
+# Small polarized HEG (N = 3, hexagonal cell, rs = 2) with the twist set by the
+# test (lattice.twist is overridden in code; the value here is only a default).
+# Away from Γ the plane-wave determinant is complex, so:
+#   • VMC must report ⟨Im E_L⟩ consistent with 0 (Hermiticity), and
+#   • fixed-phase DMC at θ and −θ must agree: ψ_{−θ} = ψ_θ*, so |ψ|, ∇ln|ψ| and
+#     |∇φ|² — everything the walk and Re E_L see — are identical.
+# The Coulomb term becomes a cell-wide Ewald sum, so this also exercises the
+# phase planes alongside the long-range machinery and the Jastrow.
+# ============================================================================
+project:
+  name: heg2d_twisted
+  seed: 20260929
+  log: false
+  output: false
+
+system:
+  lattice: { type: periodic, dimension: 2, shape: hexagonal, rs: 2.0, twist: [0.2, 0.1] }
+  particles:
+    - { name: e, group: electron_group, type: fermions, mass: 1.0, charge: -1,
+        up: 3, down: 0, initialization: uniform }
+
+wavefunction:
+  - slater: { group: electron_group, orbitals: { type: plane_wave } }
+  # Same-spin (P-wave) cusp Γ = 1/3 in 2-D: u = a r / (1 + b r), a = 1/3.
+  - jastrow: { type: padé, pair: [electron_group, electron_group], denominator: [0.5], is_fixed: [true],
+               can_flip_sign: [false] }
+
+hamiltonian:
+  terms:
+    - { type: coulomb, pair: [electron_group, electron_group], epsilon: 1.0 }
+
+qmc:
+  - method: vmc
+    random_walk: metropolis
+    device: cpu
+    threads: 2
+    samples: 256
+    equilibration_blocks: 20
+    accumulation_blocks: 100
+    steps_per_block: 10
+    sub_steps: 2
+    time_step: 1.0
+
+  - method: dmc
+    random_walk: drift_diffusion
+    device: cpu
+    threads: 2
+    samples: 512
+    equilibration_blocks: 20
+    accumulation_blocks: 80
+    steps_per_block: 10
+    sub_steps: 2
+    time_step: 0.05

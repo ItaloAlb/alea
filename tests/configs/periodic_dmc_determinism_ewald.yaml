@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# ============================================================================
+# Race detector for the Ewald paths under DMC crowd parallelism.
+#
+# Same idea as periodic_dmc_determinism.yaml, for the state that only exists
+# when the cell has an Ewald term: the EwaldTerm's thread_local exponential
+# ladders, and the image-summed Padé's per-walker ρ(k) caches plus its
+# thread_local phase scratch (wavefunction/periodic_pair_sum.h).  All of it is
+# race-free only because concurrent crowds touch disjoint walker ranges — an
+# argument, which this run turns into a check: two runs at this seed and
+# thread count must agree BIT FOR BIT.
+#
+# A neutral e–h gas with Coulomb, so one Ewald term couples every pair and the
+# Padés are summed over images.  Their cusps are derived from the Hamiltonian,
+# so the local energy stays finite at contact and nothing blows up to mask the
+# comparison.
+# ============================================================================
+project:
+  name: periodic_dmc_determinism_ewald
+  seed: 20261001
+  log: false
+  output: false
+
+system:
+  lattice: { type: periodic, dimension: 2, shape: hexagonal, rs: 1.5 }
+  particles:
+    - { name: e, group: electron_group, type: fermions, mass: 1.0, charge: -1,
+        up: 3, down: 0, initialization: uniform }
+    - { name: h, group: hole_group, type: fermions, mass: 1.0, charge: +1,
+        up: 3, down: 0, initialization: uniform }
+
+wavefunction:
+  - jastrow: { type: padé, pair: [electron_group, hole_group], denominator: [1.0], is_fixed: [true] }
+  - jastrow: { type: padé, pair: [electron_group, electron_group], denominator: [1.0], is_fixed: [true] }
+
+hamiltonian:
+  terms:
+    - { type: coulomb, pair: [electron_group, hole_group], epsilon: 1.0 }
+
+qmc:
+  - method: dmc
+    random_walk: drift_diffusion
+    device: cpu
+    threads: 4
+    samples: 256
+    equilibration_blocks: 8
+    accumulation_blocks: 16
+    steps_per_block: 5
+    sub_steps: 2
+    time_step: 0.02

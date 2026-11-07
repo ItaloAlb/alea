@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Monolayer MoSe2 negative trion (X^-): Rytova–Keldysh potential, Hartree atomic units.
+# 2 electrons (opposite spins, nodeless spatial singlet) + 1 hole, net charge -1.
+# r0[Bohr] = r0[Å] / 0.529177;  masses in m0;  trion binding = E(exciton) - E(trion).
+#
+# Jastrow parameters were obtained by linear-method optimization of this trial
+# (e-h and e-e Padé u(r)=a1 r/(1+b1 r)) against the trion Hamiltonian; the
+# exciton-tuned exp(c r) is a poor trion trial (E_var ≈ 0, huge variance) and
+# leaves a large, uncancelled DMC time-step bias.  The optimized trial binds the
+# trion variationally with low variance, so DMC at τ = 0.05 reproduces the
+# binding to ~1 meV.  Optimized: E_VMC ≈ -0.01832 Ha, E_DMC ≈ -0.018724 Ha.
+project: { name: MoSe2_trion, seed: 42, log: false, output: false }
+system:
+  lattice: { type: open, dimension: 2, L: 1.0 }
+  particles:
+    - { name: e, group: e_grp, type: fermions, mass: 0.54, charge: -1, up: 1, down: 1, initialization: uniform }
+    - { name: h, group: h_grp, type: fermions, mass: 0.54, charge: +1, up: 1, down: 0, initialization: uniform }
+wavefunction:
+  - jastrow: { type: padé, pair: [e_grp, h_grp], denominator: [0.0660339, -7.95648e-05], is_fixed: [true, true, true], can_flip_sign: [false, true, true], numerator: [-0.0022591] }
+  - jastrow: { type: padé, pair: [e_grp, e_grp], denominator: [0.607249, 0.0538285], is_fixed: [true, true, true], can_flip_sign: [false, true, true], numerator: [0.12474] }
+hamiltonian:
+  terms:
+    - { type: rytova_keldysh, pair: [e_grp, h_grp], epsilon: 1.0, r0: 97.718 }
+    - { type: rytova_keldysh, pair: [e_grp, e_grp], epsilon: 1.0, r0: 97.718 }
+qmc:
+  - method: dmc
+    random_walk: drift_diffusion
+    threads: 1                 # single-thread: deterministic + avoids parallel-DMC fragility
+    samples: 512
+    equilibration_blocks: 256
+    accumulation_blocks: 2048
+    steps_per_block: 10
+    sub_steps: 3
+    time_step: 0.05

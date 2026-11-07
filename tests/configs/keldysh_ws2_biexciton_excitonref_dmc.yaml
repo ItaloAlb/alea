@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Monolayer WS2 exciton REFERENCE for the biexciton binding test: same Rytova-Keldysh
+# physics and the SAME localizing e-h Pade (a2<0) as keldysh_ws2_biexciton_dmc.yaml,
+# at identical tau / statistics, so the residual systematics cancel in 2*E(X)-E(XX).
+project: { name: WS2_biexciton_excitonref, seed: 42, log: false, output: false }
+system:
+  lattice: { type: open, dimension: 2, L: 1.0 }
+  particles:
+    - { name: e, group: e_grp, type: fermions, mass: 0.32, charge: -1, up: 1, down: 0, initialization: uniform }
+    - { name: h, group: h_grp, type: fermions, mass: 0.32, charge: +1, up: 1, down: 0, initialization: uniform }
+wavefunction:
+  - jastrow: { type: padé, pair: [e_grp, h_grp], numerator: [-0.0008], denominator: [0.02], is_fixed: [true, true], can_flip_sign: [false, true] }
+hamiltonian:
+  terms:
+    - { type: rytova_keldysh, pair: [e_grp, h_grp], epsilon: 1.0, r0: 71.601 }
+qmc:
+  - { method: dmc, random_walk: drift_diffusion, threads: 0, samples: 2048, equilibration_blocks: 512, accumulation_blocks: 1024, steps_per_block: 10, sub_steps: 3, time_step: 0.05 }

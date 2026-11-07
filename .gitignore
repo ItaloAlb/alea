@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Build directories
+build/
+build-*/
+cmake-build-*/
+out/
+_deps/
+
+# CMake and generator files
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+install_manifest.txt
+CTestTestfile.cmake
+compile_commands.json
+Makefile
+*.ninja
+.ninja_deps
+.ninja_log
+
+# Compiled output
+*.o
+*.a
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Editors and operating systems
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Simulation output and local runs (results/<project>/<timestamp>/, figures)
+results/
+runs/
+*.h5
+*.hdf5
+*.dat
+*.out
+*.log
+*.pdf
+*.png

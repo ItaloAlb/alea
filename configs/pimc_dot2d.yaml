@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Two distinguishable particles in a 2D parabolic quantum dot, B=0.
+# H = sum_i[-laplacian_i/2 + r_i^2/2] + 1/|r1-r2|, Hartree units.
+# Repulsive Coulomb + confinement: a normalizable interacting benchmark.
+# CM separates; the validation battery checks it against an independent radial ED.
+# Taut & Eschrig, arXiv:0911.2400, sections 2.1-2.2.
+# Ground E=3 is analytic; at beta=2 compare with the THERMAL ED trace.
+# Primitive finite-tau bias is outside the statistical error bars.
+# No exchange: this is not the finite-temperature fermionic trace.
+project:
+  name: pimc_dot2d
+  seed: 20261003
+  output: false
+  log: false
+
+system:
+  lattice: { type: open, dimension: 2, L: 3.0 }
+  particles:
+    - { name: p, group: particles, type: boltzmannon, mass: 1.0, charge: -1, up: 2, down: 0 }
+
+hamiltonian:
+  terms:
+    - { type: harmonic_trap, omega: 1.0 }
+    - { type: coulomb, pair: [particles, particles], epsilon: 1.0 }
+
+qmc:
+  - method: pimc
+    threads: 2
+    samples: 64
+    beta: 2.0
+    time_step: 0.25
+    equilibration_blocks: 200
+    accumulation_blocks: 800
+    steps_per_block: 20
+    sub_steps: 2
+    moves:
+      - bisection: { levels: 2, weight: 1.0 }
+      - centroid: { step: 0.5, weight: 1.0 }
+    energy: thermodynamic

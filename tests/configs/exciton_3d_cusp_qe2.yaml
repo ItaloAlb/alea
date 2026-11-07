@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# 3D e-h exciton, m=1, q_e=-2, q_h=+1, epsilon=1, linear Jastrow u(r)=c·r with c=-1.
+# Cusp satisfied in 3D (c = m·q_e·q_h/(2ε) = 1·(-2)/(2) = -1): E_L constant → exact.
+# Analytic: <E_L> = -m·(q_e·q_h)²/(4ε²) = -1·4/4 = -1.0 (variance ≈ 0).
+project: {name: exciton_3d_cusp_qe2, seed: 42}
+system:
+  lattice: {type: open, dimension: 3, L: 1.0}
+  particles:
+    - {name: e, group: electron_group, type: fermions, mass: 1.0, charge: -2, up: 1, down: 0, initialization: uniform}
+    - {name: h, group: hole_group, type: fermions, mass: 1.0, charge: 1, up: 1, down: 0, initialization: uniform}
+wavefunction:
+  - jastrow: {type: padé, pair: [electron_group, hole_group] }
+hamiltonian:
+  terms:
+    - {type: coulomb, pair: [electron_group, hole_group], epsilon: 1.0}
+qmc:
+  - {method: vmc, random_walk: metropolis, device: cpu, threads: 0, samples: 32, equilibration_blocks: 5, accumulation_blocks: 10, steps_per_block: 10, sub_steps: 2, time_step: 0.05}

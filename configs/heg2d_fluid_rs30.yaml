@@ -1,0 +1,308 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# =============================================================================
+# 2-D POLARIZED ELECTRON GAS — FLUID PHASE — rs = 30, N = 61
+#
+# One half of a Wigner-crystallization calculation.  Run this together with
+# `heg2d_crystal_rs30.yaml`, which is the SAME system with the same cell, the
+# same Hamiltonian and the same statistics, differing only in the phase its
+# trial wavefunction describes.  The physics comes out of the DIFFERENCE of the
+# two fixed-node DMC energies:
+#
+#     E_fluid(rs) - E_crystal(rs) > 0  ⇒  the crystal is the ground state
+#
+# and the density where that difference changes sign is the crystallization
+# condition.  Reference: Tanatar & Ceperley, Phys. Rev. B 39, 5005 (1989) put it
+# at rs = 37 ± 5 with plane-wave nodes (rs = 31 ± 1 with backflow, Drummond &
+# Needs, PRL 102, 126402 (2009) — backflow is not implemented here, so TC89 is
+# the like-for-like comparison).
+#
+# At rs = 30 the literature therefore predicts the FLUID still lower, by a small
+# margin.  That is the falsifiable statement this pair of runs tests.
+#
+# ── UPDATE 2026-09-28 (supersedes the τ / block / cost notes below) ──────────
+# • The first rs = 30 DMC runs (2026-09-25) are INVALID: population-control
+#   limit cycle (old `feedback`), no projection — the fluid "DMC" energy equals
+#   its VMC energy. Only their VMC numbers stand. Also the crystal config had
+#   been left at rs: 40.0 by mistake; fixed.
+# • DMC is now τ = 2, 1, 0.5 in BOTH phases, 80 blocks each of 400 imaginary-
+#   time units. At rs = 40 the crystal's time-step bias did not cancel against
+#   the fluid's (it flipped the sign of ΔE between τ = 2 and 1), so three τ
+#   are needed for a τ → 0 fit per phase.
+# • TC89 expectation (Tables II/III, N → ∞, Ha/e): polarized fluid
+#   -0.031895(5), crystal -0.031880(5) ⇒ ΔE ≈ -15 μHa/e (fluid wins, ≈ -0.9
+#   mHa total). NOTE the UNPOLARIZED fluid, -0.03196(1), is lower than both:
+#   at rs = 30 a polarized-fluid vs crystal comparison is not the true ground
+#   state competition.
+# • Cost ≈ same as the rs = 60 pair: ≈ 12 h fluid, ≈ 20 h crystal (128 cores).
+#
+# ── Units ────────────────────────────────────────────────────────────────────
+# Hartree atomic units: mass 1, charge ∓1, so energies are Ha and lengths are
+# Bohr.  Multiply by 2 for Ry, the unit most of the 2-D HEG literature uses.
+# The static triangular-lattice reference is -1.106103/rs Ha = -2.212206/rs Ry.
+#
+# ── Why N = 61 ───────────────────────────────────────────────────────────────
+# N must simultaneously
+#   • close a shell of the cell's reciprocal lattice (or the plane-wave
+#     determinant is degenerate and its energy depends on an arbitrary pick
+#     among equivalent k-points — the code refuses an open shell), and
+#   • be a Loeschian number p²+pq+q² (or no triangular crystal tiles the cell,
+#     and the other half of the comparison cannot be built).
+# The sizes that do both are 1, 7, 13, 19, 31, 37, 43, 61, 73, 91, ...  (55 and
+# 85 close a shell but are not Loeschian).  61 is the largest that stays cheap.
+# Finite size is the DOMINANT systematic in the crossing: rerun the pair at
+# N = 37 (configs are otherwise identical) to see how much it moves.
+#
+# ── Trial wavefunction ───────────────────────────────────────────────────────
+# ψ = det{cos/sin(k_i·r_j)} · exp(Σ_{i<j} u(r_ij))
+#
+# The determinant fixes the nodes (free-particle nodes — exactly what TC89 used).
+# The Drummond-Towler-Needs u-term carries the correlation hole; its Kato cusp is
+# DERIVED, not configured: since the determinant already vanishes linearly when
+# two same-spin electrons meet, the pair is in a P-wave and Γ = 2μR/(2ℓ+d−1) with
+# ℓ = 1, i.e. Γ = 1/3 in 2-D, not the S-wave value 1.
+#
+# u(r) = (r−L)³·Θ(L−r)·[α0 + α1 r],  α1 pinned by Γ.  α0 and L were tuned by a
+# VMC scan at THIS rs and THIS N.  Rather than α0 itself (whose natural scale is
+# ~1e-6, which is what stalled the linear optimizer at iteration 1), the scan
+# varies c in α0 = c·Γ/(3L²): c = 1 is exactly where α1 changes sign, and below it
+# the polynomial grows a positive hump, u stops being monotone and the kinetic
+# energy explodes.  E/N in Ha:
+#
+#   c (at L = 3.5 rs)                     L/rs (at c = 0.8)
+#     0.15   +0.219615   u not monotone     2.0   -0.030503
+#     0.30   +0.144164   u not monotone     3.5   -0.031617  <-- used here
+#     0.45   -0.028351                      5.0   -0.031219
+#     0.60   -0.031348                      6.5   -0.030818
+#     0.80   -0.031617  <-- used here
+#     1.00   -0.031272
+#
+# Both optima are bracketed on either side.  L stays well inside the Wigner-Seitz
+# inradius (223.1), as it must: beyond it the minimum image is ambiguous and u
+# would be discontinuous.
+#
+# Note what this tuning does and does not buy.  The Jastrow is nodeless and
+# positive, so it CANNOT change the fixed-node DMC energy at all — it only buys
+# variance and a smaller time-step bias.  The crystal's α is the opposite case:
+# it sits inside the determinant, so it moves the nodes and does change the
+# answer.  That asymmetry is why the crystal config spends more words on α than
+# this one spends on α0.
+#
+# ── Hamiltonian ──────────────────────────────────────────────────────────────
+# A single `coulomb` term in a periodic cell becomes ONE cell-wide Ewald term
+# (Natoli-Ceperley optimized breakup), summing 1/r over every periodic image.
+# The cell is charged (61 electrons, no holes), so the uniform neutralizing
+# background is what makes the energy exist at all; it contributes the constant
+# -(1/2)Q²·sr_k0.  ewald_tol was scanned: 1e-4, 1e-6 and 1e-8 all return
+# -0.031614(3) Ha/electron in equal wall time, so it is neither a cost driver nor
+# a systematic here.
+#
+# ── Statistics: why the blocks are long ──────────────────────────────────────
+# steps_per_block · sub_steps · time_step is the imaginary time per block, and it
+# must exceed the system's relaxation time or the reported error bar is a lie
+# (block averages stay correlated and the standard error of the block mean
+# underestimates the true one — measured at 3x in this code).  The slowest mode
+# here is the long-wavelength plasmon at k_min = 2π/a = 0.0141:
+#
+#     ω = sqrt(2π n k_min) = 5.6e-3  ⇒  t_relax ≈ 180
+#
+# Every DMC block below is 400 imaginary-time units, ≈ 2 t_relax (which is why
+# steps_per_block differs between the two τ), and there are 40 of them — enough blocks for the error bar itself to be meaningful.
+#
+# ── Time step: why τ = 2 and not the τ ~ 0.01 of a molecular calculation ─────
+# τ only means anything against the system's own scales, and at rs = 30 they are
+# large.  For τ = 2:
+#   • diffusion step  sqrt(τ/m) = 1.41 Bohr, against rs = 30 and a site spacing
+#     of 57 — i.e. τ/rs² = 0.0022, and the criterion is sqrt(τ) << rs;
+#   • branching       τ·σ(E_L) = 2 · 0.0195 = 0.039, so branch weights fluctuate
+#     by ±4%;
+#   • acceptance      0.997 measured at τ = 4, 0.999 at τ = 1.
+# The natural scale here is τ ~ rs², not τ ~ 1.  The same τ at rs = 1 would be
+# absurd: σ(E_L) is ~100x larger and the length scale 30x smaller.
+#
+# That is an argument, not a measurement, and the measurement is NOT clean.  A
+# short exploratory pair (240 imaginary-time units of equilibration, far too
+# little) gave E/N = -0.031423 at τ = 4 and -0.031837 at τ = 1 — 4.1e-4
+# Ha/electron apart, which is 40x the fluid/crystal gap this calculation has to
+# resolve.  The τ = 4 point also came in ABOVE its own VMC energy, which is the
+# signature of unfinished projection rather than of time-step bias, so the honest
+# reading is "equilibration, probably, but not demonstrated".  τ = 4 was dropped
+# for that reason: the pair below is τ = 2 and τ = 1, which costs only ~19% more
+# (τ = 1 already dominated the budget) and puts both points in a safer regime.
+#
+# TWO time steps, always, so the bias is measured rather than assumed.  If ΔE(2)
+# and ΔE(1) agree inside their error bars, quote ΔE and stop.  If they do not,
+# add a third driver at time_step: 0.5 with steps_per_block: 400 (same 400 units
+# per block) before believing any sign.
+#
+# ── How to read the pair (this is not one number, it is a difference) ────────
+# Do NOT quote either phase's energy on its own.  The per-phase time-step and
+# population-control biases are far larger than the fluid/crystal gap, and the
+# gap is the only thing this calculation can resolve.  What to compute:
+#
+#     ΔE(τ) = E_fluid(τ) - E_crystal(τ)     at τ = 2 and at τ = 1
+#
+#   • ΔE(2) and ΔE(1) agree inside their error bars  ⇒  the bias is common to
+#     both phases and cancels; quote ΔE and its sign.  ΔE > 0 means the crystal
+#     has won at this density.
+#   • They disagree  ⇒  the bias does NOT cancel (the two phases have different
+#     nodal surfaces, so there is no reason it must).  Then a third, smaller τ is
+#     needed before the sign means anything; copy the τ = 1 driver with
+#     time_step: 0.5 and steps_per_block: 400 (same 400 units per block).
+#
+# VMC references measured while tuning these guides, for a sanity floor — each
+# DMC must come in BELOW its own phase's VMC number:
+#     fluid    E/N = -0.031617(3) Ha        crystal  E/N = -0.031574(3) Ha
+# (VMC has the fluid lower by 4.3e-5, but a VMC comparison is a comparison of
+# guide quality, not of phases: only the DMC difference is physics.)
+#
+# ── What to check before trusting the output ─────────────────────────────────
+# 1. DMC energy below the VMC energy of the SAME phase.  Above it means the run
+#    did not equilibrate, not that the phase is unstable.
+# 2. Acceptance: VMC ≈ 0.46 (that is what time_step 150 was tuned for), DMC
+#    ≥ 0.99.
+# 3. Crystal only, and this is the important one: the `density` grid must still
+#    show 61 sharp peaks on a triangular pattern.  Measured on the tuning runs,
+#    with the grid normalised to sum 1:
+#       VMC   61 local maxima above half-max, max/mean 4.2
+#       DMC   max/mean ≈ 13   (the projected state is MORE localized than the
+#                              guide, so a blurred map is a melted crystal and
+#                              the energy is then not a crystal energy)
+# 4. Error bars: the printed ± comes from block means, and it is honest only if
+#    the blocks are longer than the relaxation time.  Re-run one point with
+#    steps_per_block doubled and accumulation_blocks halved: the ± must not grow.
+#    (In this code it grew 3x when the blocks were too short.)
+#
+# ── Known limitation: α is optimized in VMC, not DMC ────────────────────────
+# The crystal's α sets the nodal surface, so strictly it should be chosen by
+# minimising the DMC energy.  It was chosen by minimising the VMC energy (what
+# TC89 did too).  The mixed density above says the projected crystal is more
+# localized than the guide, i.e. the DMC optimum sits at LARGER α than the VMC
+# one — which would lower the crystal energy further and move the crossing to
+# smaller rs.  The VMC scan is flat to 5e-5 Ha/electron between 0.45 and 0.70 of
+# the Einstein estimate, so if the measured ΔE lands inside a few 1e-5, redo the
+# crystal at α · 1.3 before believing the sign.
+#
+# ── Measured cost (extrapolated from timed 4-thread runs of these exact
+#    configs at reduced sampling: 264 walker-energy evals/s fluid,
+#    142/s crystal) ─────────────────────────────────────────────────────────
+# Walker-energy evaluations = samples · blocks · steps_per_block · sub_steps
+# (sub_steps = 1 for VMC, which measures once per step):
+#   VMC          1024 · 240 ·  10     ≈  2.5M
+#   DMC τ=2      1024 ·  60 · 100 · 2 ≈ 12.3M
+#   DMC τ=1      1024 ·  60 · 200 · 2 ≈ 24.6M   ← 62% of the job
+#   total                              ≈ 39.4M
+# ⇒ fluid ≈ 166 core-hours, crystal ≈ 308 core-hours (the crystal's Gaussian
+#   orbitals cost 1.9x the plane waves).  On one 64-core node, ≈ 2.6 h and
+#   ≈ 4.8 h.  Scaling was only measured to 4 threads; `threads: 0` takes the
+#   whole node and the walker loop is the parallel axis, so it should hold up to
+#   n_threads = samples, but check it on the first job.
+# Dropping either DMC driver saves a third to two thirds of the job and costs you
+# the one thing that has to be known: whether the bias cancels in the difference.
+# =============================================================================
+project:
+  name: heg2d_fluid_rs30
+  seed: 20260923
+  log: true
+  output: true          # one .h5 per driver under results/<name>/<timestamp>/
+
+system:
+  lattice:
+    type: periodic
+    dimension: 2
+    shape: hexagonal    # smallest finite-size error in 2-D, and the only shape a
+                        # triangular crystal can tile — the crystal config needs
+                        # it, so the fluid must use it too for a fair difference
+    rs: 30.0            # density: A = N π rs², so ρ = N/V is what is held fixed
+    ewald_tol: 1.0e-6
+  particles:
+    - { name: e, group: electron_group, type: fermions, mass: 1.0, charge: -1,
+        up: 61, down: 0, initialization: uniform }
+
+wavefunction:
+  # Fluid nodes: a closed shell of the reciprocal lattice (k = 0 plus shells up
+  # to the 61st orbital).  No centers, no widths — the k-points are the cell's.
+  - slater:
+      group: electron_group
+      orbitals: { type: plane_wave }
+  # Correlation hole.  cusp is derived (P-wave, Γ = 1/3): do NOT set it here.
+  - jastrow:
+      type: drummond
+      pair: [electron_group, electron_group]
+      params: [8.062484252960443e-06]        # α0
+      is_fixed: [true]
+      truncation: 3                 # C = 3 → continuous local energy at r = L
+      cutoff: 105.0           # L, inside the WS inradius 223.1
+      cutoff_fixed: true
+
+hamiltonian:
+  terms:
+    - { type: coulomb, pair: [electron_group, electron_group], epsilon: 1.0 }
+
+qmc:
+  # 1. Variational reference: the number the DMC must come in below, plus an
+  #    acceptance check.  time_step here is the Metropolis proposal variance, not
+  #    an imaginary time; 150 was tuned to give acceptance 0.456 at these guide
+  #    parameters, so a very different acceptance means something else moved.
+  - method: vmc
+    random_walk: metropolis
+    device: cpu
+    threads: 0
+    samples: 1024
+    equilibration_blocks: 40
+    accumulation_blocks: 200
+    steps_per_block: 10
+    sub_steps: 2
+    time_step: 150.0
+    estimators:
+      - { type: gofr, rmax: 220.0, n_bins: 110 }
+      - { type: density, rmax: 223.0, n_bins: 48 }
+
+  # Fixed-node DMC at τ = 2, 1, 0.5 (see "UPDATE 2026-09-28" in the header).
+  # 400 imaginary-time units per block; walkers carry over between drivers.
+  - method: dmc
+    random_walk: drift_diffusion
+    device: cpu
+    threads: 0
+    samples: 1024
+    equilibration_blocks: 20
+    accumulation_blocks: 80
+    steps_per_block: 100
+    sub_steps: 2
+    time_step: 2.0
+    walkers_out: heg2d_fluid_rs30_tau2.h5
+    estimators:
+      - { type: gofr, rmax: 220.0, n_bins: 110 }
+      - { type: density, rmax: 223.0, n_bins: 48 }
+
+  - method: dmc
+    random_walk: drift_diffusion
+    device: cpu
+    threads: 0
+    samples: 1024
+    equilibration_blocks: 5
+    accumulation_blocks: 80
+    steps_per_block: 200
+    sub_steps: 2
+    time_step: 1.0
+    walkers_out: heg2d_fluid_rs30_tau1.h5
+    estimators:
+      - { type: gofr, rmax: 220.0, n_bins: 110 }
+      - { type: density, rmax: 223.0, n_bins: 48 }
+
+  - method: dmc
+    random_walk: drift_diffusion
+    device: cpu
+    threads: 0
+    samples: 1024
+    equilibration_blocks: 5
+    accumulation_blocks: 80
+    steps_per_block: 400
+    sub_steps: 2
+    time_step: 0.5
+    walkers_out: heg2d_fluid_rs30_tau05.h5
+    estimators:
+      - { type: gofr, rmax: 220.0, n_bins: 110 }
+      - { type: density, rmax: 223.0, n_bins: 48 }

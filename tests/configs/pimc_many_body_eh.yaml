@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Contract fixture: three distinguishable electrons and three holes.
+# Unequal anisotropic masses; e-e/h-h repulsion and bounded interlayer e-h
+# attraction. This tests infrastructure, not fermionic statistics or binding.
+# V_eh = -1/(4 sqrt(r_eh^2 + 1)); finite separation avoids the attractive
+# intraplane primitive-action singularity. No pair action is introduced.
+project:
+  name: pimc_many_body_eh
+  seed: 764393
+  output: false
+  log: false
+
+system:
+  lattice: { type: open, dimension: 2, L: 3.0 }
+  particles:
+    - { name: e, group: electrons, type: boltzmannon, mass: [1.0, 2.0], charge: -1, z: 0.0, up: 3, down: 0 }
+    - { name: h, group: holes, type: boltzmannon, mass: [3.0, 5.0], charge: 1, z: 1.0, up: 3, down: 0 }
+
+hamiltonian:
+  terms:
+    - { type: harmonic_trap, omega: 0.8 }
+    - { type: coulomb, pair: [electrons, electrons], epsilon: 2.0 }
+    - { type: coulomb, pair: [holes, holes], epsilon: 3.0 }
+    - { type: coulomb, pair: [electrons, holes], epsilon: 4.0 }
+
+qmc:
+  - method: pimc
+    threads: 1
+    samples: 8
+    beta: 0.5
+    time_step: 0.0625
+    equilibration_blocks: 20
+    accumulation_blocks: 32
+    steps_per_block: 10
+    sub_steps: 3
+    moves:
+      - bisection: { levels: 3, weight: 1.0 }
+      - centroid: { step: 0.4, weight: 1.0 }
+      - single_slice: { step: 0.25, weight: 1.0 }
+    energy: thermodynamic

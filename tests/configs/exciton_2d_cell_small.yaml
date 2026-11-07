@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# 2D e-h exciton at the Coulomb cusp (m=1, eps=1, u(r) = -r), so E_L is constant
+# and <E_L> = -1 exactly with zero variance.  Three identical runs differing ONLY
+# in the simulation cell, for the large-cell convergence test.
+project: {name: exciton_2d_cell_small, seed: 42, log: false, output: false}
+system:
+  lattice: {type: periodic, dimension: 2, shape: square, L: 1.5, truncation: minimum_image}
+  particles:
+    - {name: e, group: electron_group, type: fermions, mass: 1.0, charge: -1, up: 1, down: 0, initialization: uniform}
+    - {name: h, group: hole_group, type: fermions, mass: 1.0, charge: 1, up: 1, down: 0, initialization: uniform}
+wavefunction:
+  - jastrow: {type: padé, pair: [electron_group, hole_group] }
+hamiltonian:
+  terms:
+    - {type: coulomb, pair: [electron_group, hole_group], epsilon: 1.0}
+qmc:
+  - {method: vmc, random_walk: langevin, device: cpu, threads: 4, samples: 256,
+     equilibration_blocks: 256, accumulation_blocks: 512, steps_per_block: 10,
+     sub_steps: 2, time_step: 0.05,
+     estimators: [{type: gofr, rmax: 0.70, n_bins: 35}]}
