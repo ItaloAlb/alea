@@ -91,6 +91,12 @@ public:
     // After the call nw() == src.size().
     void apply_permutation(std::span<const std::size_t> src);
 
+    // Change the configuration count to nw, leaving the distances undefined
+    // until build_all.  The vectors keep their capacity, so a table built for
+    // its largest nw never reallocates here (a batch reloaded with a varying
+    // number of stored configurations, see ConfigurationBatch).
+    void resize(std::size_t nw);
+
     std::span<const double> data() const noexcept { return data_; }
 
 private:

@@ -51,8 +51,10 @@ cancels the first-order term and leaves an error of second order (Ceperley &
 Kalos, in *Monte Carlo Methods in Statistical Physics*, ed. K. Binder
 (Springer, 1979); Foulkes *et al.*, *Rev. Mod. Phys.* **73**, 33 (2001)). It
 needs a VMC and a DMC run with the same trial and the same estimator settings;
-`tools/plot_density.py --extrapolate` does it for densities. Alea has no pure
-(forward-walking) estimator.
+`tools/plot_density.py --extrapolate` does it for densities. A DMC stage can
+instead measure the pure average itself by forward walking
+([§3.1](#31-pure-dmc-estimators-forward-walking)), which removes the bias
+entirely at the price of a larger error bar.
 
 **Signs and worms (PIMC).** With fermion exchange, every PIMC output, the
 energy included, is a ratio of means $\langle O s\rangle/\langle s\rangle$ with
@@ -147,7 +149,7 @@ stage get distinct result keys through `name:`
 
 All the observables except the two density matrices are **diagonal**: functions
 of $R$ alone, measured with the weights of §1. Under DMC they are mixed
-estimates.
+estimates, and also pure ones with `forward_walking` (§3.1).
 
 ### `gofr`: pair correlation
 
@@ -330,6 +332,53 @@ sums, blocked jointly so that their errors keep the correlation between shells.
 Every value is a ratio of means with a jackknife error. The statistical errors
 exclude the momentum tail beyond $k_\text{max}$ and the quadrature error of the
 grid.
+
+### 3.1 Pure DMC estimators (forward walking)
+
+With `forward_walking: {lags: [T_1, T_2, ...]}` a DMC stage measures every
+estimator of its `estimators:` list a second time per lag, as a pure
+estimate, together with the pure potential energy
+(J. Casulleras & J. Boronat, *Phys. Rev. B* **52**, 3654 (1995)). The
+configuration a walker had at time $t$ is weighted by the weight its
+descendants carry at $t + T$:
+
+$$
+\langle O\rangle_T = \frac{\sum_w W_w(t+T)\,O\big(R_{a(w)}(t)\big)}{\sum_w W_w(t+T)}
+= \frac{\langle\Phi|O\,e^{-T(H-E_0)}|\psi_T\rangle}{\langle\Phi|\psi_T\rangle}
+\xrightarrow{T\to\infty} \frac{\langle\Phi|O|\Phi\rangle}{\langle\Phi|\Phi\rangle},
+$$
+
+with $a(w)$ the ancestor at $t$ of walker $w$ and $W$ the weights of the
+mixed estimator (after the step's reweighting, before branching). $T = 0$ is
+the mixed estimate itself, bit for bit. The bias of a finite $T$ is
+$\sum_n c_n\langle\Phi|O|n\rangle e^{-T(E_n-E_0)}/c_0$ ($c_n = \langle n|\psi_T\rangle$):
+it decays with the gaps of the excitations $O$ connects to $\Phi$. The
+variance grows with $T$, because fewer and fewer ancestors carry the weight;
+`fw<i>_surviving_fraction` is the mean fraction of a snapshot's walkers that
+still have descendants at lag $i$. Run several lags and quote the plateau.
+Under fixed-node or fixed-phase DMC, $\Phi$ is the constrained ground state.
+
+How it is measured: every `interval` steps the population's positions are
+stored once, and each walker keeps the index of its ancestor in every stored
+snapshot through branching. When a snapshot is $T$ old, the current weights are
+summed per ancestor and the ancestors are measured with those weights by the
+ordinary estimator code. Snapshots start $T_\text{max}$ before accumulation, so
+every accumulation block has the same number of pure measurements. Memory is
+one copy of the positions per snapshot, $\lfloor T_\text{max}/(\text{interval}\,\tau\,n_\text{sub})\rfloor + 1$
+snapshots (the run log prints the total).
+
+| Result | Meaning |
+|---|---|
+| `<estimator keys with fw<i>>` | Each estimator's keys with `fw<i>` inserted after its namespace (and after its own label): `gofr_fw0_e_h`, `gofr_fine_fw1_e_h`, `density_fw2_e`, ... |
+| `potential_fw<i>`, `potential_fw<i>_error` | Pure $\langle V\rangle$ at lag $i$, with the energy's reblocking diagnostics. The pure kinetic energy is $E - \langle V\rangle_\text{pure}$, since $E$ is exact |
+| `acc_block_potential_fw<i>` | Its block means |
+| `fw<i>_lag_time`, `fw<i>_lag_steps`, `fw<i>_measurements`, `fw<i>_surviving_fraction` | The lag, the measurements made, and the surviving fraction above |
+| `fw_interval`, `fw_lag_times` | Steps between snapshots; all lags |
+
+Only diagonal observables qualify: `density_matrix` (ratios of $\psi_T$) is
+refused in a stage with `forward_walking`. The error bars of the pure
+estimators follow §4: the blocks of a long lag are more correlated, so check
+them with longer blocks.
 
 ## 4. Error bars of the observables
 
@@ -592,8 +641,8 @@ order 10⁶ % near ρ_min despite sub-percent value errors.
 
 ## 9. Not covered
 
-- Pure (forward-walking) DMC estimators; DMC observables other than the energy
-  are mixed estimates (§1).
+- Pure estimates of off-diagonal observables (`density_matrix`); forward walking
+  (§3.1) covers the diagonal ones and the potential energy.
 - Reblocked error bars for the VMC and DMC observables (§4).
 - `periodic_virial` with exchange (the torus field is not derived for cycles).
 - Virial estimators for the pair-product action.
@@ -621,3 +670,11 @@ order 10⁶ % near ρ_min despite sub-percent value errors.
   `test_pimc_fsc_diagnostics.cpp`, `test_screened_table_continuity.cpp`: the
   represented kernels of §8 and their admission.
 - `test_pimc_permutation.cpp`: cycle-centroid virial under exchange.
+- `test_dmc.cpp` (`[forward_walking]`): descendant weights through hand-made
+  branchings against hand-computed means; lag 0 equal to the mixed estimator
+  bit for bit; the pure potential energy of a particle in a 2D trap with a too
+  broad Gaussian trial against the exact lag dependence
+  $\langle V\rangle_T = \tfrac12 + \tfrac18 e^{-2\omega T}$; refusal of lags that
+  are not whole steps, exceed the equilibration or an interval that does not
+  divide a block. `test_estimator_builders.cpp`: per-lag labels, refusal of
+  `density_matrix` and of keys a mixed instance already writes.

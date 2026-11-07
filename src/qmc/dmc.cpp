@@ -95,6 +95,49 @@ DMC::DMC(const DMCConfig& cfg, WalkerEnsemble& ensemble,
                 "dmc: correlation sampling needs 2 <= min_sweeps <= max_sweeps");
     }
 
+    // Forward walking: every lag a whole number of steps of τ·n_substeps, the
+    // snapshot interval dividing a block (so every block holds the same number
+    // of pure measurements), and the largest lag inside the equilibration (so
+    // the first accumulation block already has snapshots that old).
+    if (!cfg_.forward_walking_lags.empty()) {
+        const double step_time = cfg_.tau * static_cast<double>(cfg_.n_substeps);
+        if (!(std::isfinite(step_time) && step_time > 0.0))
+            throw std::invalid_argument(
+                "dmc: forward walking needs time_step > 0 and sub_steps >= 1 (a lag "
+                "is an imaginary time)");
+        if (cfg_.forward_walking_interval == 0 || cfg_.n_steps <= 0 ||
+            static_cast<std::size_t>(cfg_.n_steps) % cfg_.forward_walking_interval != 0)
+            throw std::invalid_argument(
+                "dmc: forward_walking interval (" +
+                std::to_string(cfg_.forward_walking_interval) +
+                ") must be >= 1 and divide steps_per_block (" +
+                std::to_string(cfg_.n_steps) + ")");
+        for (std::size_t i = 0; i < cfg_.forward_walking_lags.size(); ++i) {
+            const double lag = cfg_.forward_walking_lags[i];
+            if (!(std::isfinite(lag) && lag >= 0.0))
+                throw std::invalid_argument("dmc: forward_walking lags must be finite and >= 0");
+            if (i > 0 && !(lag > cfg_.forward_walking_lags[i - 1]))
+                throw std::invalid_argument(
+                    "dmc: forward_walking lags must be strictly increasing");
+            const double steps = lag / step_time;
+            const double whole = std::round(steps);
+            if (std::abs(steps - whole) > 1e-9 * std::max(1.0, steps))
+                throw std::invalid_argument(
+                    "dmc: forward_walking lag " + std::to_string(lag) +
+                    " is not a whole number of steps of time_step * sub_steps = " +
+                    std::to_string(step_time));
+            fw_lag_steps_.push_back(static_cast<std::size_t>(whole));
+        }
+        const std::size_t eq_steps = static_cast<std::size_t>(std::max(0, cfg_.n_equilibration_blocks)) *
+                                     static_cast<std::size_t>(cfg_.n_steps);
+        if (fw_lag_steps_.back() > eq_steps)
+            throw std::invalid_argument(
+                "dmc: the largest forward_walking lag (" + std::to_string(fw_lag_steps_.back()) +
+                " steps) exceeds the equilibration (" + std::to_string(eq_steps) +
+                " steps): snapshots start that many steps before accumulation");
+        fw_templates_.resize(fw_lag_steps_.size());
+    }
+
     // Per-particle, per-dimension proposal width.
     tau_inv_mass_.assign(np * dim, 0.0);
     sqrt_tau_inv_mass_.assign(np * dim, 0.0);
@@ -117,6 +160,20 @@ DMC::DMC(const DMCConfig& cfg, WalkerEnsemble& ensemble,
     for (int t = 0; t < n_threads_; ++t)
         rngs_.emplace_back(numerics::stream_seed(cfg_.seed, kDmcThreadStream,
                                                  static_cast<std::uint64_t>(t)));
+}
+
+void DMC::set_forward_walking_estimators(
+    std::vector<std::vector<std::unique_ptr<Estimator>>> per_lag) {
+    if (fw_lag_steps_.empty())
+        throw std::logic_error("dmc: forward-walking estimators without forward_walking lags");
+    if (per_lag.size() != fw_lag_steps_.size())
+        throw std::logic_error("dmc: one forward-walking estimator set per lag");
+    for (const auto& set : per_lag)
+        for (const auto& e : set)
+            if (e->needs_wavefunction())
+                throw std::logic_error("dmc: forward walking measures diagonal observables "
+                                       "only, not '" + e->type() + "'");
+    fw_templates_ = std::move(per_lag);
 }
 
 bool DMC::dmc_accept(double log_ratio, double log_gf, double log_gb,
@@ -524,6 +581,26 @@ void DMC::run() {
     sweep_block_ = sweep_block_walkers(cfg_.sweep_block_walkers,
         psi_.walker_state_bytes() + pop_.walker_state_bytes(), sweep_random_stride_);
 
+    // Forward walking: fresh copies of the per-lag estimators, every buffer
+    // sized to the population capacity; steps count from the first
+    // equilibration step, accumulation starts at n_eq · n_steps.
+    fw_.reset();
+    if (!fw_lag_steps_.empty()) {
+        std::vector<std::vector<std::unique_ptr<Estimator>>> per_lag(fw_templates_.size());
+        for (std::size_t i = 0; i < fw_templates_.size(); ++i)
+            for (const auto& tmpl : fw_templates_[i]) per_lag[i].push_back(tmpl->clone());
+        fw_ = std::make_unique<ForwardWalking>(
+            fw_lag_steps_, cfg_.tau * static_cast<double>(cfg_.n_substeps),
+            cfg_.forward_walking_interval, std::move(per_lag));
+        fw_->prepare(capacity, np, pop_.dim(), pop_.cell(),
+                     static_cast<std::size_t>(cfg_.n_equilibration_blocks) *
+                         static_cast<std::size_t>(cfg_.n_steps));
+        io::Logger::milestone("dmc: forward walking " + std::to_string(fw_->n_lags()) +
+                              " lags, " + std::to_string(fw_->n_slots()) + " snapshots of " +
+                              std::to_string(capacity) + " walkers (" +
+                              std::to_string(fw_->memory_bytes() >> 20) + " MiB)");
+    }
+
     // Suppressed reweighting: θ from the config or measured on the starting
     // walkers (whose positions those sweeps move, as more VMC equilibration
     // with the DMC move would), then x = κ·τ_eff·√(u/(N·τ·θ)).
@@ -603,6 +680,8 @@ void DMC::run() {
     std::vector<StepResult> rs(static_cast<std::size_t>(n_threads_));
     std::vector<std::size_t> src;
     src.reserve(2 * target + 2);
+    // Steps since the first equilibration step (the forward-walking schedule).
+    std::size_t step_index = 0;
 
     // One global step: parallel advance over disjoint crowds → join → global
     // branch (QMCPACK-batched) → carry wavefunction caches → adapt E_trial.
@@ -623,6 +702,9 @@ void DMC::run() {
             for (auto& e : ests_) e->accumulate(pop_);
             if (measure_hook_) measure_hook_(pop_, psi_);
         }
+        // Pure estimators: snapshot and measure with the same pre-branch
+        // weights (during equilibration it only stores snapshots).
+        if (fw_) fw_->observe(pop_, step_index, ham_);
 
         double e = 0.0, wsum = 0.0;
         for (int t = 0; t < n_active; ++t) {
@@ -646,7 +728,9 @@ void DMC::run() {
 
         pop_.branch(branch_rng_, target, src);
         psi_.permute_caches(src);
+        if (fw_) fw_->branch(src);
         population_.update(ens_e, wsum, /*accumulate=*/measure);
+        ++step_index;
         return {e, wsum};
     };
 
@@ -703,6 +787,7 @@ void DMC::run() {
 
     for (int b = 0; b < n_acc; ++b) {
         for (auto& e : ests_) e->start_block();
+        if (fw_) fw_->start_block();
         double blk_e = 0.0, blk_w = 0.0;
         for (int s = 0; s < cfg_.n_steps; ++s) {
             const auto step = run_one_step(/*measure=*/true);
@@ -710,6 +795,7 @@ void DMC::run() {
             blk_w += step.second;
         }
         for (auto& e : ests_) e->stop_block();
+        if (fw_) fw_->stop_block();
         // One weighted-mean energy per block (global population).
         block_energies_.push_back(blk_w > 0.0 ? blk_e / blk_w : 0.0);
         block_etrial_.push_back(population_.etrial());
@@ -896,6 +982,8 @@ RunResult DMC::run_result() const {
     // Observable estimators (e.g. g(r)) append their own named series, each
     // instance under its output label.
     for (const auto& e : ests_) e->write_results(r);
+    // Pure (forward-walking) estimates, every key carrying its lag index fw<i>.
+    if (fw_) fw_->write_results(r);
     r.check_unique_keys();
 
     return r;

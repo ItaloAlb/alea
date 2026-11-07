@@ -382,6 +382,7 @@ final walkers unless it has its own `walkers_in`.
 | `walkers_in` | — | Start from a saved population |
 | `walkers_out` | — | Save the final population (a bare filename goes in `checkpoints/<name>/<timestamp>/`). Also writes `.eq`, `.a25`, `.a50`, `.a75` milestone files |
 | `estimators` | none | Extra observables (mixed estimator) |
+| `forward_walking` | off | `{lags: [T_1, T_2, ...], interval: n}`: also measure every estimator, and the potential energy, as a pure estimate at each lag $T$ (imaginary time; strictly increasing, each a whole number of steps of `time_step`·`sub_steps`, the largest within the equilibration). A snapshot is stored every `interval` steps (default 1), which must divide `steps_per_block`. Refuses `density_matrix`. See [pure estimators](estimators.md#31-pure-dmc-estimators-forward-walking) |
 | `random_walk` | `drift_diffusion` | Optional. DMC always moves walkers by importance-sampled drift–diffusion; `drift_diffusion` and its synonym `langevin` are accepted, anything else is refused |
 
 The node constraint (none, fixed-node, fixed-phase) is chosen automatically from
@@ -481,7 +482,8 @@ What a stage measures depends on its sampler: VMC gives
 $\langle\psi_T|O|\psi_T\rangle$, PIMC the thermal average at $1/\beta$, and DMC the
 mixed estimator $\langle\psi_T|O|\Phi\rangle/\langle\psi_T|\Phi\rangle$. The pure value is
 approximately $2\langle O\rangle_\text{DMC} - \langle O\rangle_\text{VMC}$ (see
-`tools/plot_density.py`). VMC and DMC error bars of these observables assume
+`tools/plot_density.py`), or measured directly by a DMC stage with
+`forward_walking`. VMC and DMC error bars of these observables assume
 independent blocks, so short blocks underestimate them.
 
 **Several instances of one type.** A stage may list a type more than once, e.g. a

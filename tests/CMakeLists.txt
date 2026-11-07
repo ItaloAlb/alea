@@ -701,6 +701,7 @@ set(APP_SOURCES
     ${SRC_DIR}/qmc/cost_function.cpp
     ${SRC_DIR}/estimators/bond_order.cpp
     ${SRC_DIR}/qmc/dmc.cpp
+    ${SRC_DIR}/qmc/forward_walking.cpp
     ${SRC_DIR}/qmc/population_control.cpp
     ${SRC_DIR}/pimc/path_set.cpp
     ${SRC_DIR}/pimc/action.cpp
@@ -800,7 +801,11 @@ target_compile_options(test_linear_optimize PRIVATE -Wall -Wextra -Wpedantic -fo
 
 add_executable(test_dmc
     test_dmc.cpp
+    ${SRC_DIR}/hamiltonian/harmonic_trap.cpp
+    ${SRC_DIR}/wavefunction/nosanow_jastrow.cpp
+    ${SRC_DIR}/estimators/pair_correlation.cpp
     ${SRC_DIR}/qmc/dmc.cpp
+    ${SRC_DIR}/qmc/forward_walking.cpp
     ${SRC_DIR}/qmc/population_control.cpp
     ${SRC_DIR}/wavefunction/trial_wavefunction.cpp
     ${SRC_DIR}/wavefunction/pade_jastrow.cpp
@@ -829,6 +834,7 @@ target_compile_options(test_dmc PRIVATE -Wall -Wextra -Wpedantic -fopenmp-simd)
 add_executable(test_fixed_node
     test_fixed_node.cpp
     ${SRC_DIR}/qmc/dmc.cpp
+    ${SRC_DIR}/qmc/forward_walking.cpp
     ${SRC_DIR}/qmc/population_control.cpp
     ${SRC_DIR}/wavefunction/trial_wavefunction.cpp
     ${SRC_DIR}/wavefunction/pade_jastrow.cpp
@@ -878,6 +884,7 @@ add_executable(test_slater_determinant
     ${SRC_DIR}/wavefunction/trial_wavefunction.cpp
     ${SRC_DIR}/wavefunction/wavefunction_component.cpp
     ${SRC_DIR}/qmc/dmc.cpp
+    ${SRC_DIR}/qmc/forward_walking.cpp
     ${SRC_DIR}/qmc/population_control.cpp
     ${SRC_DIR}/hamiltonian/hamiltonian.cpp
     ${SRC_DIR}/hamiltonian/kinetic.cpp
@@ -900,6 +907,7 @@ add_executable(test_sweep_blocking
     test_sweep_blocking.cpp
     ${SRC_DIR}/qmc/vmc.cpp
     ${SRC_DIR}/qmc/dmc.cpp
+    ${SRC_DIR}/qmc/forward_walking.cpp
     ${SRC_DIR}/qmc/population_control.cpp
     ${SRC_DIR}/wavefunction/slater_determinant.cpp
     ${SRC_DIR}/wavefunction/trial_wavefunction.cpp
@@ -942,6 +950,7 @@ add_executable(test_dmc_bench
     ${SRC_DIR}/numerics/long_range_breakup.cpp
     ${SRC_DIR}/qmc/vmc.cpp
     ${SRC_DIR}/qmc/dmc.cpp
+    ${SRC_DIR}/qmc/forward_walking.cpp
     ${SRC_DIR}/qmc/population_control.cpp
     ${SRC_DIR}/wavefunction/trial_wavefunction.cpp
     ${SRC_DIR}/wavefunction/pade_jastrow.cpp
@@ -1107,6 +1116,7 @@ add_executable(test_fixed_phase
     ${SRC_DIR}/hamiltonian/rytova_keldysh.cpp
     ${SRC_DIR}/qmc/vmc.cpp
     ${SRC_DIR}/qmc/dmc.cpp
+    ${SRC_DIR}/qmc/forward_walking.cpp
     ${SRC_DIR}/qmc/population_control.cpp
     ${SRC_DIR}/numerics/statistics.cpp
     ${SRC_DIR}/io/logger.cpp

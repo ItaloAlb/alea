@@ -20,6 +20,7 @@
 #include "../wavefunction/trial_wavefunction.h"
 #include "../hamiltonian/hamiltonian.h"
 #include "driver.h"
+#include "forward_walking.h"
 #include "population_control.h"
 
 namespace alea {
@@ -67,6 +68,13 @@ struct DMCConfig {
     // (sweep_blocking.h); 0 sizes the block from the per-walker state.
     // Never changes results.
     std::size_t sweep_block_walkers = 0;
+
+    // Pure estimators (forward_walking.h): the lags T in imaginary time,
+    // strictly increasing, each a whole number of steps of τ·n_substeps; empty
+    // → off.  A snapshot of the population every forward_walking_interval
+    // steps, which must divide n_steps.
+    std::vector<double> forward_walking_lags;
+    std::size_t         forward_walking_interval = 1;
 };
 
 // How DMC keeps the projected state consistent with the trial's sign/phase.
@@ -161,6 +169,19 @@ public:
     // DMC weight (the mixed estimator).  Results append to run_result().
     void set_estimators(std::vector<std::unique_ptr<Estimator>> ests) {
         est_templates_ = std::move(ests);
+    }
+
+    // Pure (forward-walking) copies of the observables, one set per lag of
+    // DMCConfig::forward_walking_lags, keys already labelled apart from the
+    // mixed ones (builders).  Each set may be empty; the pure potential energy
+    // is measured at every lag regardless.  Throws without lags, on a count
+    // that differs from the lags, or on a non-diagonal estimator.
+    void set_forward_walking_estimators(
+        std::vector<std::vector<std::unique_ptr<Estimator>>> per_lag);
+
+    // The lags in DMC steps (empty when forward walking is off).
+    [[nodiscard]] std::span<const std::size_t> forward_walking_lag_steps() const noexcept {
+        return fw_lag_steps_;
     }
 
 private:
@@ -262,6 +283,12 @@ private:
     // (single instance each, mixed estimator) into ests_ at the start of run().
     std::vector<std::unique_ptr<Estimator>> est_templates_;
     std::vector<std::unique_ptr<Estimator>> ests_;
+
+    // Forward walking: the lags in steps (validated in the constructor), the
+    // per-lag estimator templates, and the instance run() builds from them.
+    std::vector<std::size_t>                             fw_lag_steps_;
+    std::vector<std::vector<std::unique_ptr<Estimator>>> fw_templates_;
+    std::unique_ptr<ForwardWalking>                      fw_;
 
     // Mean accumulation population over its target (1 with no block yet).
     [[nodiscard]] double population_mean_fraction() const noexcept;

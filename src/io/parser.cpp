@@ -1027,7 +1027,8 @@ Config parse_config(const std::string& yaml_text) {
             if (method == "dmc")
                 require_stage_keys(qn, "dmc", {"random_walk", "population_generations",
                                                "branch_cutoff", "reweighting",
-                                               "walkers_in", "walkers_out", "estimators"});
+                                               "walkers_in", "walkers_out", "estimators",
+                                               "forward_walking"});
             else
                 require_stage_keys(qn, "vmc", {"random_walk", "walkers_in", "walkers_out",
                                                "estimators"});
@@ -1156,6 +1157,38 @@ Config parse_config(const std::string& yaml_text) {
             // Opt-in observable estimators (absent → none).
             if (qn["estimators"])
                 q.estimators = parse_estimators(qn["estimators"], "qmc");
+
+            // Pure estimators (DMC only; require_stage_keys refused it in VMC).
+            // The cross-key rules (whole steps, interval | steps_per_block,
+            // lags within the equilibration) are the DMC driver's.
+            if (const YAML::Node fw = qn["forward_walking"]) {
+                if (!fw.IsMap())
+                    throw std::runtime_error(
+                        "dmc: forward_walking must be a map {lags: [...], interval: n}");
+                require_keys(fw, "dmc: forward_walking", {"lags", "interval"});
+                const YAML::Node lags = fw["lags"];
+                if (!lags || !lags.IsSequence() || lags.size() == 0)
+                    throw std::runtime_error(
+                        "dmc: forward_walking needs `lags`, a nonempty list of imaginary times");
+                ForwardWalkingSpec spec;
+                for (const YAML::Node& lag : lags) {
+                    const double t = lag.as<double>();
+                    if (!(std::isfinite(t) && t >= 0.0))
+                        throw std::runtime_error(
+                            "dmc: forward_walking lags must be finite imaginary times >= 0");
+                    if (!spec.lags.empty() && !(t > spec.lags.back()))
+                        throw std::runtime_error(
+                            "dmc: forward_walking lags must be strictly increasing");
+                    spec.lags.push_back(t);
+                }
+                if (fw["interval"]) {
+                    spec.interval = fw["interval"].as<int>();
+                    if (spec.interval < 1)
+                        throw std::runtime_error(
+                            "dmc: forward_walking interval must be at least 1 step");
+                }
+                q.forward_walking = std::move(spec);
+            }
             c.sampling_order.push_back(QmcStageIndex{c.qmc.size()});
             c.qmc.push_back(std::move(q));
         }

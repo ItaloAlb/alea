@@ -458,6 +458,17 @@ struct RunSpec {
     double      time_step = 0.0;
 };
 
+// Pure (forward-walking) estimators of a DMC stage, declared as
+// `forward_walking: { lags: [T_1, T_2, ...], interval: n }` (qmc/forward_walking.h).
+// The lags are imaginary times, strictly increasing, each a whole number of
+// steps of time_step · sub_steps; interval is the number of steps between
+// population snapshots and must divide steps_per_block.  Every estimator of
+// the stage is then also measured purely at each lag, as is the potential energy.
+struct ForwardWalkingSpec {
+    std::vector<double> lags;
+    int                 interval = 1;
+};
+
 struct QmcSpec : RunSpec {
     std::string method;        // "vmc" | "dmc"
     // vmc: "metropolis" (default, also when empty) | "langevin" (drift).
@@ -489,6 +500,9 @@ struct QmcSpec : RunSpec {
 
     // Opt-in observable estimators (empty → energy only).
     std::vector<EstimatorItem> estimators;
+
+    // DMC only: pure estimators by forward walking (absent → mixed only).
+    std::optional<ForwardWalkingSpec> forward_walking;
 };
 
 // Parameters for the linear-method wavefunction optimiser.

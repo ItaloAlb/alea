@@ -187,6 +187,7 @@ set(SOURCES
     src/wavefunction/wavefunction_component.cpp
     # src/qmc/optimizer.cpp  # not yet implemented
     src/qmc/dmc.cpp
+    src/qmc/forward_walking.cpp
     src/qmc/population_control.cpp
     src/pimc/path_set.cpp
     src/pimc/action.cpp

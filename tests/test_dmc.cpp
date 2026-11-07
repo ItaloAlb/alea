@@ -24,6 +24,14 @@
 #include "hamiltonian/coulomb.h"
 #include "numerics/statistics.h"
 #include "qmc/dmc.h"
+#include "qmc/forward_walking.h"
+#include "hamiltonian/harmonic_trap.h"
+#include "wavefunction/nosanow_jastrow.h"
+#include "estimators/pair_correlation.h"
+#include "population/walker_set.h"
+#include "population/simulation_cell.h"
+
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 using namespace alea;
 
@@ -1013,4 +1021,236 @@ TEST_CASE("DMC checkpoint hook drops coinciding milestones for tiny runs",
     REQUIRE(tags.size() == 2);
     CHECK(tags[0] == "eq");
     CHECK(tags[1] == "a50");
+}
+
+// ── Forward walking (qmc/forward_walking.h) ──────────────────────────────────
+
+namespace {
+
+// One particle of unit mass in 2-D.
+ParticleGroup trap_group() {
+    ParticleGroup g;
+    g.name = "p";
+    g.charge = 0.0;
+    g.first = 0;
+    g.last = 1;
+    g.count = 1;
+    g.mass = {1.0, 1.0};
+    g.inv_mass = {1.0, 1.0};
+    return g;
+}
+
+// V = ½ω²r² with ω = 1, and its kinetic energy.
+Hamiltonian trap_hamiltonian() {
+    Hamiltonian h;
+    const std::vector<ParticleGroup> groups{trap_group()};
+    h.add_component(std::make_unique<Kinetic>(groups));
+    h.add_component(std::make_unique<HarmonicTrap>(groups, 1.0));
+    return h;
+}
+
+double result_scalar(const RunResult& r, const std::string& key) {
+    for (const auto& [name, value] : r.scalars)
+        if (name == key) return value;
+    throw std::runtime_error("no scalar " + key);
+}
+
+const std::vector<double>& result_series(const RunResult& r, const std::string& key) {
+    for (const auto& [name, values] : r.series)
+        if (name == key) return values;
+    throw std::runtime_error("no series " + key);
+}
+
+}  // namespace
+
+TEST_CASE("forward walking weights each stored ancestor by its descendants' weight",
+          "[dmc][forward_walking]") {
+    // Three walkers on the x axis, x = 1, 2, 3, branched by hand twice; the
+    // lags 0, 1, 2 steps are measured at step 2 on the snapshots of steps 2,
+    // 1, 0.  V = x²/2, so every pure potential is a hand-computable mean.
+    std::vector<Walker> walkers(3, Walker(1, 2));
+    for (std::size_t w = 0; w < 3; ++w)
+        walkers[w].set_positions(std::vector<double>{1.0 + static_cast<double>(w), 0.0});
+    WalkerSet ws(3, 1, 2);
+    for (Walker& w : walkers) ws.add_walker(w);
+    ws.load_all();
+    const Hamiltonian ham = trap_hamiltonian();
+
+    ForwardWalking fw({0, 1, 2}, /*step_time=*/0.1, /*interval=*/1, {});
+    fw.prepare(/*capacity=*/8, 1, 2, SimulationCell{}, /*first_measured_step=*/2);
+    CHECK(fw.n_slots() == 3);
+    const auto set_x = [&ws](std::vector<double> x) {   // particle 0, d = 0 plane
+        for (std::size_t w = 0; w < x.size(); ++w) ws.positions()[w] = x[w];
+    };
+
+    fw.observe(ws, 0, ham);                      // snapshot 0: x = 1, 2, 3
+    std::vector<std::size_t> src{0, 0, 2};       // walker 1 dies, walker 0 splits
+    ws.apply_permutation(src);
+    fw.branch(src);                              // ancestors in snapshot 0: 0, 0, 2
+    set_x({1.5, 0.5, 3.5});
+    fw.observe(ws, 1, ham);                      // snapshot 1: x = 1.5, 0.5, 3.5
+    src = {1, 2, 2};
+    ws.apply_permutation(src);
+    fw.branch(src);                              // snapshot 0: 0, 2, 2;  snapshot 1: 1, 2, 2
+    set_x({4.0, 2.0, 1.0});
+    const std::vector<double> weight{0.5, 1.25, 2.0};
+    for (std::size_t w = 0; w < 3; ++w) ws.weights()[w] = weight[w];
+
+    fw.start_block();
+    fw.observe(ws, 2, ham);
+    fw.stop_block();
+    RunResult r;
+    fw.write_results(r);
+
+    const double total = 0.5 + 1.25 + 2.0;
+    const auto v = [](double x) { return 0.5 * x * x; };
+    // Lag 0: the live walkers with their own weights (the mixed estimate).
+    CHECK(result_scalar(r, "potential_fw0") ==
+          Catch::Approx((0.5 * v(4.0) + 1.25 * v(2.0) + 2.0 * v(1.0)) / total));
+    // Lag 1: snapshot 1's walkers 1 (D = 0.5) and 2 (D = 1.25 + 2.0).
+    CHECK(result_scalar(r, "potential_fw1") ==
+          Catch::Approx((0.5 * v(0.5) + 3.25 * v(3.5)) / total));
+    // Lag 2: snapshot 0's walkers 0 (D = 0.5) and 2 (D = 3.25); walker 1 has
+    // no descendant left.
+    CHECK(result_scalar(r, "potential_fw2") ==
+          Catch::Approx((0.5 * v(1.0) + 3.25 * v(3.0)) / total));
+    CHECK(result_scalar(r, "fw2_surviving_fraction") == Catch::Approx(2.0 / 3.0));
+    CHECK(result_scalar(r, "fw0_surviving_fraction") == Catch::Approx(1.0));
+    CHECK(result_scalar(r, "fw1_lag_time") == Catch::Approx(0.1));
+    CHECK(result_scalar(r, "fw2_measurements") == Catch::Approx(1.0));
+}
+
+TEST_CASE("forward walking at lag 0 repeats the mixed estimator exactly", "[dmc][forward_walking]") {
+    WalkerEnsemble ens(64, {grp(0, 1, +1.0, 1.0), grp(1, 2, -1.0, 1.0)}, 2);
+    int k = 0;
+    for (auto& w : ens.walkers()) {
+        const double r = 0.4 + 0.05 * (k++ % 20);
+        w.set_positions(std::vector<double>{0.0, 0.0, r, 0.3 * r});
+    }
+    TrialWavefunction psi = make_psi();
+    Hamiltonian ham = make_ham();
+    DMCConfig cfg;
+    cfg.tau = 0.02;
+    cfg.n_equilibration_blocks = 2;
+    cfg.n_accumulation_blocks = 4;
+    cfg.n_steps = 5;
+    cfg.n_substeps = 2;
+    cfg.seed = 7;
+    cfg.forward_walking_lags = {0.0, 0.2};
+    cfg.forward_walking_interval = 1;
+    DMC dmc(cfg, ens, psi, ham);
+    CHECK(std::vector<std::size_t>(dmc.forward_walking_lag_steps().begin(),
+                                   dmc.forward_walking_lag_steps().end()) ==
+          std::vector<std::size_t>{0, 5});
+
+    const std::vector<ParticleGroup> groups{grp(0, 1, +1.0, 1.0), grp(1, 2, -1.0, 1.0)};
+    std::vector<std::unique_ptr<Estimator>> mixed;
+    mixed.push_back(std::make_unique<PairCorrelation>(groups, 2, 3.0, 12));
+    std::vector<std::vector<std::unique_ptr<Estimator>>> pure(2);
+    for (std::size_t i = 0; i < 2; ++i) {
+        pure[i].push_back(std::make_unique<PairCorrelation>(groups, 2, 3.0, 12));
+        pure[i].back()->set_output_label("fw" + std::to_string(i));
+    }
+    dmc.set_estimators(std::move(mixed));
+    dmc.set_forward_walking_estimators(std::move(pure));
+    dmc.run();
+    const RunResult r = dmc.run_result();
+
+    // Same configurations, same weights, same order: bit-for-bit equal.
+    CHECK(result_series(r, "gofr_fw0_g_g") == result_series(r, "gofr_g_g"));
+    CHECK(result_series(r, "gofr_fw0_g_g_error") == result_series(r, "gofr_g_g_error"));
+    // A positive lag measures other (ancestral) configurations.
+    CHECK(result_series(r, "gofr_fw1_g_g") != result_series(r, "gofr_g_g"));
+    CHECK(result_series(r, "acc_block_potential_fw0").size() == 4);
+    CHECK(result_scalar(r, "fw1_measurements") == Catch::Approx(4.0 * 5.0));
+}
+
+TEST_CASE("forward walking refuses lags it cannot schedule", "[dmc][forward_walking]") {
+    auto build = [](DMCConfig cfg) {
+        WalkerEnsemble ens(4, {grp(0, 1, +1.0, 1.0), grp(1, 2, -1.0, 1.0)}, 2);
+        for (auto& w : ens.walkers()) w.set_positions(std::vector<double>{0.0, 0.0, 1.0, 0.0});
+        TrialWavefunction psi = make_psi();
+        Hamiltonian ham = make_ham();
+        DMC dmc(cfg, ens, psi, ham);
+    };
+    DMCConfig base;
+    base.tau = 0.01;
+    base.n_substeps = 2;               // one step = 0.02
+    base.n_steps = 10;
+    base.n_equilibration_blocks = 5;   // 50 steps = 1.0
+    base.forward_walking_lags = {0.0, 0.4, 1.0};
+    base.forward_walking_interval = 5;
+    CHECK_NOTHROW(build(base));
+
+    using Catch::Matchers::ContainsSubstring;
+    DMCConfig c = base;
+    c.forward_walking_lags = {0.0, 0.41};       // 20.5 steps
+    CHECK_THROWS_WITH(build(c), ContainsSubstring("whole number of steps"));
+    c = base;
+    c.forward_walking_lags = {0.4, 0.2};
+    CHECK_THROWS_WITH(build(c), ContainsSubstring("strictly increasing"));
+    c = base;
+    c.forward_walking_lags = {1.02};            // 51 steps > 50 of equilibration
+    CHECK_THROWS_WITH(build(c), ContainsSubstring("equilibration"));
+    c = base;
+    c.forward_walking_interval = 3;             // does not divide 10 steps
+    CHECK_THROWS_WITH(build(c), ContainsSubstring("divide steps_per_block"));
+    c = base;
+    c.tau = 0.0;
+    CHECK_THROWS_WITH(build(c), ContainsSubstring("time_step > 0"));
+}
+
+TEST_CASE("forward walking converges to the exact pure potential energy of a harmonic trap",
+          "[dmc][forward_walking][physics]") {
+    // One particle in a 2-D trap, m = ω = 1: Φ ∝ e^{−βr²} with β = mω/2 = ½,
+    // E_0 = 1.  The trial e^{−αr²}, α = 0.3, is deliberately too broad.
+    // ψ_T has only m = 0 components, and r² couples the ground state only to
+    // the first radial excitation, 2ω higher, so the lag-T estimate of
+    // V = r²/2 (the formula in qmc/forward_walking.h) is exactly
+    //   ⟨V⟩_T = d/(8β) + [d/(4(α+β)) − d/(8β)] e^{−2ωT} = 0.5 + 0.125 e^{−2T},
+    // from the mixed value 0.625 at T = 0 to the pure 0.5 (VMC: d/(8α) = 0.833),
+    // up to the time-step error of the DMC propagator.
+    const std::vector<ParticleGroup> groups{trap_group()};
+    WalkerEnsemble ens(1000, groups, 2);
+    int k = 0;
+    for (auto& w : ens.walkers()) {
+        const double r = 0.1 + 0.002 * (k % 997);
+        const double phi = 0.618 * k++;
+        w.set_positions(std::vector<double>{r * std::cos(phi), r * std::sin(phi)});
+    }
+    TrialWavefunction psi;
+    psi.add_component(std::make_unique<NosanowJastrow>(
+        2, 0, std::vector<double>{0.0, 0.0}, SimulationCell{},
+        std::vector<Parameter>{{"alpha", 0.3, true}}));
+    Hamiltonian ham = trap_hamiltonian();
+
+    DMCConfig cfg;
+    cfg.tau = 0.005;
+    cfg.n_substeps = 2;                 // one step = 0.01
+    cfg.n_steps = 50;                   // 0.5 per block
+    cfg.n_equilibration_blocks = 20;    // 10 ≥ the largest lag
+    cfg.n_accumulation_blocks = 800;
+    cfg.n_threads = 4;
+    cfg.seed = 20261107;
+    cfg.forward_walking_lags = {0.0, 0.5, 1.0, 3.0};
+    cfg.forward_walking_interval = 5;
+    DMC dmc(cfg, ens, psi, ham);
+    dmc.run();
+    const RunResult r = dmc.run_result();
+
+    // Margin from the measured seed-to-seed spread, not the printed error: 12
+    // seeds of this run (2026-11-07) scatter by σ = 1.1–1.3e-3 per lag (printed
+    // errors 0.9–1.1e-3), with a mean deviation from the exact value of
+    // +0.6(3)e-3 at τ = 0.005 and +0.4(3)e-3 at τ = 0.0025.  5e-3 ≈ 4σ + that
+    // mean; successive exact values differ by 0.079, 0.029 and 0.017, and the
+    // mixed value (lag 0) lies 0.125 above the pure one.
+    constexpr double margin = 5e-3;
+    for (std::size_t i = 0; i < cfg.forward_walking_lags.size(); ++i) {
+        const std::string key = "potential_fw" + std::to_string(i);
+        const double expected = 0.5 + 0.125 * std::exp(-2.0 * cfg.forward_walking_lags[i]);
+        const double value = result_scalar(r, key);
+        INFO(key << " = " << value << " +/- " << result_scalar(r, key + "_error")
+                 << ", exact " << expected);
+        CHECK(std::abs(value - expected) < margin);
+    }
 }

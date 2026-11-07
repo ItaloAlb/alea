@@ -156,6 +156,13 @@ void BatchedDistanceTable::commit_unconditionally(std::size_t p,
     }
 }
 
+void BatchedDistanceTable::resize(std::size_t nw) {
+    nw_ = nw;
+    data_.resize(np_ * np_ * nw);
+    mask_.resize(nw);
+    if (cell_.is_periodic()) delta_.resize(dim_ * nw);
+}
+
 void BatchedDistanceTable::apply_permutation(std::span<const std::size_t> src) {
     const std::size_t new_nw = src.size();
     gathered_data_.resize(np_ * np_ * new_nw);

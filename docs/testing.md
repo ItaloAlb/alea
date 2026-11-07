@@ -109,7 +109,7 @@ blocks.
 | Kind | Files (examples) | What they check |
 |---|---|---|
 | Component contracts | `test_pade_jastrow.cpp`, `test_drummond_jastrow.cpp`, `test_slater_determinant.cpp`, `test_coulomb.cpp`, `test_ewald.cpp`, `test_rytova_keldysh.cpp` | Values against direct sums; gradients and Laplacians against finite differences; ratio and accept consistency; crowd ranges; clones; parameter derivatives. |
-| Physics regressions | `test_vmc_physics.cpp`, `test_dmc.cpp`, `test_fixed_node.cpp`, `test_fixed_phase.cpp`, `test_pimc_physics.cpp`, `test_pimc_many_body.cpp` | Full runs on small systems from `tests/configs/` compared with analytic or published energies |
+| Physics regressions | `test_vmc_physics.cpp`, `test_dmc.cpp`, `test_fixed_node.cpp`, `test_fixed_phase.cpp`, `test_pimc_physics.cpp`, `test_pimc_many_body.cpp` | Full runs on small systems from `tests/configs/` compared with analytic or published energies; the forward-walking (pure) potential energy of a trapped particle against its exact lag dependence |
 | Parser and I/O | `test_parser.cpp`, `test_config_writer.cpp`, `test_walker_io.cpp`, `test_path_io.cpp` | Every key is read; removed keys are refused; snapshots and checkpoints round-trip |
 | Estimator kinds | `test_estimator_builders.cpp`, `test_pair_correlation.cpp`, `test_density.cpp`, `test_electron_hole_proximity.cpp` | Each spec builds its estimator and is refused only where it cannot be measured; every result key lies in the kind's `output_namespaces()`; repeated instances get distinct keys; known answers per kind |
 | Determinism | `test_app.cpp`, `test_vmc.cpp`, `test_dmc.cpp` | Same seed and threads give identical results |

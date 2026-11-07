@@ -1215,3 +1215,32 @@ TEST_CASE("Only the cpu device and the linear optimizer exist", "[parser]") {
     CHECK_THROWS_WITH(parse_config(prefix + "{method: optimizer, type: sr}"),
                       Catch::Matchers::ContainsSubstring("linear"));
 }
+
+TEST_CASE("forward_walking is a DMC map of increasing lags and an interval", "[parser][forward_walking]") {
+    const std::string prefix = "project: {seed: 42}\nqmc:\n  - ";
+    auto c = parse_config(prefix +
+        "{method: dmc, forward_walking: {lags: [0, 0.5, 2.0], interval: 5}}\n");
+    REQUIRE(c.qmc.size() == 1);
+    REQUIRE(c.qmc[0].forward_walking.has_value());
+    CHECK(c.qmc[0].forward_walking->lags == std::vector<double>{0.0, 0.5, 2.0});
+    CHECK(c.qmc[0].forward_walking->interval == 5);
+
+    auto defaults = parse_config(prefix + "{method: dmc, forward_walking: {lags: [1.0]}}\n");
+    CHECK(defaults.qmc[0].forward_walking->interval == 1);
+    CHECK_FALSE(parse_config(prefix + "{method: dmc}\n").qmc[0].forward_walking.has_value());
+}
+
+TEST_CASE("forward_walking is refused outside DMC and with malformed lags", "[parser][forward_walking]") {
+    const std::string prefix = "project: {seed: 42}\nqmc:\n  - ";
+    using Catch::Matchers::ContainsSubstring;
+    // VMC samples |psi_T|^2: there is no mixed distribution to walk forward.
+    CHECK_THROWS_WITH(parse_config(prefix + "{method: vmc, forward_walking: {lags: [1.0]}}\n"),
+                      ContainsSubstring("forward_walking"));
+    for (const std::string fw : {"{lags: []}", "{interval: 2}", "{lags: [1.0, 1.0]}",
+                                 "{lags: [2.0, 1.0]}", "{lags: [-1.0]}", "{lags: [1.0], interval: 0}",
+                                 "{lags: [1.0], steps: 3}", "[1.0, 2.0]"}) {
+        INFO(fw);
+        CHECK_THROWS_WITH(parse_config(prefix + "{method: dmc, forward_walking: " + fw + "}\n"),
+                          ContainsSubstring("forward_walking"));
+    }
+}

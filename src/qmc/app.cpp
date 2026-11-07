@@ -472,6 +472,11 @@ DMCConfig build_dmc_config(const io::QmcSpec& q, std::uint64_t seed) {
         dc.correlation_equilibration_sweeps = *q.correlation_equilibration_sweeps;
     if (q.correlation_min_sweeps) dc.correlation_min_sweeps = *q.correlation_min_sweeps;
     if (q.correlation_max_sweeps) dc.correlation_max_sweeps = *q.correlation_max_sweeps;
+    // The driver checks the lags against τ, sub_steps and the equilibration.
+    if (q.forward_walking) {
+        dc.forward_walking_lags     = q.forward_walking->lags;
+        dc.forward_walking_interval = static_cast<std::size_t>(q.forward_walking->interval);
+    }
     return dc;
 }
 
@@ -732,7 +737,16 @@ DriverPack App::build_drivers(const std::filesystem::path& checkpoint_dir) {
             DMCConfig dmc_cfg = build_dmc_config(spec, stage_seed);
             auto driver = std::make_unique<DMC>(dmc_cfg, *ensemble, *pack.psi,
                                                 *pack.hamiltonian);
-            attach_estimators(*driver, spec.estimators, Sampler::dmc, groups, dim, cell);
+            // The mixed observables, and with forward walking their pure
+            // copies, one set per lag, keyed apart from the mixed ones.
+            auto mixed = build_estimators(
+                spec.estimators, EstimatorContext{groups, cell, dim, Sampler::dmc, false});
+            if (spec.forward_walking)
+                driver->set_forward_walking_estimators(build_forward_walking_estimators(
+                    spec.estimators,
+                    EstimatorContext{groups, cell, dim, Sampler::dmc, /*forward_walking=*/true},
+                    spec.forward_walking->lags.size(), mixed));
+            if (!mixed.empty()) driver->set_estimators(std::move(mixed));
             // Milestone checkpoints (eq/a25/a50/a75) written next to the
             // final walkers_out path: "wk.h5" -> "wk.eq.h5" etc.  Crash
             // recovery + population-evolution diagnostics; the final
