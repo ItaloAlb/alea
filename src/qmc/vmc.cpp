@@ -214,6 +214,10 @@ void VMC::run() {
                                      numerics::stream_seed(cfg_.seed, kVmcEstimatorStream,
                                                            static_cast<std::uint64_t>(t)),
                                      1);
+    // The sweeps commit deferred and refresh every derivative before H, so no
+    // proposal Laplacian is read (set after binding: the estimators' own
+    // copies keep the exact one).
+    for (TrialWavefunction& psi_t : psis_) psi_t.set_proposal_laplacian(false);
 
     using Clock = std::chrono::steady_clock;
     auto t0      = Clock::now();

@@ -2378,3 +2378,86 @@ TEST_CASE("PIMC refuses incompatible particle types in the same group",
                           Catch::Matchers::ContainsSubstring("incompatible particle types"));
     }
 }
+
+// ── Backflow on a slater item ───────────────────────────────────────────────
+
+namespace {
+std::string backflow_gas_yaml(const std::string& extra_lattice, const std::string& backflow,
+                              int up = 5, int down = 0, const std::string& orbitals =
+                                  "{ type: plane_wave }") {
+    return std::string(R"(
+system:
+  lattice: { type: periodic, dimension: 2, shape: square, L: 4.0)") + extra_lattice + R"( }
+  particles:
+    - { name: e, group: electrons, type: fermions, mass: 1.0, charge: -1, up: )" +
+           std::to_string(up) + ", down: " + std::to_string(down) + R"( }
+    - { name: h, group: holes, type: fermions, mass: 1.0, charge: 1, up: 1, down: 0 }
+wavefunction:
+  - slater:
+      group: electrons
+      orbitals: )" + orbitals + R"(
+      backflow: )" + backflow + "\n";
+}
+}  // namespace
+
+TEST_CASE("a slater item with backflow builds a backflow determinant", "[app][backflow]") {
+    const auto cfg = alea::io::parse_config(backflow_gas_yaml(
+        "", "[{ from: electrons, params: [0.1, 0.02] }, "
+            "{ from: holes, cutoff: 1.5, cutoff_fixed: true, params: [-0.1, 0.05], "
+            "is_fixed: [false, true] }]"));
+    const auto groups = build_groups(cfg);
+    const std::vector<double> cellv = {4.0, 0.0, 0.0, 4.0};
+    const alea::SimulationCell cell(2, std::span<const double>(cellv));
+    auto psi = build_wavefunction(cfg, groups, nullptr, cell);
+    REQUIRE(psi.components().size() == 1);
+    CHECK(psi.components()[0]->name() == "backflow_slater_determinant");
+    CHECK(psi.components()[0]->is_nodal());
+    const auto params = psi.components()[0]->parameters();
+    REQUIRE(params.size() == 6);   // [c0, c2, L] like-spin, [c0, c1, L] from holes
+    CHECK(params[0].name == "bf0_c0");
+    CHECK(params[1].name == "bf0_c2");
+    CHECK(params[2].name == "bf0_L");
+    CHECK(params[2].value == Catch::Approx(2.0));      // default: the inradius of the 4×4 cell
+    CHECK_FALSE(params[2].is_fixed);
+    CHECK(params[2].upper_bound == Catch::Approx(2.0));
+    CHECK(params[4].name == "bf1_c1");
+    CHECK(params[4].is_fixed);
+    CHECK(params[5].value == 1.5);
+    CHECK(params[5].is_fixed);
+}
+
+TEST_CASE("backflow is refused where it cannot be represented", "[app][backflow]") {
+    const std::vector<double> cellv = {4.0, 0.0, 0.0, 4.0};
+    const alea::SimulationCell cell(2, std::span<const double>(cellv));
+    auto build = [&](const std::string& yaml) {
+        const auto cfg = alea::io::parse_config(yaml);
+        return build_wavefunction(cfg, build_groups(cfg), nullptr, cell);
+    };
+    using Catch::Matchers::ContainsSubstring;
+    // Twisted plane waves are complex.
+    CHECK_THROWS_WITH(build(backflow_gas_yaml(", twist: [0.2, 0.1]",
+                                              "[{ from: holes, params: [0.1, 0.0] }]", 4, 0)),
+                      ContainsSubstring("backflow") && ContainsSubstring("twisted"));
+    // A same-group channel on a group with both spins.
+    CHECK_THROWS_WITH(build(backflow_gas_yaml("", "[{ from: electrons, params: [0.1] }]", 5, 1)),
+                      ContainsSubstring("one spin"));
+    // A cutoff beyond the inradius.
+    CHECK_THROWS_WITH(build(backflow_gas_yaml("", "[{ from: holes, cutoff: 2.5, params: [0.1, 0.0] }]")),
+                      ContainsSubstring("inradius"));
+}
+
+TEST_CASE("an open-cell backflow channel needs a cutoff", "[app][backflow]") {
+    const auto cfg = alea::io::parse_config(R"(
+system:
+  lattice: { type: open, dimension: 2, L: 1.0 }
+  particles:
+    - { name: e, group: electrons, type: fermions, mass: 1.0, charge: -1, up: 2, down: 0 }
+wavefunction:
+  - slater:
+      group: electrons
+      orbitals: { type: gaussian, centers: [[-1.0, 0.0], [1.0, 0.0]], alphas: [0.3, 0.3] }
+      backflow: [{ from: electrons, params: [0.1] }]
+)");
+    CHECK_THROWS_WITH(build_wavefunction(cfg, build_groups(cfg), nullptr, alea::SimulationCell(2)),
+                      Catch::Matchers::ContainsSubstring("cutoff"));
+}

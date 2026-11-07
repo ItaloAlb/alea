@@ -613,3 +613,37 @@ qmc:
     CHECK(std::get<alea::io::PimcStageIndex>(replay.sampling_order[1]).index == 0);
     CHECK(std::get<alea::io::QmcStageIndex>(replay.sampling_order[2]).index == 1);
 }
+
+TEST_CASE("snapshot writes optimised backflow coefficients and cutoffs back",
+          "[config_writer][slater][backflow]") {
+    // [b0_alpha | bf0: c0, c2, L | bf1: c0, c1, L]: the width goes to `alphas`,
+    // each channel's free coefficients to its `params` and L to its `cutoff`.
+    TempDir tmp("slater_backflow");
+    const fs::path src = tmp.path / "bf.yaml";
+    std::ofstream(src) << R"(wavefunction:
+  - slater:
+      group: e
+      orbitals:
+        type: gaussian
+        centers: [[-1.0, 0.0], [1.0, 0.0]]
+        alphas: [0.7, 0.7]
+        alpha_fixed: false
+      backflow:
+        - { from: e, cutoff: 3.0, params: [0.1, 0.0] }
+        - { from: h, params: [0.0, 0.0] }
+)";
+    const fs::path run_dir = tmp.path / "run";
+    fs::create_directories(run_dir);
+    alea::io::write_config_snapshot(src.string(), {{0.81, 0.12, -0.03, 2.5, 0.2, -0.1, 1.75}},
+                                    run_dir, 3);
+    const YAML::Node root = YAML::LoadFile((run_dir / "bf.yaml").string());
+    const YAML::Node slater = root["wavefunction"][0]["slater"];
+    CHECK(slater["orbitals"]["alphas"][1].as<double>() == 0.81);
+    const YAML::Node bf = slater["backflow"];
+    REQUIRE(bf.size() == 2);
+    CHECK(bf[0]["params"].as<std::vector<double>>() == std::vector<double>{0.12, -0.03});
+    CHECK(bf[0]["cutoff"].as<double>() == 2.5);
+    CHECK(bf[1]["params"].as<std::vector<double>>() == std::vector<double>{0.2, -0.1});
+    CHECK(bf[1]["cutoff"].as<double>() == 1.75);
+    CHECK(bf[1]["from"].as<std::string>() == "h");
+}

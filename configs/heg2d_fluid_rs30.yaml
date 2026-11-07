@@ -16,8 +16,9 @@
 # and the density where that difference changes sign is the crystallization
 # condition.  Reference: Tanatar & Ceperley, Phys. Rev. B 39, 5005 (1989) put it
 # at rs = 37 ± 5 with plane-wave nodes (rs = 31 ± 1 with backflow, Drummond &
-# Needs, PRL 102, 126402 (2009) — backflow is not implemented here, so TC89 is
-# the like-for-like comparison).
+# Needs, PRL 102, 126402 (2009)).  This config uses plane-wave nodes without
+# backflow, so TC89 is the like-for-like comparison; a `backflow:` block on the
+# slater item (docs/configuration.md) gives the backflow nodes of DN09.
 #
 # At rs = 30 the literature therefore predicts the FLUID still lower, by a small
 # margin.  That is the falsifiable statement this pair of runs tests.

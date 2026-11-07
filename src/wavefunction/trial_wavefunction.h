@@ -53,6 +53,10 @@ public:
         std::size_t w_begin = 0, std::size_t w_end = static_cast<std::size_t>(-1));
     void refresh_derivatives(WalkerSet& batch, std::size_t w_begin = 0,
         std::size_t w_end = static_cast<std::size_t>(-1));
+    // WavefunctionComponent::set_proposal_laplacian on every component.
+    void set_proposal_laplacian(bool needed) {
+        for (const auto& c : components_) c->set_proposal_laplacian(needed);
+    }
 
     // Σ of the components' committed per-walker state, valid after
     // evaluate_batch; sizes cache-blocked sweeps (never changes results).

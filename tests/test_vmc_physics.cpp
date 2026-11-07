@@ -1146,6 +1146,20 @@ TEST_CASE("Two-electron dot in B: DMC gets the exact singlet energy",
     check_two_body_exact("dot2e_singlet.yaml", 3.0, 2.9e-2);
 }
 
+// ── Backflow keeps an exact node: two like-spin electrons, no field ─────────
+// The real triplet f(r) cos φ_rel vanishes on x_1 = x_2, which the two-
+// Gaussian determinant and its same-group backflow both reproduce (see the
+// config), so fixed-node DMC with backflow is exact: E = 1.9139333019
+// (tests/references/dot_two_electron_exact.py --w0 0.5 --B 0 --m 1).  Over 24
+// seeds (2026-11-07) the DMC energy of this run length has mean exact
+// + 0.04(32)e-3 and standard deviation 1.6e-3 (printed ±~1.2e-3; without the
+// backflow block: + 0.03(21)e-3 and 1.05e-3).  Margin = 4 deviations, 6.5e-3,
+// inside the VMC offset +0.0275 of the unoptimized backflow and Jastrow.
+TEST_CASE("Two-electron dot: fixed-node DMC with backflow gets the exact triplet energy",
+          "[dmc][physics][backflow][literature]") {
+    check_two_body_exact("dot2e_triplet_backflow.yaml", 1.9139333019, 6.5e-3);
+}
+
 // ── Two dipoles (1/r³) in a trap at the coupling of the 2-D dipolar crystal ─
 // ω = 2000 holds the pair at the lattice spacing of n r0² = 256 (see the
 // config).  Exact E = 12044.7791588900 from tests/references/inverse_power_trap_exact.py,

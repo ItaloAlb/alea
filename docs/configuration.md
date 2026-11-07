@@ -184,6 +184,37 @@ that group's `up`/`down`.
 closed shells; the error message lists the valid particle counts. `fock_darwin`
 orbitals are complex (2D only), so DMC runs fixed-phase.
 
+**Backflow.** A `backflow:` list evaluates the orbitals at quasi-coordinates
+$\mathbf x_i = \mathbf r_i + \sum_c \sum_{j \in c} \eta_c(r_{ij})\,\mathbf r_{ij}$
+instead of $\mathbf r_i$ (López Ríos et al., *Phys. Rev. E* **74**, 066701 (2006)),
+which moves the nodes and so the fixed-node energy; a Jastrow factor cannot.
+Each channel names a source group and has its own
+$\eta(r) = (1 - r/L)^C\,\Theta(L - r)\sum_k c_k r^k$:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `from` | — (required) | Group whose particles displace the rows: the determinant's own group (like-spin pairs; that group must hold one spin only) or any other group |
+| `params` | — (required) | Free coefficients: $[c_0, c_2, c_3, \ldots]$ for the own group, where $c_1 = C c_0/L$ is derived so that $\eta'(0) = 0$ keeps the like-spin cusp; $[c_0, c_1, c_2, \ldots]$ for any other group |
+| `is_fixed` | all `false` | One flag per `params` entry |
+| `truncation` | 3 | $C \ge 2$; 3 keeps the local energy continuous at $L$ |
+| `cutoff` | Wigner–Seitz inradius (periodic) | $L$; required in an open cell, and never beyond the inradius |
+| `cutoff_fixed` | `false` | `true` keeps $L$ out of the optimization |
+
+```yaml
+- slater:
+    group: electrons
+    orbitals: { type: plane_wave }
+    backflow:
+      - { from: electrons, params: [0.0, 0.0, 0.0] }   # c0, c2, c3; L = inradius
+```
+
+Backflow is available for real determinants (`gaussian`, and `plane_wave` at
+the Γ twist); `fock_darwin` and twisted plane waves refuse it. Every move
+rebuilds and inverts the determinants, $O(N^3)$ per move instead of the
+$O(N^2)$ rank-one update. PIMC refuses backflow nodes. The optimizer moves the
+backflow parameters without the curvature term of $\bar H$ (the log warns), so
+take smaller steps (`rescale`) if it overshoots.
+
 ### `- pairing:` (pairing determinant)
 
 $\prod_b \det \varphi(\mathbf r_i - \mathbf r_j)$: in each block, row $i$ is a

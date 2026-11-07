@@ -153,6 +153,22 @@ inline std::string jastrow_pairs_label(const JastrowSpec& j) {
     return label;
 }
 
+// One backflow channel of a slater item (wavefunction/backflow_slater_determinant.h):
+// the particles of group `from` displace the determinant's quasi-coordinates by
+// η(r) r, η(r) = (1 − r/L)^C Θ(L − r) Σ_k c_k r^k.  `params` lists the free
+// coefficients: [c_0, c_2, ..] when `from` is the determinant's own group (a
+// like-spin channel, c_1 = C c_0/L derived), [c_0, c_1, c_2, ..] otherwise.
+// `cutoff` L: required in an open cell, the Wigner–Seitz inradius by default
+// under periodic boundaries (and never beyond it).
+struct BackflowSpec {
+    std::string           from;
+    int                   truncation = 3;       // C (≥ 2; 3 keeps E_L continuous at L)
+    std::optional<double> cutoff;
+    bool                  cutoff_fixed = false;  // optimize L unless true
+    std::vector<double>   params;
+    std::vector<bool>     is_fixed;              // one per params entry; absent → all free
+};
+
 // Slater determinant trial factor (fermionic antisymmetry).  Declared under
 // `wavefunction:` as `- slater: { group, orbitals }`.  ψ_det = det(D_up)·det(D_down)
 // over the named group; the up/down block sizes come from that group's particle
@@ -179,6 +195,9 @@ struct SlaterSpec {
     // (= mΩ for the exact one-body state).  See FockDarwinOrbitalSet.
     std::vector<int>                 ls;
     std::optional<double>            beta;
+    // `backflow:` channels (empty → the plain determinant).  Real orbitals only
+    // (plane_wave at the Γ twist, gaussian); the builder refuses the others.
+    std::vector<BackflowSpec>        backflow;
 };
 
 // One-body parabolic confinement V = Σ ½ m ω² |r − center|² on `groups`

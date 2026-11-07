@@ -683,6 +683,7 @@ set(APP_SOURCES
     ${SRC_DIR}/numerics/ewald_breakup.cpp
     ${SRC_DIR}/numerics/long_range_breakup.cpp
     ${SRC_DIR}/wavefunction/slater_determinant.cpp
+    ${SRC_DIR}/wavefunction/backflow_slater_determinant.cpp
     ${SRC_DIR}/hamiltonian/screened_coulomb.cpp
     ${fsc_SOURCE}
     ${SRC_DIR}/hamiltonian/moire.cpp
@@ -777,6 +778,7 @@ add_executable(test_linear_optimize
     ${SRC_DIR}/numerics/statistics.cpp
     ${SRC_DIR}/wavefunction/trial_wavefunction.cpp
     ${SRC_DIR}/wavefunction/slater_determinant.cpp
+    ${SRC_DIR}/wavefunction/backflow_slater_determinant.cpp
     ${SRC_DIR}/wavefunction/pade_jastrow.cpp
     ${SRC_DIR}/wavefunction/periodic_pair_sum.cpp
     ${SRC_DIR}/wavefunction/kspace_pair_sum.cpp
@@ -865,6 +867,7 @@ add_executable(test_pairing_determinant
     ${SRC_DIR}/wavefunction/pair_orbital.cpp
     ${SRC_DIR}/wavefunction/pairing_determinant.cpp
     ${SRC_DIR}/wavefunction/slater_determinant.cpp
+    ${SRC_DIR}/wavefunction/backflow_slater_determinant.cpp
     ${SRC_DIR}/wavefunction/trial_wavefunction.cpp
     ${SRC_DIR}/wavefunction/wavefunction_component.cpp
     ${SRC_DIR}/population/particle_batch.cpp
@@ -881,6 +884,7 @@ add_executable(test_slater_determinant
     test_slater_determinant.cpp
     test_slater_sequence.cpp
     ${SRC_DIR}/wavefunction/slater_determinant.cpp
+    ${SRC_DIR}/wavefunction/backflow_slater_determinant.cpp
     ${SRC_DIR}/wavefunction/trial_wavefunction.cpp
     ${SRC_DIR}/wavefunction/wavefunction_component.cpp
     ${SRC_DIR}/qmc/dmc.cpp
@@ -903,6 +907,23 @@ target_link_libraries(test_slater_determinant PRIVATE Catch2::Catch2WithMain Ope
 target_compile_options(test_slater_determinant PRIVATE -Wall -Wextra -Wpedantic -fopenmp-simd
     $<$<CONFIG:Release>:-march=native> $<$<CONFIG:Release>:-fno-math-errno>)
 
+add_executable(test_backflow_slater
+    test_backflow_slater.cpp
+    ${SRC_DIR}/wavefunction/backflow_slater_determinant.cpp
+    ${SRC_DIR}/wavefunction/slater_determinant.cpp
+    ${SRC_DIR}/wavefunction/trial_wavefunction.cpp
+    ${SRC_DIR}/wavefunction/wavefunction_component.cpp
+    ${SRC_DIR}/population/particle_batch.cpp
+    ${SRC_DIR}/population/walker_set.cpp
+    ${SRC_DIR}/population/walker.cpp
+    ${SRC_DIR}/population/batched_distance_table.cpp
+    ${SRC_DIR}/population/simulation_cell.cpp
+)
+target_include_directories(test_backflow_slater PRIVATE ${SRC_DIR} ${eigen_INCLUDE_DIR})
+target_link_libraries(test_backflow_slater PRIVATE Catch2::Catch2WithMain OpenMP::OpenMP_CXX)
+target_compile_options(test_backflow_slater PRIVATE -Wall -Wextra -Wpedantic -fopenmp-simd
+    $<$<CONFIG:Release>:-march=native> $<$<CONFIG:Release>:-fno-math-errno>)
+
 add_executable(test_sweep_blocking
     test_sweep_blocking.cpp
     ${SRC_DIR}/qmc/vmc.cpp
@@ -910,6 +931,7 @@ add_executable(test_sweep_blocking
     ${SRC_DIR}/qmc/forward_walking.cpp
     ${SRC_DIR}/qmc/population_control.cpp
     ${SRC_DIR}/wavefunction/slater_determinant.cpp
+    ${SRC_DIR}/wavefunction/backflow_slater_determinant.cpp
     ${SRC_DIR}/wavefunction/trial_wavefunction.cpp
     ${SRC_DIR}/wavefunction/pade_jastrow.cpp
     ${SRC_DIR}/wavefunction/periodic_pair_sum.cpp
@@ -1067,6 +1089,7 @@ add_executable(test_density_matrix
     ${SRC_DIR}/wavefunction/pair_orbital.cpp
     ${SRC_DIR}/wavefunction/pairing_determinant.cpp
     ${SRC_DIR}/wavefunction/slater_determinant.cpp
+    ${SRC_DIR}/wavefunction/backflow_slater_determinant.cpp
     ${SRC_DIR}/wavefunction/trial_wavefunction.cpp
     ${SRC_DIR}/wavefunction/wavefunction_component.cpp
     ${SRC_DIR}/numerics/statistics.cpp
@@ -1110,6 +1133,7 @@ add_executable(test_fixed_phase
     ${SRC_DIR}/numerics/pair_radial.cpp
     ${SRC_DIR}/numerics/long_range_breakup.cpp
     ${SRC_DIR}/wavefunction/slater_determinant.cpp
+    ${SRC_DIR}/wavefunction/backflow_slater_determinant.cpp
     ${SRC_DIR}/hamiltonian/hamiltonian.cpp
     ${SRC_DIR}/hamiltonian/kinetic.cpp
     ${SRC_DIR}/hamiltonian/coulomb.cpp
@@ -1157,6 +1181,7 @@ add_executable(test_gauge_field
     ${SRC_DIR}/hamiltonian/harmonic_trap.cpp
     ${SRC_DIR}/wavefunction/complex_slater_determinant.cpp
     ${SRC_DIR}/wavefunction/slater_determinant.cpp
+    ${SRC_DIR}/wavefunction/backflow_slater_determinant.cpp
     ${SRC_DIR}/wavefunction/trial_wavefunction.cpp
     ${SRC_DIR}/wavefunction/wavefunction_component.cpp
     ${SRC_DIR}/population/particle_batch.cpp
@@ -1338,6 +1363,7 @@ catch_discover_tests(test_dmc)
 catch_discover_tests(test_fixed_node)
 catch_discover_tests(test_pairing_determinant)
 catch_discover_tests(test_slater_determinant)
+catch_discover_tests(test_backflow_slater)
 catch_discover_tests(test_sweep_blocking)
 catch_discover_tests(test_parser)
 catch_discover_tests(test_logger)

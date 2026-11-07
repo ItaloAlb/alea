@@ -15,8 +15,9 @@
 #
 # Reference: Tanatar & Ceperley, Phys. Rev. B 39, 5005 (1989) put the crossing at
 # rs = 37 ± 5 with plane-wave nodes (rs = 31 ± 1 with backflow, Drummond & Needs,
-# PRL 102, 126402 (2009) — backflow is not implemented here, so TC89 is the
-# like-for-like comparison).
+# PRL 102, 126402 (2009)).  This config uses plane-wave nodes without backflow,
+# so TC89 is the like-for-like comparison; a `backflow:` block on the slater
+# item (docs/configuration.md) gives the backflow nodes of DN09.
 #
 # This is the rs = 40 pair.  The first rs = 30 and rs = 40 DMC runs are INVALID
 # (population-control limit cycle, see "CORRECTED DIAGNOSIS" below); only their

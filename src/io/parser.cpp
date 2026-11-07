@@ -466,9 +466,39 @@ Config parse_config(const std::string& yaml_text) {
             if (jn["cutoff_fixed"]) j.cutoff_fixed = jn["cutoff_fixed"].as<bool>();
             c.wavefunction.emplace_back(std::move(j));
         } else if (const YAML::Node sn = item["slater"]) {
-            require_keys(sn, "slater", {"group", "orbitals"});
+            require_keys(sn, "slater", {"group", "orbitals", "backflow"});
             SlaterSpec s;
             if (sn["group"]) s.group = sn["group"].as<std::string>();
+            if (const YAML::Node bf = sn["backflow"]) {
+                const std::string where = "slater backflow of group " + s.group;
+                if (!bf.IsSequence() || bf.size() == 0)
+                    throw std::runtime_error(where + ": expected a nonempty list of channels "
+                                             "{from, params, ...}");
+                for (const YAML::Node& cn : bf) {
+                    if (!cn.IsMap())
+                        throw std::runtime_error(where + ": each channel is a map");
+                    require_keys(cn, where, {"from", "truncation", "cutoff", "cutoff_fixed",
+                                             "params", "is_fixed"});
+                    BackflowSpec b;
+                    if (!cn["from"])
+                        throw std::runtime_error(where + ": a channel needs `from:` (the "
+                                                 "group whose particles displace the rows)");
+                    b.from = cn["from"].as<std::string>();
+                    if (!cn["params"] || !cn["params"].IsSequence() || cn["params"].size() == 0)
+                        throw std::runtime_error(
+                            where + " from " + b.from + ": needs `params`, the free "
+                            "coefficients [c_0, ...] (c_1 is derived for the group itself)");
+                    b.params = cn["params"].as<std::vector<double>>();
+                    if (cn["is_fixed"]) b.is_fixed = cn["is_fixed"].as<std::vector<bool>>();
+                    if (!b.is_fixed.empty() && b.is_fixed.size() != b.params.size())
+                        throw std::runtime_error(where + " from " + b.from +
+                                                 ": `is_fixed` needs one flag per params entry");
+                    if (cn["truncation"]) b.truncation = cn["truncation"].as<int>();
+                    if (cn["cutoff"]) b.cutoff = cn["cutoff"].as<double>();
+                    if (cn["cutoff_fixed"]) b.cutoff_fixed = cn["cutoff_fixed"].as<bool>();
+                    s.backflow.push_back(std::move(b));
+                }
+            }
             if (const YAML::Node orb = sn["orbitals"]) {
                 require_keys(orb, "slater orbitals of group " + s.group,
                              {"type", "centers", "alphas", "sites", "alpha",

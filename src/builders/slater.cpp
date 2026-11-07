@@ -15,6 +15,7 @@
 #include <stdexcept>
 #include <utility>
 
+#include "wavefunction/backflow_slater_determinant.h"
 #include "wavefunction/complex_orbital_set.h"
 #include "wavefunction/complex_slater_determinant.h"
 #include "wavefunction/orbital_set.h"
@@ -92,11 +93,13 @@ std::vector<Block> spin_blocks(const ParticleGroup& g, std::size_t n_up,
     return blocks;
 }
 
-// `alpha_fixed: false` unpins the determinant's nodal parameters.  One that
-// exposes none is refused rather than silently optimising nothing.
-void unpin_widths(const io::SlaterSpec& s, WavefunctionComponent& det) {
+// `alpha_fixed: false` unpins the determinant's orbital widths, its first
+// n_orbital parameters (a backflow determinant lists its channels after them).
+// One that exposes none is refused rather than silently optimising nothing.
+void unpin_widths(const io::SlaterSpec& s, WavefunctionComponent& det,
+                  std::size_t n_orbital) {
     if (s.alpha_fixed) return;
-    const std::span<Parameter> params = det.parameters();
+    const std::span<Parameter> params = det.parameters().first(n_orbital);
     if (params.empty())
         throw std::runtime_error(
             "slater: `alpha_fixed: false` on group " + s.group +
@@ -107,12 +110,77 @@ void unpin_widths(const io::SlaterSpec& s, WavefunctionComponent& det) {
     for (Parameter& p : params) p.is_fixed = false;
 }
 
+// The `backflow:` channels of a slater item: the source group's particle range,
+// the free coefficients and the cutoff L (its own parameter, last).  Whether c_1
+// is derived (a like-spin channel) is the component's rule, not the config's.
+std::vector<BackflowSlaterDeterminant::Channel> backflow_channels(
+    const io::SlaterSpec& s, const WavefunctionContext& ctx) {
+    std::vector<BackflowSlaterDeterminant::Channel> channels;
+    for (const io::BackflowSpec& b : s.backflow) {
+        const ParticleGroup& src = find_group(ctx.groups, b.from);
+        BackflowSlaterDeterminant::Channel ch;
+        ch.source_first = src.first;
+        ch.source_last = src.last;
+        ch.truncation = b.truncation;
+        for (std::size_t k = 0; k < b.params.size(); ++k)
+            ch.params.push_back(
+                Parameter{"", b.params[k], b.is_fixed.empty() ? false : b.is_fixed[k]});
+        double cutoff = 0.0;
+        if (b.cutoff) {
+            cutoff = *b.cutoff;
+        } else if (ctx.cell.is_periodic()) {
+            cutoff = ctx.cell.ws_radius();
+        } else {
+            throw std::runtime_error(
+                "slater on group " + s.group + ": the backflow channel from " + b.from +
+                " needs a `cutoff` in an open cell (under periodic boundaries it "
+                "defaults to the Wigner-Seitz inradius)");
+        }
+        ch.params.push_back(Parameter{"", cutoff, b.cutoff_fixed});
+        channels.push_back(std::move(ch));
+    }
+    return channels;
+}
+
+// The real determinant of a group's spin blocks: plain, or with backflow
+// when the item lists `backflow:` channels.
+template <class MakeOrbitals>
+std::unique_ptr<WavefunctionComponent> real_determinant(
+    const io::SlaterSpec& s, const ParticleGroup& g, std::size_t n_up, std::size_t n_dn,
+    const WavefunctionContext& ctx, MakeOrbitals&& make) {
+    if (s.backflow.empty()) {
+        auto det = std::make_unique<SlaterDeterminant>(
+            spin_blocks<SlaterDeterminant::Block>(g, n_up, n_dn, make));
+        unpin_widths(s, *det, det->parameters().size());
+        return det;
+    }
+    try {
+        auto det = std::make_unique<BackflowSlaterDeterminant>(
+            spin_blocks<BackflowSlaterDeterminant::Block>(g, n_up, n_dn, make),
+            backflow_channels(s, ctx), ctx.cell);
+        unpin_widths(s, *det, det->n_orbital_parameters());
+        return det;
+    } catch (const std::invalid_argument& e) {
+        throw std::runtime_error("slater on group " + s.group + ": " + e.what());
+    }
+}
+
+// Backflow is implemented for real determinants only; a complex one refuses it
+// rather than silently dropping the channels.
+void refuse_complex_backflow(const io::SlaterSpec& s, const std::string& why) {
+    if (!s.backflow.empty())
+        throw std::runtime_error(
+            "slater on group " + s.group + ": backflow is implemented for real "
+            "determinants (plane_wave at the Gamma twist, gaussian), not for " + why);
+}
+
 // Fock–Darwin: complex angular-momentum orbitals (field/rotation).  One pool of
 // l values; each spin block takes it from the front, like a shared Gaussian
 // pool.  Complex → DMC runs fixed phase.
 std::unique_ptr<WavefunctionComponent> build_fock_darwin(
     const io::SlaterSpec& s, const ParticleGroup& g, std::size_t n_up,
     std::size_t n_dn, const WavefunctionContext& ctx) {
+    refuse_complex_backflow(s, "complex fock_darwin orbitals");
     if (ctx.dim != 2)
         throw std::runtime_error("slater: fock_darwin orbitals are 2-D");
     if (!s.beta || *s.beta <= 0.0)
@@ -148,19 +216,17 @@ std::unique_ptr<WavefunctionComponent> build_plane_wave(
     // occupied k+θ are no longer closed under k → −k, so no real cos/sin basis
     // exists: build e^{i(k+θ)·r} orbitals and a complex determinant (DMC then
     // runs fixed phase).  An integer twist IS Γ and keeps the cheaper real path.
-    if (!is_gamma_twist(twist))
+    if (!is_gamma_twist(twist)) {
+        refuse_complex_backflow(s, "twisted (complex) plane waves");
         return std::make_unique<ComplexSlaterDeterminant>(
             spin_blocks<ComplexSlaterDeterminant::Block>(
                 g, n_up, n_dn, [&](bool, std::size_t k) {
                     return make_twisted_plane_wave_orbitals(ctx.cell, k, twist);
                 }));
-    auto det = std::make_unique<SlaterDeterminant>(
-        spin_blocks<SlaterDeterminant::Block>(
-            g, n_up, n_dn, [&](bool, std::size_t k) {
-                return make_plane_wave_orbitals(ctx.cell, k);
-            }));
-    unpin_widths(s, *det);
-    return det;
+    }
+    return real_determinant(s, g, n_up, n_dn, ctx, [&](bool, std::size_t k) {
+        return make_plane_wave_orbitals(ctx.cell, k);
+    });
 }
 
 // Gaussians: explicit centers (a molecule's shared orbital pool), or a crystal
@@ -224,10 +290,7 @@ std::unique_ptr<WavefunctionComponent> build_gaussian(
         return std::make_unique<GaussianOrbitalSet>(dim, std::move(centers),
                                                     std::move(alphas), ctx.cell);
     };
-    auto det = std::make_unique<SlaterDeterminant>(
-        spin_blocks<SlaterDeterminant::Block>(g, n_up, n_dn, make_orbitals));
-    unpin_widths(s, *det);
-    return det;
+    return real_determinant(s, g, n_up, n_dn, ctx, make_orbitals);
 }
 
 }  // namespace
