@@ -239,7 +239,9 @@ Seeds written into the config:
   Einstein cage of the Wigner crystal;
 - the one-body `moire_jastrow`, at its first-order perturbative value for the
   fluid and a tenth of that for the crystal;
-- a Drummond pair Jastrow.
+- a Drummond pair Jastrow (like- and unlike-spin when unpolarized), with a
+  fixed cutoff of 3 r_s within the Wigner–Seitz inradius, the same for the
+  crystal and the liquid so that neither phase gets a longer-ranged Jastrow.
 
 The optimizer stages move all of them. The DMC time steps are set from the
 crystal's localization and are identical for both states, so the time-step
