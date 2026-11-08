@@ -177,6 +177,15 @@ public:
                                             double psi_step_tol,
                                             double min_effective_fraction);
 
+    // May a step be scored by reweighting (set on ψ)?  Every |Δp_k| finite and
+    // at most max_param_change · max(1, max_k |p_k|).  A nearly singular S̄
+    // (parameters that are nearly redundant close to the optimum) gives steps
+    // of 1e19; set on ψ they leave the parameters' domain, a sign-locked
+    // cutoff L e^{Δθ} = ∞, and the component throws.  NaN fails the test.
+    [[nodiscard]] static bool step_within_bounds(std::span<const double> update,
+                                                 std::span<const double> params,
+                                                 double max_param_change);
+
     // The energy of one fresh sample: its mean local energy and the reblocked
     // standard error of that mean.
     struct MeasuredEnergy {

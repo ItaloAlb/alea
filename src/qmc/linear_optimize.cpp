@@ -490,6 +490,16 @@ bool LinearOptimize::step_is_small(double psi_step, const Reweighted& rw,
            psi_step < psi_step_tol;
 }
 
+bool LinearOptimize::step_within_bounds(std::span<const double> update,
+                                        std::span<const double> params,
+                                        double max_param_change) {
+    double max_param = 1.0;
+    for (double p : params) max_param = std::max(max_param, std::abs(p));
+    for (double u : update)
+        if (!(std::abs(u) <= max_param_change * max_param)) return false;   // NaN too
+    return true;
+}
+
 // Two independent samples, so their errors add in quadrature.  Comparing with
 // the sample the step started from, not with the lowest energy of the stage,
 // keeps the test unbiased: the minimum of many noisy energies lies below the
@@ -549,10 +559,8 @@ bool LinearOptimize::adaptive_iteration(const Eigen::MatrixXd& Sbar,
         double max_update = 0.0;
         for (std::size_t k = 0; k < n_opt; ++k)
             max_update = std::max(max_update, std::abs(lm_result.update[k]));
-        double max_param = 1.0;
-        for (std::size_t k = 0; k < n_opt; ++k)
-            max_param = std::max(max_param, std::abs(params_before[k]));
-        if (!std::isfinite(max_update) || max_update > cfg_.max_param_change * max_param) {
+        if (!step_within_bounds(std::span<const double>(lm_result.update).first(n_opt),
+                                params_before, cfg_.max_param_change)) {
             char buf[128];
             std::snprintf(buf, sizeof(buf),
                           "optimize:   shift_i=%.3g shift_s=%.3g  step too large (%.3g)",
@@ -772,11 +780,21 @@ void LinearOptimize::run() {
                 for (std::size_t j = 0; j < n_opt; ++j)
                     D += full.update[i] * Sbar(i + 1, j + 1) * full.update[j];
             const double psi_step = std::sqrt(std::max(D, 0.0));
-            const Reweighted rw = reweight(store, full.update);
+            // Only a step within bounds is scored; a larger one is not small
+            // either (rw stays non-finite, so step_is_small is false).
+            const bool scorable = step_within_bounds(
+                std::span<const double>(full.update).first(n_opt), current_params(),
+                cfg_.max_param_change);
+            const Reweighted rw = scorable ? reweight(store, full.update) : Reweighted{};
             char buf[160];
-            std::snprintf(buf, sizeof(buf),
-                          "optimize:   full step  |dpsi|/|psi|=%.2e  dE=%+.3e +- %.1e  N_eff=%.2f",
-                          psi_step, rw.dE, rw.dE_error, rw.n_eff_fraction);
+            if (scorable)
+                std::snprintf(buf, sizeof(buf),
+                              "optimize:   full step  |dpsi|/|psi|=%.2e  dE=%+.3e +- %.1e  N_eff=%.2f",
+                              psi_step, rw.dE, rw.dE_error, rw.n_eff_fraction);
+            else
+                std::snprintf(buf, sizeof(buf),
+                              "optimize:   full step  |dpsi|/|psi|=%.2e  beyond max_param_change, not scored",
+                              psi_step);
             io::Logger::info(buf);
             bool settled = false;
             if (fresh_sample &&
