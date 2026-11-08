@@ -177,6 +177,7 @@ set(SOURCES
     src/hamiltonian/harmonic_trap.cpp
     src/hamiltonian/inverse_power.cpp
     src/wavefunction/complex_slater_determinant.cpp
+    src/wavefunction/complex_backflow_slater_determinant.cpp
     src/wavefunction/pade_jastrow.cpp
     src/wavefunction/periodic_pair_sum.cpp
     src/wavefunction/kspace_pair_sum.cpp

@@ -46,6 +46,25 @@ public:
                           SplitComplexSpan lap, std::size_t w_begin,
                           std::size_t w_end) const = 0;
 
+    // ── Full Hessian (backflow) ─────────────────────────────────────────────
+    // A backflow determinant evaluates the orbitals at one quasi-coordinate x
+    // ([dim]) at a time, and its Laplacian needs the mixed derivatives:
+    //   val [n]  grad [n * dim]  hess [n * dim * dim],
+    //   val[i] = φ_i(x),  grad[i*dim + a] = ∂_a φ_i(x),
+    //   hess[(i*dim + a)*dim + b] = ∂_a ∂_b φ_i(x).
+    // Interleaved complex, not split planes: the backflow algebra is dense
+    // linear algebra on one configuration, not a loop over walkers.  Outputs
+    // are overwritten.  Sets that do not provide it say so, and the backflow
+    // determinant refuses them.
+    [[nodiscard]] virtual bool supports_hessian() const noexcept { return false; }
+    virtual void evaluate_hessian(std::span<const double> x, std::size_t dim,
+                                  std::span<std::complex<double>> val,
+                                  std::span<std::complex<double>> grad,
+                                  std::span<std::complex<double>> hess) const {
+        (void)x; (void)dim; (void)val; (void)grad; (void)hess;
+        throw std::logic_error("complex orbital set has no Hessian (supports_hessian() is false)");
+    }
+
     [[nodiscard]] virtual std::unique_ptr<ComplexOrbitalSet> clone() const = 0;
 };
 
@@ -87,6 +106,27 @@ public:
                     lap.re[idx]  = -qi[d] * qi[d] * c;
                     lap.im[idx]  = -qi[d] * qi[d] * s;
                 }
+            }
+        }
+    }
+
+    // ∂_a ∂_b φ = −q_a q_b φ.
+    [[nodiscard]] bool supports_hessian() const noexcept override { return true; }
+    void evaluate_hessian(std::span<const double> x, std::size_t dim,
+                          std::span<std::complex<double>> val,
+                          std::span<std::complex<double>> grad,
+                          std::span<std::complex<double>> hess) const override {
+        const std::size_t n = size();
+        for (std::size_t i = 0; i < n; ++i) {
+            const double* qi = q_.data() + i * dim;
+            double arg = 0.0;
+            for (std::size_t d = 0; d < dim; ++d) arg += qi[d] * x[d];
+            const std::complex<double> phi(std::cos(arg), std::sin(arg));
+            val[i] = phi;
+            for (std::size_t a = 0; a < dim; ++a) {
+                grad[i * dim + a] = std::complex<double>(0.0, qi[a]) * phi;
+                for (std::size_t b = 0; b < dim; ++b)
+                    hess[(i * dim + a) * dim + b] = -qi[a] * qi[b] * phi;
             }
         }
     }

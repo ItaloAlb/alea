@@ -16,6 +16,7 @@
 #include <utility>
 
 #include "wavefunction/backflow_slater_determinant.h"
+#include "wavefunction/complex_backflow_slater_determinant.h"
 #include "wavefunction/complex_orbital_set.h"
 #include "wavefunction/complex_slater_determinant.h"
 #include "wavefunction/orbital_set.h"
@@ -165,13 +166,13 @@ std::unique_ptr<WavefunctionComponent> real_determinant(
     }
 }
 
-// Backflow is implemented for real determinants only; a complex one refuses it
-// rather than silently dropping the channels.
+// Backflow is implemented for real determinants and twisted plane waves; the
+// other complex orbitals refuse it rather than silently dropping the channels.
 void refuse_complex_backflow(const io::SlaterSpec& s, const std::string& why) {
     if (!s.backflow.empty())
         throw std::runtime_error(
             "slater on group " + s.group + ": backflow is implemented for real "
-            "determinants (plane_wave at the Gamma twist, gaussian), not for " + why);
+            "determinants (gaussian, plane_wave) and twisted plane waves, not for " + why);
 }
 
 // Fock–Darwin: complex angular-momentum orbitals (field/rotation).  One pool of
@@ -217,12 +218,21 @@ std::unique_ptr<WavefunctionComponent> build_plane_wave(
     // exists: build e^{i(k+θ)·r} orbitals and a complex determinant (DMC then
     // runs fixed phase).  An integer twist IS Γ and keeps the cheaper real path.
     if (!is_gamma_twist(twist)) {
-        refuse_complex_backflow(s, "twisted (complex) plane waves");
-        return std::make_unique<ComplexSlaterDeterminant>(
-            spin_blocks<ComplexSlaterDeterminant::Block>(
-                g, n_up, n_dn, [&](bool, std::size_t k) {
-                    return make_twisted_plane_wave_orbitals(ctx.cell, k, twist);
-                }));
+        auto make = [&](bool, std::size_t k) {
+            return make_twisted_plane_wave_orbitals(ctx.cell, k, twist);
+        };
+        if (s.backflow.empty())
+            return std::make_unique<ComplexSlaterDeterminant>(
+                spin_blocks<ComplexSlaterDeterminant::Block>(g, n_up, n_dn, make));
+        // Backflow at a twist: the same channels, and the same parameter names
+        // and order, as the real determinant at Γ.
+        try {
+            return std::make_unique<ComplexBackflowSlaterDeterminant>(
+                spin_blocks<ComplexBackflowSlaterDeterminant::Block>(g, n_up, n_dn, make),
+                backflow_channels(s, ctx), ctx.cell);
+        } catch (const std::invalid_argument& e) {
+            throw std::runtime_error("slater on group " + s.group + ": " + e.what());
+        }
     }
     return real_determinant(s, g, n_up, n_dn, ctx, [&](bool, std::size_t k) {
         return make_plane_wave_orbitals(ctx.cell, k);

@@ -680,6 +680,7 @@ set(APP_SOURCES
     ${SRC_DIR}/hamiltonian/harmonic_trap.cpp
     ${SRC_DIR}/hamiltonian/inverse_power.cpp
     ${SRC_DIR}/wavefunction/complex_slater_determinant.cpp
+    ${SRC_DIR}/wavefunction/complex_backflow_slater_determinant.cpp
     ${SRC_DIR}/hamiltonian/ewald_term.cpp
     ${SRC_DIR}/numerics/ewald_breakup.cpp
     ${SRC_DIR}/numerics/long_range_breakup.cpp
@@ -1202,6 +1203,25 @@ target_include_directories(test_twisted_boundary PRIVATE ${SRC_DIR} ${eigen_INCL
 target_link_libraries(test_twisted_boundary PRIVATE Catch2::Catch2WithMain OpenMP::OpenMP_CXX)
 target_compile_options(test_twisted_boundary PRIVATE -Wall -Wextra -Wpedantic -fopenmp-simd)
 
+add_executable(test_backflow_twisted
+    test_backflow_twisted.cpp
+    ${SRC_DIR}/wavefunction/complex_backflow_slater_determinant.cpp
+    ${SRC_DIR}/wavefunction/complex_slater_determinant.cpp
+    ${SRC_DIR}/wavefunction/backflow_slater_determinant.cpp
+    ${SRC_DIR}/wavefunction/backflow_transformation.cpp
+    ${SRC_DIR}/wavefunction/trial_wavefunction.cpp
+    ${SRC_DIR}/wavefunction/wavefunction_component.cpp
+    ${SRC_DIR}/population/particle_batch.cpp
+    ${SRC_DIR}/population/walker_set.cpp
+    ${SRC_DIR}/population/walker.cpp
+    ${SRC_DIR}/population/batched_distance_table.cpp
+    ${SRC_DIR}/population/simulation_cell.cpp
+)
+target_include_directories(test_backflow_twisted PRIVATE ${SRC_DIR} ${eigen_INCLUDE_DIR})
+target_link_libraries(test_backflow_twisted PRIVATE Catch2::Catch2WithMain OpenMP::OpenMP_CXX)
+target_compile_options(test_backflow_twisted PRIVATE -Wall -Wextra -Wpedantic -fopenmp-simd
+    $<$<CONFIG:Release>:-march=native> $<$<CONFIG:Release>:-fno-math-errno>)
+
 add_executable(test_gauge_field
     test_gauge_field.cpp
     ${SRC_DIR}/hamiltonian/hamiltonian.cpp
@@ -1408,6 +1428,7 @@ catch_discover_tests(test_density)
 catch_discover_tests(test_collective_density)
 catch_discover_tests(test_fixed_phase)
 catch_discover_tests(test_twisted_boundary)
+catch_discover_tests(test_backflow_twisted)
 catch_discover_tests(test_gauge_field)
 catch_discover_tests(test_pimc)
 catch_discover_tests(test_pimc_physics)

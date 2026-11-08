@@ -53,7 +53,7 @@ Three rules hold the layers apart:
 | `src/builders/` | Translate specs into objects; one file per family | `build_component(spec, ctx)` overloads, `build_ewald`, `build_action`, `build_exchange_classes`, `build_estimator(spec, ctx)` overloads and `build_estimators` |
 | `src/qmc/` | Ground-state drivers and stage orchestration | `App`, `Driver`, `VMC`, `DMC` with `PopulationControl` and `ForwardWalking`, `LinearOptimize` with `CostFunction` and `LinearMethod`, `RunResult` |
 | `src/pimc/` | Path-integral driver | `Pimc`, `PathSet`, `Action` and its `ActionComponent`s (`PrimitiveKineticAction`, `PrimitivePotentialAction`, `PairProductAction`, `FixedNodeRestriction`), `Move` (`BisectionMove`, `CentroidMove`, `SingleSliceMove`, `PermutationMove`, `JointPermutationMove`, `WormMove`) |
-| `src/wavefunction/` | Trial-wavefunction factors | `TrialWavefunction`, `WavefunctionComponent`, `PadeJastrow`, `RadialPairJastrow` (`DrummondJastrow`, `ZeroEnergyJastrow`), `KSpaceJastrow`, `NosanowJastrow`, `MoireJastrow`, `SlaterDeterminant`, `BackflowSlaterDeterminant`, `BackflowPairingDeterminant` (both on `BackflowTransformation` and `BackflowFunction`), `ComplexSlaterDeterminant`, `PairingDeterminant`, `CenterOfMassMomentum`, orbital sets |
+| `src/wavefunction/` | Trial-wavefunction factors | `TrialWavefunction`, `WavefunctionComponent`, `PadeJastrow`, `RadialPairJastrow` (`DrummondJastrow`, `ZeroEnergyJastrow`), `KSpaceJastrow`, `NosanowJastrow`, `MoireJastrow`, `SlaterDeterminant`, `BackflowSlaterDeterminant`, `BackflowPairingDeterminant`, `ComplexBackflowSlaterDeterminant` (all on `BackflowTransformation` and `BackflowFunction`), `ComplexSlaterDeterminant`, `PairingDeterminant`, `CenterOfMassMomentum`, orbital sets |
 | `src/hamiltonian/` | Kinetic energy and potentials | `Hamiltonian`, `HamiltonianComponent`, `Kinetic`, `CoulombTerm`, `KeldyshTerm`, `ScreenedCoulombTerm`, `InversePowerTerm`, `EwaldTerm`, `HarmonicTrap`, `MoireTerm` |
 | `src/estimators/` | Optional observables | `Estimator`, `PairCorrelation`, `Density`, `CollectiveDensity`, `StructureFactor`, `ElectronHoleProximity`, `BraggOrder`, `BondOrder`, `DensityMatrix`, `MomentumDistribution`; block statistics `BlockMoments` and `EstimatorReblocking` |
 | `src/population/` | Configurations and geometry | `SimulationCell`, `ParticleGroup`, `ParticleBatch`, `WalkerSet`, `ConfigurationBatch`, `Walker`, `WalkerEnsemble`, `BatchedDistanceTable` |
@@ -116,7 +116,7 @@ The wavefunction and the action meet in the fixed-node restriction: a nodal
 factor exposes its determinant blocks (`WavefunctionComponent::nodal_blocks()`,
 real `SlaterDeterminant` only), and `build_action` copies their orbital sets
 into a `FixedNodeRestriction`. PIMC and DMC of one input therefore use the same
-nodal surface. A `BackflowSlaterDeterminant` exposes none (its nodes are not
+nodal surface. A backflow determinant exposes none (its nodes are not
 those of plain orbitals), so PIMC refuses it.
 
 **Interfaces to read:** `src/qmc/driver.h`,
