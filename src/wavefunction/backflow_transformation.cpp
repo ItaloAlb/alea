@@ -132,6 +132,13 @@ bool BackflowTransformation::pair_terms(const ChannelState& ch, const double* ri
     ch.eta.evaluate(r, eta, e1, e2);
     for (std::size_t d = 0; d < dim; ++d) x[d] += sign * eta * del[d];
     if (!B) return true;
+    pair_tensors(eta, e1, e2, del, r, B, S);
+    return true;
+}
+
+void BackflowTransformation::pair_tensors(double eta, double e1, double e2, const double* del,
+                                          double r, double* B, double* S) const {
+    const std::size_t dim = dim_;
     const double inv_r = r > 0.0 ? 1.0 / r : 0.0;
     for (std::size_t a = 0; a < dim; ++a)
         for (std::size_t b = 0; b < dim; ++b) {
@@ -140,7 +147,6 @@ bool BackflowTransformation::pair_terms(const ChannelState& ch, const double* ri
             S[a * dim + b] = (a == b ? 2.0 * e1 * del[b] * inv_r : 0.0) +
                              del[a] * (e2 * rb2 + e1 * inv_r * (1.0 - rb2));
         }
-    return true;
 }
 
 void BackflowTransformation::full(const double* pos, double* x, Tables& tab) const {
@@ -218,15 +224,15 @@ void BackflowTransformation::shift(const double* pos, std::size_t k, const doubl
 }
 
 double BackflowTransformation::jacobian_column(const Tables& tab, const double* f,
-                                               std::size_t k, std::size_t beta,
-                                               double* v) const {
+                                               std::size_t k, std::size_t beta, double* v,
+                                               bool with_identity) const {
     const std::size_t dim = dim_, np = np_, dd = dim * dim, T = transformed_.size();
     std::fill(v, v + T * dim, 0.0);
     double fs = 0.0;
     const std::size_t tk = index_[k];
     if (tk != npos) {
         double* vk = v + tk * dim;
-        vk[beta] = 1.0;
+        if (with_identity) vk[beta] = 1.0;
         for (std::size_t j = 0; j < np; ++j) {
             if (!tab.linked[tk * np + j]) continue;
             const double* B = tab.b.data() + (tk * np + j) * dd;
@@ -251,13 +257,14 @@ double BackflowTransformation::jacobian_column(const Tables& tab, const double* 
 }
 
 void BackflowTransformation::gradient(const Tables& tab, const double* f, std::size_t k,
-                                      double* out) const {
+                                      double* out, bool with_identity) const {
     const std::size_t dim = dim_, np = np_, dd = dim * dim, T = transformed_.size();
     for (std::size_t b = 0; b < dim; ++b) out[b] = 0.0;
     const std::size_t tk = index_[k];
     if (tk != npos) {
         const double* F = f + tk * dim;
-        for (std::size_t b = 0; b < dim; ++b) out[b] += F[b];
+        if (with_identity)
+            for (std::size_t b = 0; b < dim; ++b) out[b] += F[b];
         for (std::size_t j = 0; j < np; ++j) {
             if (!tab.linked[tk * np + j]) continue;
             const double* B = tab.b.data() + (tk * np + j) * dd;
@@ -298,6 +305,43 @@ void BackflowTransformation::parameter_derivatives(const double* pos, const doub
                 ch.eta.parameter_derivatives(r, scratch.first(n));
                 for (std::size_t q = 0; q < n; ++q) out[ch.param_offset + q] += fd * scratch[q];
             }
+        }
+    }
+}
+
+void BackflowTransformation::parameter_tangent(const double* pos, std::size_t q, double* x_dot,
+                                               Tables& tab_dot, std::span<double> scratch) const {
+    const std::size_t dim = dim_, np = np_, dd = dim * dim;
+    std::fill(x_dot, x_dot + transformed_.size() * dim, 0.0);
+    std::fill(tab_dot.linked.begin(), tab_dot.linked.end(), 0);
+    std::fill(tab_dot.b.begin(), tab_dot.b.end(), 0.0);
+    std::fill(tab_dot.s.begin(), tab_dot.s.end(), 0.0);
+    const ChannelState* owner = nullptr;
+    for (const ChannelState& ch : channels_)
+        if (q >= ch.param_offset && q < ch.param_offset + ch.eta.n_parameters()) owner = &ch;
+    if (!owner) throw std::out_of_range("backflow: no transformation parameter " + std::to_string(q));
+    const ChannelState& ch = *owner;
+    const std::size_t n = ch.eta.n_parameters(), kq = q - ch.param_offset;
+    const std::span<double> d_eta = scratch.subspan(0, n), d_d1 = scratch.subspan(n, n),
+                            d_d2 = scratch.subspan(2 * n, n);
+    for (std::size_t P = ch.target_first; P < ch.target_last; ++P) {
+        const std::size_t t = index_[P];
+        double* xt = x_dot + t * dim;
+        for (std::size_t j = ch.source_first; j < ch.source_last; ++j) {
+            if (j == P) continue;
+            double del[SimulationCell::kMaxDim] = {};
+            for (std::size_t d = 0; d < dim; ++d) del[d] = pos[P * dim + d] - pos[j * dim + d];
+            cell_.min_image(del);
+            double r2 = 0.0;
+            for (std::size_t d = 0; d < dim; ++d) r2 += del[d] * del[d];
+            const double r = std::sqrt(r2);
+            if (r >= ch.eta.cutoff()) continue;
+            ch.eta.parameter_derivatives(r, d_eta, d_d1, d_d2);
+            for (std::size_t d = 0; d < dim; ++d) xt[d] += d_eta[kq] * del[d];
+            const std::size_t e = t * np + j;
+            tab_dot.linked[e] = 1;
+            pair_tensors(d_eta[kq], d_d1[kq], d_d2[kq], del, r, tab_dot.b.data() + e * dd,
+                         tab_dot.s.data() + e * dd);
         }
     }
 }

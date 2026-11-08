@@ -212,9 +212,14 @@ Backflow is available for real determinants (`gaussian`, and `plane_wave` at
 the Γ twist, and the `pairing` determinant); `fock_darwin` and twisted plane
 waves refuse it. Every move
 rebuilds and inverts the determinants, $O(N^3)$ per move instead of the
-$O(N^2)$ rank-one update. PIMC refuses backflow nodes. The optimizer moves the
-backflow parameters without the curvature term of $\bar H$ (the log warns), so
-take smaller steps (`rescale`) if it overshoots.
+$O(N^2)$ rank-one update. PIMC refuses backflow nodes. The linear optimizer
+gets the curvature term of $\bar H$ ($\partial E_L/\partial p$) for the backflow
+and orbital parameters, at about one determinant refresh per parameter at each
+measurement. The quasi-coordinates move with $p$, so the orbitals need third
+derivatives (`plane_wave`, `gaussian` and the pair orbital have them). With
+`truncation: 2` the local energy jumps at $L$, and the jump moves with $L$; such
+a determinant supplies no curvature term (the log warns), and its steps are less
+reliable.
 
 ### `- pairing:` (pairing determinant)
 

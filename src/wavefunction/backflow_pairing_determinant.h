@@ -110,6 +110,26 @@ public:
     // backflow one.
     void compute_parameter_derivatives(const WalkerSet& batch,
                                        std::span<double> derivs) const override;
+
+    // ∂(∂_kβ ln|D|)/∂p and ∂(∂²_kβ ln|D|)/∂p, the curvature term of the linear
+    // method, by differentiating the Derivatives above along p (Q̇ = ∂Q/∂p):
+    //   an orbital parameter changes the entries (Ṁ, ġ, Ḣ from ∂φ/∂θ) at fixed
+    //   arguments; a backflow parameter moves the arguments, Δ̇ = ẋ_a − ẋ_c (or
+    //   ẋ_a, ẋ_c), so Ṁ = g·Δ̇, ġ = H Δ̇, Ḣ = ∇H·Δ̇ (third derivatives), and v, S
+    //   move with Ḃ, ṡ;  Ȧ = −A Ṁ A,  Ḟ by the product rule;
+    //   ∂_p(∂_kβ ln|D|)  = Σ_t (Ḟ_t·v_t + F_t·v̇_t),
+    //   ∂_p(∂²_kβ ln|D|) = Σ (Ḟ·S + F·Ṡ) + Σ_ac [Ȧ_ca d²M_ac + A_ca (2u̇ᵀH u + uᵀḢu)_ac]
+    //                      − 2 [tr(R dṀ) − tr(Ṁ E R)],
+    // with E = A dM, R = E A (from ∂ tr(E²) = 2 tr(E Ė), Ė = A(dṀ − Ṁ E)) and
+    // dṀ_ac = ġ·u + g·u̇.  E, R and E R are three N³ products per (k, β), shared
+    // by every parameter.  Every term but those in u̇ is a sum over entries of a
+    // parameter-dependent factor (Ȧ, Ḣ, ġ, Ṁ) times a (k, β)-dependent one, so
+    // one matrix-vector product Y z gives all parameters at O(d² N²) each; the
+    // u̇ terms reduce to per-particle sums, O(N).  Measurement frequency; the
+    // batch must be evaluated (or refreshed) at its positions.
+    [[nodiscard]] bool supports_parameter_gradient_derivatives() const override;
+    bool compute_parameter_gradient_derivatives(const WalkerSet& batch, std::span<double> dgrad,
+                                                std::span<double> dlap) const override;
     [[nodiscard]] std::size_t walker_state_bytes() const noexcept override;
 
     [[nodiscard]] const PairOrbital& orbital() const noexcept { return orbital_; }
@@ -146,9 +166,21 @@ private:
     void evaluate_entries(Scratch& s) const;
     bool invert_blocks(Scratch& s, double* inv, double* log_det, double* sign) const;
     void compute_f(const Scratch& s, const double* inv, double* f) const;
-    // The direction u of entry (a, c) along s.v, into u[dim]; false when zero.
-    void direction(const Shape& sh, const Scratch& s, std::size_t a, std::size_t c,
+    // f ([T * dim]) += Σ_entries A_ca ∂M_ac/∂(owner) for A in the layout of an
+    // inverse and g ([Σ n² * dim]) the entries' argument gradients.
+    void accumulate_f(const double* inv, const double* g, double* f) const;
+    // out ([T * dim]) += Σ_entries ±x_e over each entry's owners, with the
+    // signs of ∂(argument)/∂(owner): +1 row, −1 column of a paired entry, +1
+    // the owner of an unpaired one; x_e: [Σ n² * dim].  Σ_e u_e·x_e = Σ_t v_t·out_t.
+    void accumulate_owner(const double* x_e, double* out) const;
+    // The direction u of entry (a, c) along the per-particle vectors vt
+    // ([T * dim]; v_a − v_c, v_a or v_c by the entry's kind), into u[dim].
+    void direction(const Shape& sh, const double* vt, std::size_t a, std::size_t c,
                    double* u) const noexcept;
+    // Every entry's third derivative ∂_α∂_β∂_γ at its argument, [Σ n² * dim³];
+    // unpaired_third: [n_max * dim³] scratch for one owner's unpaired orbitals.
+    void entry_third(const Scratch& s, std::vector<double>& third,
+                     std::vector<double>& unpaired_third) const;
     void particle_laplacian(Scratch& s, const double* inv, const double* f, std::size_t k,
                             double* out) const;
     void all_derivatives(Scratch& s, const double* inv, const double* f, double* grad,

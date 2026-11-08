@@ -140,6 +140,23 @@ public:
     void compute_parameter_derivatives(const WalkerSet& batch,
                                        std::span<double> derivs) const override;
 
+    // ∂(∂_kβ ln|D|)/∂p and ∂(∂²_kβ ln|D|)/∂p, the curvature term of the linear
+    // method, by differentiating every quantity of the Derivatives section
+    // along p (forward mode, writing Q̇ = ∂Q/∂p):
+    //   ẋ_i = Σ_j ∂η/∂p r_ij,  Ḃ, ṡ (η → ∂η/∂p),  v̇ = J̇ column, Ṡ,
+    //   Ṁ_im = ∇φ_m·ẋ_i + ∂_pφ_m,  Ȧ = −A Ṁ A,
+    //   (∂_αφ)˙ = Σ_δ ∂_α∂_δφ ẋ_δ + ∂_p∂_αφ,  (∂_α∂_γφ)˙ = Σ_δ ∂_α∂_γ∂_δφ ẋ_δ + ∂_p∂_α∂_γφ,
+    //   Ḟ, Ṫ, Ġ^α from those by the product rule, U̇_ji = Σ_α (v̇_iα G^α_ji + v_iα Ġ^α_ji),
+    //   ∂_p(∂_kβ ln|D|)  = Σ (Ḟ·v + F·v̇),
+    //   ∂_p(∂²_kβ ln|D|) = Σ (Ḟ·S + F·Ṡ) + Σ_i (2 v̇_iᵀT_i v_i + v_iᵀṪ_i v_i) − 2 Σ U̇_ji U_ij.
+    // A backflow parameter moves x, so the orbitals' third derivatives enter;
+    // an orbital parameter (∂_p φ terms) leaves x, B and s fixed.  O(d² N³) per
+    // walker and parameter, at measurement frequency.  The batch must be
+    // evaluated (or refreshed) at its positions.
+    [[nodiscard]] bool supports_parameter_gradient_derivatives() const override;
+    bool compute_parameter_gradient_derivatives(const WalkerSet& batch, std::span<double> dgrad,
+                                                std::span<double> dlap) const override;
+
     [[nodiscard]] std::size_t walker_state_bytes() const noexcept override;
 
     // The orbital parameters come first in parameters(); the channels follow.
@@ -177,6 +194,33 @@ private:
         std::size_t generation = 0;  // the sizes it was built for (scratch_generation_)
     };
 
+    // ∂/∂p of one configuration's Scratch quantities (same layouts as the
+    // fields they differentiate), for compute_parameter_gradient_derivatives.
+    struct Tangent {
+        std::vector<double> third;     // [n_rows * maxN * dim³] ∂_α∂_γ∂_δ φ_m(x_i)
+        std::vector<double> x_dot;     // [n_rows * dim]
+        BackflowTransformation::Tables tables;  // Ḃ, ṡ
+        std::vector<double> eta;       // [3 * max channel parameters] ∂η, ∂η', ∂η''
+        std::vector<double> m_dot;     // [n_rows * maxN]          Ṁ_im
+        std::vector<double> g_dot;     // [n_rows * maxN * dim]    (∂_αφ_m)˙ at x_i
+        std::vector<double> h_dot;     // [n_rows * maxN * dim²]   (∂_α∂_γφ_m)˙ at x_i
+        std::vector<double> a_dot;     // [inv_size]  Ȧ, layout of an inverse
+        std::vector<double> prod;      // [maxN * maxN] A Ṁ of one block
+        std::vector<double> f_dot;     // [n_rows * dim]
+        std::vector<double> t_dot;     // [n_rows * dim²]
+        std::vector<double> gmat_dot;  // [dim * inv_size] Ġ^α
+        std::vector<double> v_dot, v_tmp;  // [n_rows * dim] v̇, and a discarded copy of v
+        std::vector<double> u, u_dot;  // [maxN * maxN] U and U̇ of one block
+        std::vector<double> o_val, o_grad, o_hess;  // orbital parameter derivatives, one row
+        std::vector<double> out_grad, out_lap;      // [np * dim] the result
+    };
+    void size_tangent(Tangent& t) const;
+    // Ȧ, Ḟ, Ṫ, Ġ from t.m_dot/g_dot/h_dot, then ∂_p of every particle's
+    // gradient and Laplacian into t.out_grad/out_lap.  moves_x: t.tables
+    // holds Ḃ, ṡ (a backflow parameter); otherwise J and S do not move.
+    void tangent_derivatives(Scratch& s, Tangent& t, const double* inv, const double* f,
+                             bool moves_x) const;
+
     [[nodiscard]] bool affects(std::size_t p) const noexcept;
     [[nodiscard]] Scratch& scratch() const;
     void size_scratch(Scratch& s) const;
@@ -193,6 +237,8 @@ private:
     // ∂²_k ln|D| ([dim]) by one Aᵀ W product per β (a single particle).
     void particle_laplacian(Scratch& s, const double* inv, const double* f, std::size_t k,
                             double* out) const;
+    // T into s.t and every block's G^α into s.gmat.
+    void gradient_matrices(Scratch& s, const double* inv) const;
     // T and the G^α of every block, then ∂ and ∂² of every particle into
     // grad/lap ([np * dim], zero for particles this factor ignores).
     void all_derivatives(Scratch& s, const double* inv, const double* f, double* grad,

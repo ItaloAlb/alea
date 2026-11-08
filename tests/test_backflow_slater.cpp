@@ -25,6 +25,7 @@
 #include "population/walker_set.h"
 #include "wavefunction/backflow_function.h"
 #include "wavefunction/backflow_slater_determinant.h"
+#include "wavefunction/backflow_transformation.h"
 #include "wavefunction/orbital_set.h"
 #include "wavefunction/slater_determinant.h"
 #include "wavefunction/trial_wavefunction.h"
@@ -192,6 +193,30 @@ System hexagonal_system() {
     s.channels.push_back({3, 5, 3, 2.2, {-0.2, 0.15, 0.04}});
     s.free_params.push_back({-0.2, 0.15, 0.04, 2.2});
     return s;
+}
+
+// Open 3-D cell: three like-spin particles in Gaussians of one shared width
+// (so "b0_alpha" exists), displaced by each other and by two holes [3,5).
+System open3d_system() {
+    System s;
+    s.dim = 3;
+    s.np = 5;
+    s.cell = SimulationCell(3);
+    s.blocks = {{0, 3}};
+    s.orbitals = {std::make_shared<GaussianOrbitalSet>(
+        3, std::vector<double>{-0.9, 0.1, 0.2, 0.8, 0.3, -0.4, 0.1, -0.8, 0.6},
+        std::vector<double>{0.5, 0.5, 0.5})};
+    const double c0 = 0.2, L = 2.4;
+    s.channels.push_back({0, 3, 3, L, {c0, 3.0 * c0 / L, -0.04}});
+    s.free_params.push_back({c0, -0.04, L});
+    s.channels.push_back({3, 5, 3, 2.8, {-0.12, 0.08, 0.03}});
+    s.free_params.push_back({-0.12, 0.08, 0.03, 2.8});
+    return s;
+}
+
+std::vector<std::vector<double>> open3d_configs() {
+    return {{-0.7, 0.2, 0.1, 0.9, -0.1, -0.3, 0.2, -0.6, 0.8, 0.4, 0.5, -0.2, -0.3, -0.4, 0.6},
+            {-0.4, -0.3, 0.5, 0.6, 0.4, -0.1, 0.0, -1.0, 0.3, -0.8, 0.6, 0.2, 0.7, 0.1, -0.5}};
 }
 
 // Cartesian position of fractional coordinates (f1, f2) of the hexagonal cell.
@@ -388,6 +413,40 @@ TEST_CASE("backflow eta parameter derivatives match finite differences", "[backf
     }
 }
 
+TEST_CASE("backflow eta' and eta'' parameter derivatives match finite differences",
+          "[backflow][optimize]") {
+    // The curvature term differentiates B and s, which carry eta' and eta''.
+    for (int C : {2, 3, 4})
+        for (bool zero_slope : {false, true}) {
+            INFO("C " << C << " zero_slope " << zero_slope);
+            const std::vector<double> free = {0.25, -0.12, 0.03};
+            const double L = 2.2;
+            const BackflowFunction eta(C, L, free, zero_slope);
+            const std::size_t n = eta.n_parameters();
+            const double h = 1e-6;
+            for (double r : {0.0, 0.3, 1.0, 1.8, 2.15}) {
+                INFO("r " << r);
+                std::vector<double> de(n), d1(n), d2(n), d_old(n);
+                eta.parameter_derivatives(r, de, d1, d2);
+                eta.parameter_derivatives(r, d_old);
+                for (std::size_t k = 0; k < n; ++k) {
+                    INFO("parameter " << k);
+                    BackflowFunction plus = eta, minus = eta;
+                    const double v = k < free.size() ? free[k] : L;
+                    plus.set_parameter(k, v + h);
+                    minus.set_parameter(k, v - h);
+                    double ep = 0.0, e1p = 0.0, e2p = 0.0, em = 0.0, e1m = 0.0, e2m = 0.0;
+                    plus.evaluate(r, ep, e1p, e2p);
+                    minus.evaluate(r, em, e1m, e2m);
+                    CHECK(de[k] == Catch::Approx(d_old[k]).margin(1e-15));
+                    CHECK(de[k] == Catch::Approx((ep - em) / (2 * h)).margin(1e-8));
+                    CHECK(d1[k] == Catch::Approx((e1p - e1m) / (2 * h)).margin(1e-8));
+                    CHECK(d2[k] == Catch::Approx((e2p - e2m) / (2 * h)).margin(1e-7));
+                }
+            }
+        }
+}
+
 TEST_CASE("orbital Hessians match finite differences of the gradient", "[backflow][orbitals]") {
     const SimulationCell box(2, std::vector<double>{6.0, 0.0, 0.0, 6.0});
     const std::vector<std::shared_ptr<OrbitalSet>> sets = {
@@ -419,6 +478,119 @@ TEST_CASE("orbital Hessians match finite differences of the gradient", "[backflo
                           Catch::Approx((gp[m * 2 + a] - gm[m * 2 + a]) / (2 * h)).margin(1e-8));
                 }
             }
+        }
+    }
+}
+
+TEST_CASE("orbital third derivatives and width Hessians match finite differences",
+          "[backflow][orbitals][optimize]") {
+    // 2-D and 3-D, open and folded Gaussians and plane waves: the third
+    // derivative against central differences of the Hessian, and the Gaussian
+    // width derivatives against central differences in alpha.
+    const SimulationCell box2(2, std::vector<double>{6.0, 0.0, 0.0, 6.0});
+    struct Case {
+        std::size_t dim;
+        std::shared_ptr<OrbitalSet> orb;
+        std::vector<double> pos;
+    };
+    const std::vector<Case> cases = {
+        {2, std::make_shared<GaussianOrbitalSet>(2, std::vector<double>{0.3, -0.2, 1.0, 1.4},
+                                                 std::vector<double>{0.7, 0.7}), {0.4, 0.9}},
+        {2, std::make_shared<GaussianOrbitalSet>(2, std::vector<double>{0.5, 5.6, 3.0, 3.0},
+                                                 std::vector<double>{0.3, 0.3}, box2), {0.4, 5.9}},
+        {2, make_plane_wave_orbitals(box2, 5), {0.4, 5.9}},
+        {3, std::make_shared<GaussianOrbitalSet>(
+                3, std::vector<double>{0.3, -0.2, 0.5, 1.0, 1.4, -0.6}, std::vector<double>{0.45, 0.45}),
+         {0.2, 0.7, -0.3}},
+        // 3-D plane waves with explicit k (no 3-D periodic cell exists yet).
+        {3, std::make_shared<PlaneWaveOrbitalSet>(
+                3, std::vector<double>{0.0, 0.0, 0.0, 1.2, -0.4, 0.7, 0.3, 0.9, -1.1},
+                std::vector<char>{0, 1, 0}),
+         {1.1, 3.9, 0.6}}};
+    const double h = 1e-5;
+    for (std::size_t c = 0; c < cases.size(); ++c) {
+        INFO("case " << c);
+        const auto& [dim, orb, pos] = cases[c];
+        REQUIRE(orb->supports_third_derivatives());
+        REQUIRE(orb->supports_parameter_hessian());
+        const std::size_t n = orb->size(), dd = dim * dim;
+        std::vector<double> third(n * dd * dim);
+        orb->evaluate_third_derivatives(pos, dim, third, 0, 1);
+        for (std::size_t e = 0; e < dim; ++e) {
+            std::vector<double> pp = pos, pm = pos, v(n), g(n * dim), hp(n * dd), hm(n * dd);
+            pp[e] += h;
+            pm[e] -= h;
+            orb->evaluate_hessian(pp, dim, v, g, hp, 0, 1);
+            orb->evaluate_hessian(pm, dim, v, g, hm, 0, 1);
+            for (std::size_t m = 0; m < n; ++m)
+                for (std::size_t ab = 0; ab < dd; ++ab)
+                    CHECK(third[(m * dd + ab) * dim + e] ==
+                          Catch::Approx((hp[m * dd + ab] - hm[m * dd + ab]) / (2 * h)).margin(1e-7));
+        }
+        if (orb->n_parameters() == 0) continue;
+        std::vector<double> dval(n), dgrad(n * dim), dhess(n * dd);
+        orb->evaluate_parameter_hessian(pos, dim, dval, dgrad, dhess, 0, 1);
+        const double alpha = orb->parameter(0).value;
+        std::vector<double> vp(n), gp(n * dim), hp(n * dd), vm(n), gm(n * dim), hm(n * dd);
+        auto plus = orb->clone(), minus = orb->clone();
+        plus->set_parameter(0, alpha + h);
+        minus->set_parameter(0, alpha - h);
+        plus->evaluate_hessian(pos, dim, vp, gp, hp, 0, 1);
+        minus->evaluate_hessian(pos, dim, vm, gm, hm, 0, 1);
+        for (std::size_t m = 0; m < n; ++m) {
+            CHECK(dval[m] == Catch::Approx((vp[m] - vm[m]) / (2 * h)).margin(1e-8));
+            for (std::size_t a = 0; a < dim; ++a)
+                CHECK(dgrad[m * dim + a] ==
+                      Catch::Approx((gp[m * dim + a] - gm[m * dim + a]) / (2 * h)).margin(1e-8));
+            for (std::size_t ab = 0; ab < dd; ++ab)
+                CHECK(dhess[m * dd + ab] ==
+                      Catch::Approx((hp[m * dd + ab] - hm[m * dd + ab]) / (2 * h)).margin(1e-8));
+        }
+    }
+}
+
+TEST_CASE("backflow transformation tangents match finite differences of x, B and s",
+          "[backflow][optimize]") {
+    // Two channels on rows [0, 3): like-spin (source = rows) and sources [3, 5).
+    const SimulationCell cell(2);
+    std::vector<BackflowTransformation::Channel> ch(2);
+    ch[0] = {0, 3, 0, 3, 3, {Parameter{"", 0.2, false}, Parameter{"", -0.05, false},
+                             Parameter{"", 2.5, false}}};
+    ch[1] = {0, 3, 3, 5, 3, {Parameter{"", -0.15, false}, Parameter{"", 0.1, false},
+                             Parameter{"", 0.02, false}, Parameter{"", 3.0, false}}};
+    const BackflowTransformation base(ch, {0, 1, 2}, cell);
+    std::vector<Parameter> params = base.initial_parameters();
+    const std::size_t np = 5, dim = 2, dd = 4, T = 3;
+    const std::vector<double> pos = open_configs()[0];
+    auto at = [&](std::size_t q, double shift, std::vector<double>& x,
+                  BackflowTransformation::Tables& tab) {
+        BackflowTransformation tr = base;
+        std::vector<Parameter> p = params;
+        p[q].value += shift;
+        tr.set_parameters(p);
+        tr.prepare(np, dim);
+        tr.size_tables(tab);
+        x.assign(T * dim, 0.0);
+        tr.full(pos.data(), x.data(), tab);
+    };
+    BackflowTransformation tr = base;
+    tr.prepare(np, dim);
+    BackflowTransformation::Tables tab_dot;
+    tr.size_tables(tab_dot);
+    std::vector<double> x_dot(T * dim), scratch(3 * tr.max_channel_parameters());
+    const double h = 1e-6;
+    for (std::size_t q = 0; q < params.size(); ++q) {
+        INFO("parameter " << params[q].name);
+        tr.parameter_tangent(pos.data(), q, x_dot.data(), tab_dot, scratch);
+        std::vector<double> xp, xm;
+        BackflowTransformation::Tables tp, tm;
+        at(q, h, xp, tp);
+        at(q, -h, xm, tm);
+        for (std::size_t e = 0; e < T * dim; ++e)
+            CHECK(x_dot[e] == Catch::Approx((xp[e] - xm[e]) / (2 * h)).margin(1e-8));
+        for (std::size_t e = 0; e < T * np * dd; ++e) {
+            CHECK(tab_dot.b[e] == Catch::Approx((tp.b[e] - tm.b[e]) / (2 * h)).margin(1e-8));
+            CHECK(tab_dot.s[e] == Catch::Approx((tp.s[e] - tm.s[e]) / (2 * h)).margin(1e-7));
         }
     }
 }
@@ -822,4 +994,201 @@ TEST_CASE("an electron-hole backflow channel keeps the kinetic term finite at co
     }
     CHECK(std::abs(kinetic[2] - kinetic[1]) < 0.2 * std::abs(kinetic[1] - kinetic[0]) + 1e-6);
     CHECK(std::isfinite(kinetic[2]));
+}
+
+// ── Curvature term: parameter derivatives of the gradient and Laplacian ──────
+
+namespace {
+
+void unfix_all(BackflowSlaterDeterminant& det) {
+    for (Parameter& p : det.parameters()) p.is_fixed = false;   // widths start fixed
+}
+
+// The component's grad_c and lap_c at the configurations, parameter q shifted.
+std::pair<std::vector<double>, std::vector<double>> shifted_derivatives(
+    const System& sys, const std::vector<std::vector<double>>& configs, std::size_t q,
+    double shift) {
+    auto det = make_component(sys);
+    unfix_all(*det);
+    det->parameters()[q].value += shift;
+    det->rebuild();
+    Batch b(sys, configs);
+    det->evaluate_batch(b.ws);
+    return {std::vector<double>(det->grad_c().begin(), det->grad_c().end()),
+            std::vector<double>(det->lap_c().begin(), det->lap_c().end())};
+}
+
+// compute_parameter_gradient_derivatives of a component evaluated at the
+// configurations, every parameter unfixed.
+void curvature_of(const System& sys, const std::vector<std::vector<double>>& configs,
+                  std::vector<double>& dg, std::vector<double>& dl) {
+    auto det = make_component(sys);
+    unfix_all(*det);
+    REQUIRE(det->supports_parameter_gradient_derivatives());
+    Batch b(sys, configs);
+    det->evaluate_batch(b.ws);
+    const std::size_t field = sys.np * sys.dim * configs.size();
+    dg.assign(det->parameters().size() * field, 0.0);
+    dl.assign(det->parameters().size() * field, 0.0);
+    REQUIRE(det->compute_parameter_gradient_derivatives(b.ws, dg, dl));
+}
+
+// Against central differences in every parameter, Richardson-extrapolated
+// over h and h/2; |D(h) − D(h/2)| bounds the extrapolated error and joins the
+// margin (as in fd_derivatives).
+void check_curvature(const System& sys, const std::vector<std::vector<double>>& configs) {
+    std::vector<double> dg, dl;
+    curvature_of(sys, configs, dg, dl);
+    auto det = make_component(sys);
+    const std::size_t field = sys.np * sys.dim * configs.size();
+    for (std::size_t q = 0; q < det->parameters().size(); ++q) {
+        const Parameter p = det->parameters()[q];
+        INFO("parameter " << p.name);
+        const double h = 1e-4 * std::max(1.0, std::abs(p.value));
+        std::vector<double> g[2], l[2];
+        for (int level = 0; level < 2; ++level) {
+            const double hl = level == 0 ? h : 0.5 * h;
+            const auto [gp, lp] = shifted_derivatives(sys, configs, q, hl);
+            const auto [gm, lm] = shifted_derivatives(sys, configs, q, -hl);
+            g[level].resize(field);
+            l[level].resize(field);
+            for (std::size_t e = 0; e < field; ++e) {
+                g[level][e] = (gp[e] - gm[e]) / (2.0 * hl);
+                l[level][e] = (lp[e] - lm[e]) / (2.0 * hl);
+            }
+        }
+        for (std::size_t e = 0; e < field; ++e) {
+            const double gf = (4.0 * g[1][e] - g[0][e]) / 3.0;
+            const double lf = (4.0 * l[1][e] - l[0][e]) / 3.0;
+            INFO("entry " << e << "  fd error estimate " << std::abs(l[0][e] - l[1][e]));
+            CHECK(dg[q * field + e] == Catch::Approx(gf).margin(1e-7 + std::abs(g[0][e] - g[1][e])));
+            CHECK(dl[q * field + e] == Catch::Approx(lf).margin(1e-6 + std::abs(l[0][e] - l[1][e])));
+        }
+    }
+}
+
+}  // namespace
+
+TEST_CASE("backflow curvature: parameter derivatives of the gradient and Laplacian match "
+          "finite differences",
+          "[backflow][optimize]") {
+    // Backflow parameters of like-spin and source channels, plane waves and
+    // folded Gaussians, two spin blocks, 3-D, and the Gaussian width (b0_alpha
+    // in the two-block, hexagonal and 3-D systems).
+    SECTION("open") { check_curvature(open_system(), open_configs()); }
+    SECTION("periodic plane waves") { check_curvature(periodic_system(), periodic_configs()); }
+    SECTION("two blocks") { check_curvature(two_block_system(), two_block_configs()); }
+    SECTION("hexagonal Gaussian crystal") {
+        check_curvature(hexagonal_system(), hexagonal_configs());
+    }
+    SECTION("3-D") { check_curvature(open3d_system(), open3d_configs()); }
+}
+
+TEST_CASE("backflow curvature holds over random configurations and across the cutoff",
+          "[backflow][optimize]") {
+    std::mt19937_64 rng(20261108);
+    std::uniform_real_distribution<double> unit(0.0, 1.0);
+    for (const System& sys : {periodic_system(), open_system()}) {
+        std::vector<std::vector<double>> configs;
+        for (int k = 0; k < 12; ++k) {
+            std::vector<double> pos;
+            for (std::size_t p = 0; p < sys.np * sys.dim; ++p)
+                pos.push_back(sys.cell.is_periodic() ? 6.0 * unit(rng) : 3.0 * unit(rng) - 1.5);
+            configs.push_back(pos);
+        }
+        // Particle 1 just inside and just outside the like-spin cutoff of particle 0.
+        const double L = sys.channels[0].L;
+        for (double f : {1.0 - 1e-3, 1.0 + 1e-3}) {
+            std::vector<double> pos = configs[0];
+            pos[2] = pos[0] + f * L * 0.6;
+            pos[3] = pos[1] + f * L * 0.8;
+            configs.push_back(pos);
+        }
+        check_curvature(sys, configs);
+    }
+}
+
+TEST_CASE("backflow curvature after moves equals that of a fresh evaluation",
+          "[backflow][optimize]") {
+    // The committed inverse and F after deferred moves and a refresh (as VMC
+    // leaves them before a measurement) give the fresh evaluation's result.
+    const System sys = two_block_system();
+    Batch b(sys, two_block_configs());
+    auto det = make_component(sys);
+    unfix_all(*det);
+    TrialWavefunction psi;
+    psi.add_component(std::move(det));
+    psi.set_proposal_laplacian(false);
+    psi.evaluate_batch(b.ws);
+    const std::vector<std::pair<std::size_t, std::vector<double>>> moves = {
+        {0, {-0.6, 0.35}}, {3, {0.2, -0.9}}, {2, {0.4, 0.1}}};
+    for (const auto& [p, to] : moves) {
+        psi.refresh_particle_derivatives(b.ws, p);
+        propose(b.ws, p, to);
+        psi.ratio_batch(b.ws, p);
+        std::array<bool, 2> accept = {true, p != 3};
+        psi.apply_move_batch_deferred(b.ws, p, accept);
+        b.ws.apply_move(p, b.ws.new_pos(), b.ws.new_grad(), b.ws.new_lap(), accept);
+    }
+    psi.refresh_derivatives(b.ws);
+    const std::size_t nq = psi.total_optimizable_params();
+    const std::size_t field = sys.np * sys.dim * 2;
+    std::vector<double> dg(nq * field), dl(nq * field);
+    std::vector<char> supported(nq, 0);
+    REQUIRE(psi.compute_parameter_gradient_derivatives(b.ws, dg, dl, supported));
+    for (char s : supported) CHECK(s == 1);
+
+    std::vector<double> fg, fl;
+    curvature_of(sys, {config_of(b.ws, 0), config_of(b.ws, 1)}, fg, fl);
+    REQUIRE(fg.size() == dg.size());
+    for (std::size_t e = 0; e < dg.size(); ++e) {
+        CHECK(dg[e] == Catch::Approx(fg[e]).margin(1e-10));
+        CHECK(dl[e] == Catch::Approx(fl[e]).margin(1e-9));
+    }
+}
+
+TEST_CASE("backflow reports the curvature term only when it can supply it",
+          "[backflow][optimize]") {
+    CHECK(make_component(open_system())->supports_parameter_gradient_derivatives());
+    CHECK(make_component(periodic_system())->supports_parameter_gradient_derivatives());
+    // C = 2: eta'' steps at the cutoff, and the step moves with L.
+    System c2 = open_system();
+    c2.channels[1].C = 2;
+    auto det = make_component(c2);
+    CHECK_FALSE(det->supports_parameter_gradient_derivatives());
+    Batch b(c2, open_configs());
+    det->evaluate_batch(b.ws);
+    const std::size_t field = c2.np * c2.dim * 2;
+    std::vector<double> dg(det->parameters().size() * field), dl(dg.size());
+    CHECK_FALSE(det->compute_parameter_gradient_derivatives(b.ws, dg, dl));
+    // Orbitals with a Hessian but no third derivatives.
+    struct HessianOnly final : OrbitalSet {
+        std::size_t size() const override { return 1; }
+        void evaluate(std::span<const double>, std::size_t, std::span<double> v,
+                      std::span<double> g, std::span<double> l, std::size_t,
+                      std::size_t) const override {
+            v[0] = 1.0;
+            std::fill(g.begin(), g.end(), 0.0);
+            std::fill(l.begin(), l.end(), 0.0);
+        }
+        bool supports_hessian() const noexcept override { return true; }
+        void evaluate_hessian(std::span<const double>, std::size_t, std::span<double> v,
+                              std::span<double> g, std::span<double> h, std::size_t,
+                              std::size_t) const override {
+            v[0] = 1.0;
+            std::fill(g.begin(), g.end(), 0.0);
+            std::fill(h.begin(), h.end(), 0.0);
+        }
+        std::unique_ptr<OrbitalSet> clone() const override {
+            return std::make_unique<HessianOnly>();
+        }
+    };
+    std::vector<BackflowSlaterDeterminant::Block> blocks;
+    blocks.push_back({0, 1, std::make_unique<HessianOnly>()});
+    std::vector<BackflowSlaterDeterminant::Channel> ch(1);
+    ch[0].source_first = 1;
+    ch[0].source_last = 2;
+    ch[0].params = {Parameter{"", 0.1, false}, Parameter{"", 1.0, false}};
+    CHECK_FALSE(BackflowSlaterDeterminant(std::move(blocks), std::move(ch))
+                    .supports_parameter_gradient_derivatives());
 }

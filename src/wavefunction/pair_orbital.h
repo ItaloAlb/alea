@@ -70,6 +70,9 @@ public:
     // g(r) = f(r) Σ c_m r^m and its first two radial derivatives; 0 beyond L
     // and without a polynomial.
     void radial(double r, double& g, double& dg, double& d2g) const noexcept;
+    // g'''(r) = f'''P + 3f''P' + 3f'P'' + fP''', f''' = −6/L³ (0 beyond L);
+    // the backflow curvature term moves Δ, so it needs one more derivative.
+    [[nodiscard]] double radial_third(double r) const noexcept;
 
     // ∂g/∂θ_j and its radial derivatives for polynomial parameter j
     // (0 → c_0, 1 … M−1 → c_2 … c_M, M → L).
