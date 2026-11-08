@@ -595,6 +595,14 @@ class Geometry:
         k_W = (2.0 * EINSTEIN_C / self.rs ** 1.5) ** 2
         return 0.5 * math.sqrt(k_M + k_W)
 
+    def jastrow_cutoff(self):
+        """Cutoff L of the Drummond pair Jastrows, 3 rs within the Wigner-Seitz
+        inradius.  The configs keep it fixed, and it is the SAME for the crystal
+        and the liquid of a point: a longer reach would give one phase a more
+        flexible trial state, and part of E_liquid - E_crystal would then come
+        from the Jastrow instead of the phases."""
+        return min(3.0 * self.rs, 0.95 * self.r_ws)
+
     def j1_seed(self):
         """First-order perturbation theory, psi ~ 1 - sum_G V_G e^{iG.r}/(G^2/2):
         u = -(4 V0/|g|^2) sum_j cos(g_j.r + phi)
@@ -864,7 +872,7 @@ def build_yaml(geo, state, args, name, pick=None, header=()):
         # Jastrow only refines the shape, so start it at a tenth of the
         # perturbative value rather than double-counting the localisation.
         a1, b1 = 0.1 * a1, 0.1 * b1
-    L_drum = min((2.0 if state == "crystal" else 3.0) * geo.rs, 0.95 * geo.r_ws)
+    L_drum = geo.jastrow_cutoff()
     # alpha_0 = c Gamma/(3 L^2) with c = 1, so the cusp needs no alpha_1 at the
     # start: Gamma = 1/3 for like spins (P-wave), 1 for unlike spins (2-D).
     alpha_like, alpha_unlike = 1.0 / (9.0 * L_drum ** 2), 1.0 / (3.0 * L_drum ** 2)
@@ -987,6 +995,7 @@ def meta(geo, state, args, name, pick=None, extra=None):
         "E_M": geo.E_M, "r_ws": geo.r_ws,
         "moire_min": geo.rmin, "V_min": geo.vmin,
         "alpha_seed": geo.alpha_seed(), "j1_seed": geo.j1_seed(),
+        "jastrow_cutoff": geo.jastrow_cutoff(),
         "shift": list(args.shift),
         "twist": list(args.twist) if getattr(args, "twist", None) else None,
         "sites": ([{"r": r, "spin": "up" if s == 0 else "down"}
@@ -1229,6 +1238,14 @@ def selftest():
     check(snapped(rect.L1, scale_)[1] == 0.0 and snapped(rect.L2, scale_)[0] == 0.0,
           "rect cells are axis-aligned at the default theta0")
     check(rect.cell.shape == (9, 7), "N = 42 is the 9 x 7 rectangle")
+    # The crystal and the liquid of a point carry the same Jastrow cutoffs.
+    yaml_args = argparse.Namespace(twist=None, ewald_tol=1e-6, shift=(0.0, 0.0), opt_iters=0,
+                                   samples=8, opt_blocks=2, vmc_blocks=2, dmc_tau_omega=[],
+                                   dmc_blocks=2, dmc_block_time=400.0, dmc_block_omega=None)
+    cut = {st: [ln.strip() for ln in build_yaml(rect, st, yaml_args, "t").splitlines()
+                if ln.strip().startswith("cutoff:")] for st in ("crystal", "fluid")}
+    check(len(cut["crystal"]) == 2 and cut["crystal"] == cut["fluid"],
+          "crystal and liquid: the same Drummond cutoffs")
 
     # Gamma shells of the unpolarized liquid at nu = 1/3 and of the polarized
     # liquid at nu = 2/3.
