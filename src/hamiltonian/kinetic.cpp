@@ -200,4 +200,57 @@ void Kinetic::local_energy_parameter_derivatives(
     }
 }
 
+// Differentiating the split of add_phase_terms / add_gauge_terms, per particle
+// and dimension with v = ∂φ − a (a = 0 without a field):
+//   Re E_kin = −½(1/m)[∂²u + (∂u)²] + ½(1/m) v²
+//   Im E_kin = −½(1/m)[∂²φ + 2 ∂u v]
+// and the vector potential a(r) does not depend on p, so with ġ = ∂_p ∂u,
+// l̇ = ∂_p ∂²u, ṗ = ∂_p ∂φ, q̇ = ∂_p ∂²φ:
+//   ∂_p Re E_kin = −½(1/m)[l̇ + 2 ∂u ġ − 2 v ṗ]
+//   ∂_p Im E_kin = −½(1/m)[q̇ + 2 ġ v + 2 ∂u ṗ]
+// For ṗ = q̇ = 0 (a real factor) the real part is the formula above.
+void Kinetic::complex_local_energy_parameter_derivatives(
+    const WalkerSet& batch, std::span<const double> dgrad, std::span<const double> dlap,
+    std::span<const double> dpgrad, std::span<const double> dplap, std::size_t n_opt,
+    std::span<double> out_re, std::span<double> out_im) const {
+    const std::size_t nw  = batch.num_walkers();
+    const std::size_t np  = batch.n_particles();
+    const std::size_t dim = batch.dim();
+    if (!batch.has_phase())
+        throw std::logic_error("kinetic: complex parameter derivatives need the phase planes "
+                               "of a complex trial");
+    const std::span<const double> grad = batch.gradients();
+    const std::span<const double> pgr  = batch.phase_gradients();
+    const std::span<const double> pos  = batch.positions();
+    const std::size_t block = np * dim * nw;
+    const bool field = !gauge_coupling_.empty();
+
+    for (std::size_t k = 0; k < n_opt; ++k) {
+        double* __restrict ore = out_re.data() + k * nw;
+        double* __restrict oim = out_im.data() + k * nw;
+        for (std::size_t i = 0; i < np; ++i) {
+            for (std::size_t d = 0; d < dim; ++d) {
+                const double inv_m = inv_mass_[i * dim + d];
+                const std::size_t off = i * dim * nw + d * nw;
+                const double* __restrict g   = grad.data() + off;
+                const double* __restrict pg  = pgr.data() + off;
+                const double* __restrict dg  = dgrad.data() + k * block + off;
+                const double* __restrict dl  = dlap.data() + k * block + off;
+                const double* __restrict dpg = dpgrad.data() + k * block + off;
+                const double* __restrict dpl = dplap.data() + k * block + off;
+                // a_d = c·(−y, x)_d, as in add_gauge_terms.
+                const double c = field ? gauge_coupling_[i] : 0.0;
+                const double* __restrict other =
+                    pos.data() + i * dim * nw + (d == 0 ? (dim > 1 ? nw : 0) : 0);
+                const double sgn = d == 0 ? -c : c;
+                for (std::size_t w = 0; w < nw; ++w) {
+                    const double v = pg[w] - sgn * other[w];
+                    ore[w] += -0.5 * inv_m * (dl[w] + 2.0 * g[w] * dg[w] - 2.0 * v * dpg[w]);
+                    oim[w] += -0.5 * inv_m * (dpl[w] + 2.0 * dg[w] * v + 2.0 * g[w] * dpg[w]);
+                }
+            }
+        }
+    }
+}
+
 }  // namespace alea

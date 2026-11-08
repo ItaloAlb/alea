@@ -218,9 +218,14 @@ Each iteration runs a `VMC` driver whose measurement hook keeps the
 configurations as frames.
 `CostFunction` accumulates the energy and the parameter-derivative matrices,
 reduced across threads, and `LinearMethod` solves the generalized eigenproblem
-for each candidate shift. The candidates are compared by correlated sampling
-on the same frames, in parallel over frames. Only the accepted parameters are
-written back to the shared `TrialWavefunction`.
+for each candidate shift. A complex trial supplies both parts of the
+log-derivatives (`compute_complex_parameter_derivatives`, and the complex
+curvature term through `Hamiltonian::complex_local_energy_parameter_derivatives`);
+`CostFunction` then accumulates complex moments and hands the real parts of the
+complex matrices to the same eigenproblem, since the parameters are real. The
+candidates are compared by correlated sampling on the same frames, in parallel
+over frames. Only the accepted parameters are written back to the shared
+`TrialWavefunction`.
 
 ### PIMC paths, action and moves
 

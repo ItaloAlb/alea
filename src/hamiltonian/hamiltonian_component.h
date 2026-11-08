@@ -226,6 +226,18 @@ public:
         (void)batch; (void)dgrad; (void)dlap; (void)n_opt; (void)out;
     }
 
+    // Complex trial ψ = e^{u + iφ}: accumulate Re and Im of ∂E_L/∂p_k into
+    // out_re / out_im [n_opt * nw], given the modulus parts (dgrad, dlap) and
+    // the phase parts (dpgrad, dplap) of ∂(∂_d ln ψ)/∂p_k and ∂(∂²_d ln ψ)/∂p_k
+    // ([n_opt * np * dim * nw] each).  A no-op for every potential, as above.
+    virtual void complex_local_energy_parameter_derivatives(
+        const WalkerSet& batch, std::span<const double> dgrad, std::span<const double> dlap,
+        std::span<const double> dpgrad, std::span<const double> dplap, std::size_t n_opt,
+        std::span<double> out_re, std::span<double> out_im) const {
+        (void)batch; (void)dgrad; (void)dlap; (void)dpgrad; (void)dplap; (void)n_opt;
+        (void)out_re; (void)out_im;
+    }
+
     // Accumulate the part of this term's local energy that depends on the
     // trial wavefunction into `out` [nw] (the kinetic term).  Potentials V(R)
     // leave it untouched.  Correlated sampling uses the split: a stored

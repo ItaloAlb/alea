@@ -198,8 +198,8 @@ struct SlaterSpec {
     // (= mΩ for the exact one-body state).  See FockDarwinOrbitalSet.
     std::vector<int>                 ls;
     std::optional<double>            beta;
-    // `backflow:` channels (empty → the plain determinant).  Real orbitals only
-    // (plane_wave at the Γ twist, gaussian); the builder refuses the others.
+    // `backflow:` channels (empty → the plain determinant).  gaussian and
+    // plane_wave (at Γ or a twist); the builder refuses fock_darwin.
     std::vector<BackflowSpec>        backflow;
 };
 

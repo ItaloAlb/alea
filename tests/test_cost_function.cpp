@@ -7,7 +7,10 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <complex>
 #include <span>
+#include <stdexcept>
 #include <vector>
 
 #include "qmc/cost_function.h"
@@ -334,4 +337,215 @@ TEST_CASE("CostFunction reports a standard error for the mean energy",
     CHECK(cf.mean_energy() == Catch::Approx(2.5));
     // population variance = 1.25, so the error of the mean is sqrt(1.25/4).
     CHECK(cf.mean_energy_error() == Catch::Approx(std::sqrt(1.25 / 4.0)));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Complex samples (a complex trial, real parameters)
+// ═══════════════════════════════════════════════════════════════════════════
+
+namespace {
+
+using cplx = std::complex<double>;
+
+// O = d + i dt, E_L = e + i f, dE_L = c + i ct, with correlations between all
+// parts so every term of the matrices is exercised.
+struct ComplexSamples {
+    std::size_t n = 0, ns = 0;
+    std::vector<double> e, f, d, dt, c, ct;
+};
+
+ComplexSamples random_complex_samples(std::size_t n, std::size_t ns, unsigned seed) {
+    std::mt19937_64 rng(seed);
+    std::normal_distribution<double> g(0.0, 1.0);
+    ComplexSamples s;
+    s.n = n;
+    s.ns = ns;
+    s.e.resize(ns);
+    s.f.resize(ns);
+    for (auto* v : {&s.d, &s.dt, &s.c, &s.ct}) v->resize(n * ns);
+    for (std::size_t w = 0; w < ns; ++w) {
+        const double x = g(rng), y = g(rng);
+        s.e[w] = -0.4 + 0.1 * x + 0.02 * g(rng);
+        s.f[w] = 0.07 * y + 0.03 * x;
+        for (std::size_t k = 0; k < n; ++k) {
+            const double kk = static_cast<double>(k + 1);
+            s.d[k * ns + w] = 0.3 * kk + kk * 0.2 * x + 0.1 * g(rng);
+            s.dt[k * ns + w] = -0.5 + 0.15 * y - 0.05 * kk * x + 0.1 * g(rng);
+            s.c[k * ns + w] = 0.2 * x * y + 0.05 * g(rng);
+            s.ct[k * ns + w] = -0.1 * kk * y + 0.05 * g(rng);
+        }
+    }
+    return s;
+}
+
+void complex_matrices(const ComplexSamples& s, Eigen::MatrixXd& S, Eigen::MatrixXd& H) {
+    CostFunction cf;
+    cf.add_complex_samples(s.e, s.f, s.d, s.dt, s.c, s.ct, s.n, s.ns);
+    REQUIRE(cf.is_complex());
+    cf.build_matrices(S, H, s.n);
+}
+
+}  // namespace
+
+TEST_CASE("complex samples with no imaginary parts give the real matrices",
+          "[cost_function][complex]") {
+    ComplexSamples s = random_complex_samples(3, 500, 11);
+    std::fill(s.f.begin(), s.f.end(), 0.0);
+    std::fill(s.dt.begin(), s.dt.end(), 0.0);
+    std::fill(s.ct.begin(), s.ct.end(), 0.0);
+    Eigen::MatrixXd Sc, Hc, Sr, Hr;
+    complex_matrices(s, Sc, Hc);
+    CostFunction real;
+    real.add_samples(s.e, s.d, s.c, s.n, s.ns);
+    real.build_matrices(Sr, Hr, s.n);
+    for (Eigen::Index i = 0; i < Sr.rows(); ++i)
+        for (Eigen::Index j = 0; j < Sr.cols(); ++j) {
+            CHECK(Sc(i, j) == Catch::Approx(Sr(i, j)).margin(1e-13));
+            CHECK(Hc(i, j) == Catch::Approx(Hr(i, j)).margin(1e-13));
+        }
+}
+
+TEST_CASE("the complex matrices are the real parts of the centred complex averages",
+          "[cost_function][complex]") {
+    // Two passes, by definition: means first, then the centred products,
+    // against the one-pass expansion onto raw sums in CostFunction.
+    const ComplexSamples s = random_complex_samples(3, 400, 12);
+    Eigen::MatrixXd S, H;
+    complex_matrices(s, S, H);
+    const std::size_t n = s.n, ns = s.ns;
+    const double nd = static_cast<double>(ns);
+    const auto O = [&](std::size_t k, std::size_t w) {
+        return cplx(s.d[k * ns + w], s.dt[k * ns + w]);
+    };
+    const auto dE = [&](std::size_t k, std::size_t w) {
+        return cplx(s.c[k * ns + w], s.ct[k * ns + w]);
+    };
+    std::vector<cplx> m(n);
+    cplx e_mean{};
+    for (std::size_t w = 0; w < ns; ++w) {
+        e_mean += cplx(s.e[w], s.f[w]) / nd;
+        for (std::size_t k = 0; k < n; ++k) m[k] += O(k, w) / nd;
+    }
+    CHECK(H(0, 0) == Catch::Approx(e_mean.real()));
+    for (std::size_t i = 0; i < n; ++i) {
+        cplx h0{};
+        for (std::size_t w = 0; w < ns; ++w) h0 += std::conj(O(i, w) - m[i]) * cplx(s.e[w], s.f[w]);
+        CHECK(H(i + 1, 0) == Catch::Approx(h0.real() / nd).margin(1e-13));
+        CHECK(H(0, i + 1) == Catch::Approx(h0.real() / nd).margin(1e-13));
+        for (std::size_t j = 0; j < n; ++j) {
+            cplx sij{}, hij{};
+            for (std::size_t w = 0; w < ns; ++w) {
+                const cplx Di = O(i, w) - m[i], Dj = O(j, w) - m[j];
+                const cplx el(s.e[w], s.f[w]);
+                sij += std::conj(Di) * Dj;
+                hij += std::conj(Di) * (el * Dj + dE(j, w));
+            }
+            CHECK(S(i + 1, j + 1) == Catch::Approx(sij.real() / nd).margin(1e-13));
+            CHECK(H(i + 1, j + 1) == Catch::Approx(hij.real() / nd).margin(1e-13));
+        }
+    }
+}
+
+TEST_CASE("the complex matrices are invariant under O -> O + a complex constant",
+          "[cost_function][complex][gauge]") {
+    // A p-dependent normalisation AND a p-dependent global phase e^{iα(p)}
+    // shift every sample's O_k by the same complex constant.
+    const ComplexSamples s = random_complex_samples(2, 300, 13);
+    Eigen::MatrixXd S0, H0;
+    complex_matrices(s, S0, H0);
+    for (const cplx shift : {cplx(1.5, 0.0), cplx(0.0, -2.0), cplx(-3.0, 7.5)}) {
+        ComplexSamples t = s;
+        for (std::size_t w = 0; w < t.ns; ++w) {
+            t.d[t.ns + w] += shift.real();    // parameter 1 only
+            t.dt[t.ns + w] += shift.imag();
+        }
+        Eigen::MatrixXd S, H;
+        complex_matrices(t, S, H);
+        for (Eigen::Index i = 0; i < S.rows(); ++i)
+            for (Eigen::Index j = 0; j < S.cols(); ++j) {
+                CHECK(S(i, j) == Catch::Approx(S0(i, j)).margin(1e-11));
+                CHECK(H(i, j) == Catch::Approx(H0(i, j)).margin(1e-11));
+            }
+    }
+}
+
+TEST_CASE("complex accumulations merge, and real and complex ones do not mix",
+          "[cost_function][complex]") {
+    const ComplexSamples s = random_complex_samples(2, 300, 14);
+    Eigen::MatrixXd S_all, H_all;
+    complex_matrices(s, S_all, H_all);
+    // The same samples in two halves, merged.
+    const std::size_t half = s.ns / 2;
+    CostFunction a, b;
+    for (int part = 0; part < 2; ++part) {
+        const std::size_t w0 = part == 0 ? 0 : half, nw = part == 0 ? half : s.ns - half;
+        std::vector<double> e(nw), f(nw), d(s.n * nw), dt(s.n * nw), c(s.n * nw), ct(s.n * nw);
+        for (std::size_t w = 0; w < nw; ++w) {
+            e[w] = s.e[w0 + w];
+            f[w] = s.f[w0 + w];
+            for (std::size_t k = 0; k < s.n; ++k) {
+                d[k * nw + w] = s.d[k * s.ns + w0 + w];
+                dt[k * nw + w] = s.dt[k * s.ns + w0 + w];
+                c[k * nw + w] = s.c[k * s.ns + w0 + w];
+                ct[k * nw + w] = s.ct[k * s.ns + w0 + w];
+            }
+        }
+        (part == 0 ? a : b).add_complex_samples(e, f, d, dt, c, ct, s.n, nw);
+    }
+    a.merge(b);
+    Eigen::MatrixXd S, H;
+    a.build_matrices(S, H, s.n);
+    for (Eigen::Index i = 0; i < S.rows(); ++i)
+        for (Eigen::Index j = 0; j < S.cols(); ++j) {
+            CHECK(S(i, j) == Catch::Approx(S_all(i, j)).margin(1e-13));
+            CHECK(H(i, j) == Catch::Approx(H_all(i, j)).margin(1e-13));
+        }
+
+    const std::vector<double> one = {1.0}, zero = {0.0}, two = {0.5, 0.25}, none = {};
+    CostFunction real;
+    real.add_samples(one, two, 2, 1);
+    CHECK_THROWS_AS(real.merge(a), std::logic_error);
+    CHECK_THROWS_AS(a.add_samples(one, two, 2, 1), std::logic_error);
+    CHECK_THROWS_AS(real.add_complex_samples(one, zero, two, two, none, none, 2, 1),
+                    std::logic_error);
+}
+
+TEST_CASE("a boost whose log-derivative is purely imaginary takes the closed-form step",
+          "[cost_function][complex][curvature]") {
+    // One particle in 1-D, H = −½∂² + ½x², ψ = e^{−x²/2 + iκx}: the ground
+    // state boosted by κ, energy ½ + κ²/2, minimum at κ = 0.  O = ∂_κ ln ψ =
+    // ix has no real part, so only the complex accumulation sees this
+    // parameter at all (the real one would have S = 0).  Per sample
+    //   E_L = ½ + κ²/2 + iκx,   ∂_κ E_L = κ + ix,
+    // and with s = <x²>: S_11 = s, H_00 = ½ + κ²/2 = E, H_01 = H_10 = κs,
+    // H_11 = (E + 1)s.  The 2×2 eigenproblem over a real step Δ gives
+    //   κ s Δ² − Δ − κ = 0,   Δ = [1 − √(1 + 4κ²s)]/(2κs),
+    // which for |ψ|² (s = ½) is [1 − √(1 + 2κ²)]/κ: the exact minimiser of
+    // the energy of ψ(1 + iΔx) over real Δ, ≈ −κ for small κ.
+    const double kappa = 0.5;
+    const std::size_t ns = 200000;
+    std::mt19937_64 rng(15);
+    std::normal_distribution<double> gx(0.0, std::sqrt(0.5));   // |ψ|² = e^{−x²}
+    std::vector<double> e(ns), f(ns), d(ns, 0.0), dt(ns), c(ns, kappa), ct(ns);
+    for (std::size_t w = 0; w < ns; ++w) {
+        const double x = gx(rng);
+        e[w] = 0.5 + 0.5 * kappa * kappa;
+        f[w] = kappa * x;
+        dt[w] = x;
+        ct[w] = x;
+    }
+    CostFunction cf;
+    cf.add_complex_samples(e, f, d, dt, c, ct, 1, ns);
+    Eigen::MatrixXd S, H;
+    cf.build_matrices(S, H, 1);
+    CHECK(S(1, 1) == Catch::Approx(0.5).epsilon(0.01));
+    CHECK(H(0, 1) == Catch::Approx(0.5 * kappa).epsilon(0.01));
+
+    alea::LinearMethodConfig lc;
+    lc.shift_i = 0.0;
+    lc.rescale = 1.0;   // raw eigenvector ratio
+    lc.xi      = 1.0;
+    const double step = alea::LinearMethod(lc).solve(S, H).update[0];
+    const double exact = (1.0 - std::sqrt(1.0 + 2.0 * kappa * kappa)) / kappa;
+    CHECK(step == Catch::Approx(exact).epsilon(0.01));
 }

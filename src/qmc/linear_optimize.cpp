@@ -115,6 +115,18 @@ double LinearOptimize::sample_vmc(CostFunction& cost_fn, SampleStore* store) con
     // the whole sampling pass (parameters don't change during one VMC run), so
     // compute once and share read-only across threads.
     const std::vector<double> scales = deriv_scales();
+    // A complex trial (twisted boundaries) accumulates the complex O_k, E_L
+    // and ∂_k E_L (CostFunction::add_complex_samples); a real one the real
+    // parts only, which is then all there is.
+    const bool complex_trial = psi_.is_complex();
+    const auto scale_columns = [&](std::vector<double>& block, std::size_t nw_thread) {
+        for (std::size_t k = 0; k < n_opt; ++k) {
+            const double sk = scales[k];
+            if (sk == 1.0) continue;
+            double* __restrict col = block.data() + k * nw_thread;
+            for (std::size_t w = 0; w < nw_thread; ++w) col[w] *= sk;
+        }
+    };
 
     // Per-thread CostFunction (the hook is called from multiple OpenMP threads).
     std::vector<CostFunction> t_cost(static_cast<std::size_t>(n_threads));
@@ -163,40 +175,48 @@ double LinearOptimize::sample_vmc(CostFunction& cost_fn, SampleStore* store) con
                 any_bad = true;
             }
         }
+        if (complex_trial)
+            for (double v : wset.local_energies_imag()) any_bad = any_bad || !std::isfinite(v);
         if (any_bad) return;
 
-        if (n_opt > 0) {
-            psi_thread.compute_parameter_derivatives(wset, derivs_block);
-            // Convert ∂logψ/∂p → ∂logψ/∂θ for sign-locked params: scale each
-            // such column by dp/dθ = p. Free params have scale 1.0.
-            for (std::size_t k = 0; k < n_opt; ++k) {
-                const double sk = scales[k];
-                if (sk != 1.0) {
-                    double* __restrict col = derivs_block.data() + k * nw_thread;
-                    for (std::size_t w = 0; w < nw_thread; ++w) col[w] *= sk;
+        if (complex_trial) {
+            // Both parts of O_k and of ∂_k E_L; sign-locked columns scale both.
+            std::vector<double> phase_block(n_opt * nw_thread, 0.0);
+            std::vector<double> dpgrad(n_opt * field), dplap(n_opt * field);
+            std::vector<double> el_derivs_imag(n_opt * nw_thread, 0.0);
+            if (n_opt > 0) {
+                psi_thread.compute_complex_parameter_derivatives(wset, derivs_block, phase_block);
+                scale_columns(derivs_block, nw_thread);
+                scale_columns(phase_block, nw_thread);
+                if (psi_thread.compute_complex_parameter_gradient_derivatives(
+                        wset, dgrad, dlap, dpgrad, dplap, supported)) {
+                    hamiltonian_.complex_local_energy_parameter_derivatives(
+                        wset, dgrad, dlap, dpgrad, dplap, n_opt, el_derivs, el_derivs_imag);
+                    scale_columns(el_derivs, nw_thread);
+                    scale_columns(el_derivs_imag, nw_thread);
                 }
             }
+            cf.add_complex_samples(energies, wset.local_energies_imag(), derivs_block,
+                                   phase_block, el_derivs, el_derivs_imag, n_opt, nw_thread);
+        } else {
+            if (n_opt > 0) {
+                psi_thread.compute_parameter_derivatives(wset, derivs_block);
+                // Convert ∂logψ/∂p → ∂logψ/∂θ for sign-locked params: scale each
+                // such column by dp/dθ = p. Free params have scale 1.0.
+                scale_columns(derivs_block, nw_thread);
 
-            // ∂E_L/∂p_k, the curvature term of Hbar.  Components that cannot
-            // supply ∂(∇logψ)/∂p leave their slices zero, which drops the term
-            // for their parameters only.  The Hamiltonian is read-only here.
-            if (psi_thread.compute_parameter_gradient_derivatives(
-                    wset, dgrad, dlap, supported)) {
-                hamiltonian_.local_energy_parameter_derivatives(
-                    wset, dgrad, dlap, n_opt, el_derivs);
-                for (std::size_t k = 0; k < n_opt; ++k) {
-                    const double sk = scales[k];
-                    if (sk != 1.0) {
-                        double* __restrict col = el_derivs.data() + k * nw_thread;
-                        for (std::size_t w = 0; w < nw_thread; ++w) col[w] *= sk;
-                    }
+                // ∂E_L/∂p_k, the curvature term of Hbar.  Components that cannot
+                // supply ∂(∇logψ)/∂p leave their slices zero, which drops the term
+                // for their parameters only.  The Hamiltonian is read-only here.
+                if (psi_thread.compute_parameter_gradient_derivatives(
+                        wset, dgrad, dlap, supported)) {
+                    hamiltonian_.local_energy_parameter_derivatives(
+                        wset, dgrad, dlap, n_opt, el_derivs);
+                    scale_columns(el_derivs, nw_thread);
                 }
-            } else {
-                std::fill(el_derivs.begin(), el_derivs.end(), 0.0);
             }
+            cf.add_samples(energies, derivs_block, el_derivs, n_opt, nw_thread);
         }
-
-        cf.add_samples(energies, derivs_block, el_derivs, n_opt, nw_thread);
 
         if (store) {
             const std::size_t t  = static_cast<std::size_t>(tid);
@@ -652,20 +672,6 @@ void LinearOptimize::run() {
             "optimizer: unknown `parameters: " + cfg_.parameters +
             "` (expected all, nodal or jastrow)");
     const ScopeGuard scope(psi_, cfg_.parameters);
-
-    // A complex factor's O = ∂ln ψ/∂p is complex, and the energy gradient
-    // ∂E/∂p = 2⟨Re[O*(E_L − E)]⟩ = 2⟨Re O (Re E_L − E) + Im O Im E_L⟩ couples
-    // Im O to Im E_L; the cost function here accumulates real O and Re E_L.
-    // (A real factor of a complex trial, a Jastrow, has Im O = 0 and is fine.)
-    for (const auto& comp : psi_.components())
-        if (comp->is_complex() && comp->num_optimizable_params() > 0)
-            throw std::runtime_error(
-                "optimizer: " + comp->name() + " is complex and this stage would move " +
-                std::to_string(comp->num_optimizable_params()) +
-                " of its parameters, whose log-derivatives are complex; the linear method "
-                "takes real ones.  Optimize them at the Gamma twist (a real determinant "
-                "with the same parameters) and keep them out of this stage "
-                "(`parameters: jastrow`, or fix them)");
 
     const std::size_t n_opt = psi_.total_optimizable_params();
     result_.final_params = current_params();

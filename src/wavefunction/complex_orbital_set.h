@@ -65,6 +65,19 @@ public:
         throw std::logic_error("complex orbital set has no Hessian (supports_hessian() is false)");
     }
 
+    // ── Third derivatives (the backflow curvature term) ─────────────────────
+    // ∂(∇² ln ψ)/∂p of a backflow determinant moves the quasi-coordinates with
+    // p, so it differentiates the Hessian once more along x, at one point:
+    //   third [n * dim³],  third[((i*dim + a)*dim + b)*dim + c] = ∂_a∂_b∂_c φ_i(x).
+    // Outputs are overwritten.  Measurement frequency only (the optimizer).
+    [[nodiscard]] virtual bool supports_third_derivatives() const noexcept { return false; }
+    virtual void evaluate_third_derivatives(std::span<const double> x, std::size_t dim,
+                                            std::span<std::complex<double>> third) const {
+        (void)x; (void)dim; (void)third;
+        throw std::logic_error(
+            "complex orbital set has no third derivatives (supports_third_derivatives() is false)");
+    }
+
     [[nodiscard]] virtual std::unique_ptr<ComplexOrbitalSet> clone() const = 0;
 };
 
@@ -128,6 +141,24 @@ public:
                 for (std::size_t b = 0; b < dim; ++b)
                     hess[(i * dim + a) * dim + b] = -qi[a] * qi[b] * phi;
             }
+        }
+    }
+
+    // ∂_a∂_b∂_c φ = (i)³ q_a q_b q_c φ = −i q_a q_b q_c φ.
+    [[nodiscard]] bool supports_third_derivatives() const noexcept override { return true; }
+    void evaluate_third_derivatives(std::span<const double> x, std::size_t dim,
+                                    std::span<std::complex<double>> third) const override {
+        const std::size_t n = size();
+        for (std::size_t i = 0; i < n; ++i) {
+            const double* qi = q_.data() + i * dim;
+            double arg = 0.0;
+            for (std::size_t d = 0; d < dim; ++d) arg += qi[d] * x[d];
+            const std::complex<double> minus_i_phi(std::sin(arg), -std::cos(arg));   // −iφ
+            for (std::size_t a = 0; a < dim; ++a)
+                for (std::size_t b = 0; b < dim; ++b)
+                    for (std::size_t c = 0; c < dim; ++c)
+                        third[((i * dim + a) * dim + b) * dim + c] =
+                            qi[a] * qi[b] * qi[c] * minus_i_phi;
         }
     }
 

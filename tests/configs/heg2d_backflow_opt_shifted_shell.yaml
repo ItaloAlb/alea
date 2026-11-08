@@ -1,0 +1,57 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# ============================================================================
+# Backflow optimization at a twist against the same optimization at Γ.
+#
+# Polarized 2-D electron gas, N = 7 (a closed shell of the hexagonal cell),
+# rs = 2, a like-spin backflow channel and a Drummond Jastrow, both free.  The test
+# runs the optimizer stage twice: at Γ (real plane waves, real backflow
+# determinant) and at a small twist (lattice.twist is overridden in code).
+# For a small twist the occupied k + θ are the Γ shell shifted by θ, and a
+# like-spin channel over the whole group keeps Σ_j x_j = Σ_j r_j, so
+#   ψ_θ = e^{iθ·Σ r} ψ_Γ:
+# |ψ| is the same, so is every Metropolis decision, O_θ = O_Γ (real), and
+# E_L,θ = E_L,Γ + Nθ²/2 at every configuration.  The complex optimizer must
+# then retrace the real one step for step.
+# ============================================================================
+project:
+  name: heg2d_backflow_opt_shifted_shell
+  seed: 20261109
+  log: false
+  output: false
+
+system:
+  lattice: { type: periodic, dimension: 2, shape: hexagonal, rs: 2.0 }
+  particles:
+    - { name: e, group: electron_group, type: fermions, mass: 1.0, charge: -1,
+        up: 7, down: 0, initialization: uniform }
+
+wavefunction:
+  - slater:
+      group: electron_group
+      orbitals: { type: plane_wave }
+      # c0, c2 free; L = the Wigner-Seitz inradius, fixed.
+      backflow: [{ from: electron_group, params: [0.1, 0.0], cutoff_fixed: true }]
+  # A cutoff Jastrow with α0 free (a periodic Padé is summed over images, and
+  # every optimizer step that rebuilds it costs seconds).
+  - jastrow: { type: drummond, pair: [electron_group, electron_group], params: [0.0],
+               is_fixed: [false], truncation: 3, cutoff: 4.0, cutoff_fixed: true }
+
+hamiltonian:
+  terms:
+    - { type: coulomb, pair: [electron_group, electron_group], epsilon: 1.0 }
+
+qmc:
+  - method: optimizer
+    random_walk: metropolis
+    device: cpu
+    threads: 2
+    samples: 32
+    equilibration_blocks: 5
+    accumulation_blocks: 10
+    steps_per_block: 5
+    sub_steps: 2
+    time_step: 1.0
+    max_iterations: 3

@@ -67,6 +67,13 @@ public:
                                             std::span<const double> dlap,
                                             std::size_t n_opt,
                                             std::span<double> out) const;
+    // Complex trial: Re and Im of ∂E_L/∂p_k into out_re / out_im [n_opt * nw]
+    // (zeroed first), from both parts of the wavefunction's derivatives (see
+    // HamiltonianComponent::complex_local_energy_parameter_derivatives).
+    void complex_local_energy_parameter_derivatives(
+        const WalkerSet& batch, std::span<const double> dgrad, std::span<const double> dlap,
+        std::span<const double> dpgrad, std::span<const double> dplap, std::size_t n_opt,
+        std::span<double> out_re, std::span<double> out_im) const;
 
     // Wavefunction-dependent part of E_L (the kinetic energy) into `out` [nw];
     // zeros it first.  Read-only: safe to call concurrently on distinct batches.
