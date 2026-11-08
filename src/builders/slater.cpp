@@ -205,6 +205,8 @@ std::unique_ptr<WavefunctionComponent> build_fock_darwin(
 // of the cell's reciprocal lattice; make_plane_wave_orbitals refuses an open
 // shell and names the valid particle counts, because a partly filled shell
 // makes the energy depend on an arbitrary choice among degenerate k-points.
+// An explicit `k:`/`sin:` list makes that choice the user's: the blocks take
+// its first n_up / n_dn real orbitals, at Γ only.
 std::unique_ptr<WavefunctionComponent> build_plane_wave(
     const io::SlaterSpec& s, const ParticleGroup& g, std::size_t n_up,
     std::size_t n_dn, const WavefunctionContext& ctx) {
@@ -213,6 +215,33 @@ std::unique_ptr<WavefunctionComponent> build_plane_wave(
             "slater: plane-wave orbitals take no centers/alphas/sites — "
             "the k-points come from the cell's reciprocal lattice.");
     const std::vector<double>& twist = ctx.cfg.lattice.twist;
+    if (!s.pw_k.empty()) {
+        const std::string label = "slater orbitals of group " + s.group;
+        if (!is_gamma_twist(twist))
+            throw std::runtime_error(
+                label + ": an explicit `k:` list gives real cos/sin orbitals, which "
+                "exist at the Gamma twist only; at a twist the occupation is the lowest "
+                "|k + theta| (remove `k:`)");
+        const std::size_t n = std::max(n_up, n_dn);
+        if (s.pw_k.size() != n)
+            throw std::runtime_error(label + ": `k:` lists " + std::to_string(s.pw_k.size()) +
+                                     " orbitals, but the larger spin block holds " +
+                                     std::to_string(n) + " particles (the blocks take the "
+                                     "first n_up and n_down entries)");
+        const auto first = [&](std::size_t k) {
+            try {
+                return make_explicit_plane_wave_orbitals(
+                    ctx.cell, std::vector<std::vector<int>>(s.pw_k.begin(), s.pw_k.begin() + k),
+                    s.pw_sin.empty() ? std::vector<bool>{}
+                                     : std::vector<bool>(s.pw_sin.begin(), s.pw_sin.begin() + k));
+            } catch (const std::invalid_argument& e) {
+                throw std::runtime_error(label + ": " + e.what());
+            }
+        };
+        first(n);   // validate the whole list, not only each block's prefix
+        return real_determinant(s, g, n_up, n_dn, ctx,
+                                [&](bool, std::size_t k) { return first(k); });
+    }
     // Twisted boundary conditions → complex determinant.  Away from Γ the
     // occupied k+θ are no longer closed under k → −k, so no real cos/sin basis
     // exists: build e^{i(k+θ)·r} orbitals and a complex determinant (DMC then
@@ -327,6 +356,10 @@ std::unique_ptr<WavefunctionComponent> build_component(
                                  " has no particles, so there is no determinant");
     const std::size_t n_up = static_cast<std::size_t>(ps->up);
     const std::size_t n_dn = static_cast<std::size_t>(ps->down);
+    if (!s.pw_k.empty() && s.orbital_type != "plane_wave")
+        throw std::runtime_error("slater on group " + s.group + ": `k:`/`sin:` list plane "
+                                 "waves; they do not apply to " + s.orbital_type +
+                                 " orbitals");
 
     if (s.orbital_type == "fock_darwin") return build_fock_darwin(s, g, n_up, n_dn, ctx);
     if (s.orbital_type == "plane_wave")  return build_plane_wave(s, g, n_up, n_dn, ctx);

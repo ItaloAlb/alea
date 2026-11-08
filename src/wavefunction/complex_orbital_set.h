@@ -287,9 +287,13 @@ inline std::unique_ptr<TwistedPlaneWaveOrbitalSet> make_twisted_plane_wave_orbit
                                  " components, the cell is " + std::to_string(dim) + "-D");
     const std::span<const double> b = cell.reciprocal();
 
+    // θ in the basis dual to the lattice vectors as given (the documented
+    // ψ(r + v_i) = e^{2πi t_i} ψ(r)), not the reduced basis the enumeration
+    // below uses: SimulationCell::given_reciprocal says why.
+    const std::span<const double> b_given = cell.given_reciprocal();
     double theta[SimulationCell::kMaxDim] = {};
     for (std::size_t i = 0; i < dim; ++i)
-        for (std::size_t d = 0; d < dim; ++d) theta[d] += twist[i] * b[i * dim + d];
+        for (std::size_t d = 0; d < dim; ++d) theta[d] += twist[i] * b_given[i * dim + d];
     double theta_norm = 0.0;
     for (std::size_t d = 0; d < dim; ++d) theta_norm += theta[d] * theta[d];
     theta_norm = std::sqrt(theta_norm);

@@ -61,7 +61,7 @@ and [`configs/`](../configs) (studies: 2D electron gas, bilayers, PIMC).
 | `ewald_tol` | float | `1e-6` | Periodic: relative accuracy of the Ewald sum |
 | `capacitor` | `include` \| `exclude` | `include` | Periodic, groups in several layers: `include` keeps the parallel-plate energy of the layers' net charges (it is in $E_L$, and the log reports it) and needs a neutral cell; `exclude` drops every $k = 0$ term between layers, as if each layer were neutralized in its own plane. That is CASINO's convention, and it allows a charged multilayer cell (e.g. an extra electron in an electron–hole bilayer) |
 | `truncation` | `minimum_image` | — | Periodic: use the nearest image for long-range pair terms instead of Ewald. **Not a converged interaction**; for geometry tests only |
-| `twist` | list of `dimension` floats | Γ | Periodic: twisted boundary condition $\psi(r + a_i) = e^{2\pi i t_i}\psi(r)$, in fractional reciprocal coordinates. Away from Γ it requires `plane_wave` orbitals, and DMC runs fixed-phase. Not supported by PIMC |
+| `twist` | list of `dimension` floats | Γ | Periodic: twisted boundary condition $\psi(r + a_i) = e^{2\pi i t_i}\psi(r)$, in fractional reciprocal coordinates of the lattice vectors $a_i$ as given: the `vectors` rows, or for `shape: hexagonal` $a_1 = (L, 0)$, $a_2 = (L/2, \sqrt3 L/2)$ (the cell reduces its basis internally, but that does not change what $t$ means). Away from Γ it requires `plane_wave` orbitals, and DMC runs fixed-phase. Not supported by PIMC |
 
 A periodic cell needs exactly one of: `vectors`, `rs`, `L` as a list, or a scalar
 `L` (with `shape`).
@@ -179,9 +179,17 @@ that group's `up`/`down`.
 | `orbitals.alpha_fixed` | bool (default `true`) | `false` lets the optimizer move the shared width (moves the nodes) |
 | `orbitals.l` | list of int | **fock_darwin:** angular momenta of the occupied orbitals |
 | `orbitals.beta` | float | **fock_darwin:** Gaussian exponent, $m\sqrt{\omega_0^2 + \omega_c^2/4}$ for the exact one-body state |
+| `orbitals.k` | list of `[n1, n2]` | **plane_wave, Γ only:** an explicit occupation, one real orbital per entry, $\mathbf k = n_1\mathbf b_1 + n_2\mathbf b_2$ in the reciprocal vectors of the lattice vectors as given (as for `twist`); as many entries as the larger spin block, which the blocks take from the front |
+| `orbitals.sin` | list of bool | **plane_wave:** with `k`, `true` for $\sin(\mathbf k\cdot\mathbf r)$, `false` (default) for $\cos(\mathbf k\cdot\mathbf r)$ |
 
 `plane_wave` orbitals take their k-vectors from the periodic cell and need
-closed shells; the error message lists the valid particle counts. `fock_darwin`
+closed shells; the error message lists the valid particle counts. To fill an
+open shell, list the occupied orbitals with `k` and `sin`: the choice among the
+degenerate cos/sin is then explicit, and different choices are different trial
+states. Two entries that are the same function up to sign ($\pm\mathbf k$ with
+the same cos/sin, or a sine at $\mathbf k = 0$) are refused. At a twist the
+occupation is always the lowest $|\mathbf k + \boldsymbol\theta|$ and `k` is
+refused. `fock_darwin`
 orbitals are complex (2D only), so DMC runs fixed-phase.
 
 **Backflow.** A `backflow:` list evaluates the orbitals at quasi-coordinates
@@ -248,7 +256,7 @@ cusps belong to the Jastrow factor.
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `blocks` | list | — (required) | One determinant each: `{ rows: group, columns: group, unpaired: {...} }` |
-| `blocks[].unpaired` | map | none | Single-particle orbitals that complete a block with more rows than columns (or the reverse): `{ type: plane_wave, k: [[n1, n2], ...], sin: [bool, ...] }`, with $\mathbf k = n_1\mathbf b_1 + n_2\mathbf b_2$; cos unless `sin` says otherwise. Exactly $\lvert N_\text{rows} - N_\text{columns}\rvert$ of them |
+| `blocks[].unpaired` | map | none | Single-particle orbitals that complete a block with more rows than columns (or the reverse): `{ type: plane_wave, k: [[n1, n2], ...], sin: [bool, ...] }`, with $\mathbf k = n_1\mathbf b_1 + n_2\mathbf b_2$ in the reciprocal vectors of the lattice vectors as given (as for `twist`); cos unless `sin` says otherwise. Exactly $\lvert N_\text{rows} - N_\text{columns}\rvert$ of them |
 | `orbital.type` | `cosine_polynomial` | `cosine_polynomial` | Form of $\varphi$ |
 | `orbital.shells` | int | `0` | Number of stars $S$ in the cosine part (periodic 2D only) |
 | `orbital.poly_order` | int | none | $M \ge 1$ of the cutoff polynomial; omit for no polynomial |

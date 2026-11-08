@@ -187,6 +187,38 @@ TEST_CASE("min_image_batch_from folds every walker bit-for-bit like min_image",
 // axis-aligned and takes the orthorhombic per-axis fast path; the same lattice
 // written {(L,0),(L,L)} is not, so it reduces and then takes the general
 // 9-candidate path.  Equal results mean the two kernels agree.
+TEST_CASE("given_reciprocal is dual to the vectors as given, whatever basis the folds use",
+          "[cell]") {
+    // Each basis is reordered or Gauss-reduced by the cell; given_reciprocal
+    // must still satisfy b_i · v_j = 2π δ_ij for the vectors passed in, in their
+    // order, while reciprocal() is dual to the basis the cell actually keeps.
+    const double two_pi = 2.0 * std::numbers::pi;
+    for (const std::vector<double>& v : std::vector<std::vector<double>>{
+             {4, 0, 12, 4},                              // skewed square: reduced
+             {0, 15, 30, 0},                             // swapped rectangle: reordered
+             {10, 0, 5, 8.6602540378443865},             // hexagonal: on the reduction's tie
+             {10, 0, -15, 8.6602540378443865}}) {
+        const SimulationCell cell(2, std::span<const double>(v));
+        const auto bg = cell.given_reciprocal();
+        for (std::size_t i = 0; i < 2; ++i)
+            for (std::size_t j = 0; j < 2; ++j)
+                CHECK(bg[i * 2] * v[j * 2] + bg[i * 2 + 1] * v[j * 2 + 1] ==
+                      Approx(i == j ? two_pi : 0.0).margin(1e-12));
+        const auto a = cell.vectors();
+        const auto b = cell.reciprocal();
+        for (std::size_t i = 0; i < 2; ++i)
+            for (std::size_t j = 0; j < 2; ++j)
+                CHECK(b[i * 2] * a[j * 2] + b[i * 2 + 1] * a[j * 2 + 1] ==
+                      Approx(i == j ? two_pi : 0.0).margin(1e-12));
+    }
+    // The skewed square is reduced to the axis-aligned basis, so the two duals
+    // differ: the reason given_reciprocal exists.
+    const std::vector<double> skew = {4, 0, 12, 4};
+    const SimulationCell cell(2, std::span<const double>(skew));
+    CHECK(cell.reciprocal()[1] == Approx(0.0).margin(1e-12));
+    CHECK(cell.given_reciprocal()[1] == Approx(-3.0 * two_pi / 4.0));
+}
+
 TEST_CASE("equivalent primitive bases describe an identical lattice", "[cell]") {
     struct Family {
         const char*                          name;

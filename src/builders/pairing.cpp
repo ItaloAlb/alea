@@ -49,30 +49,11 @@ std::unique_ptr<OrbitalSet> unpaired_orbitals(const io::PairingBlockSpec& blk,
     if (!ctx.cell.is_periodic() || ctx.dim != 2)
         throw std::runtime_error(label + ": plane-wave unpaired orbitals need a periodic "
                                  "2-D cell");
-    const auto b = ctx.cell.reciprocal();
-    const std::size_t n = blk.unpaired_k.size();
-    std::vector<double> k(n * 2);
-    std::vector<char> is_sin(n, 0);
-    for (std::size_t o = 0; o < n; ++o) {
-        const std::vector<int>& idx = blk.unpaired_k[o];
-        if (idx.size() != 2)
-            throw std::runtime_error(label + ": each k is [n1, n2] in units of the "
-                                     "reciprocal lattice vectors");
-        k[2 * o]     = idx[0] * b[0] + idx[1] * b[2];
-        k[2 * o + 1] = idx[0] * b[1] + idx[1] * b[3];
-        is_sin[o] = !blk.unpaired_sin.empty() && blk.unpaired_sin[o];
-        if (is_sin[o] && idx[0] == 0 && idx[1] == 0)
-            throw std::runtime_error(label + ": sin at k = 0 vanishes everywhere");
-        for (std::size_t q = 0; q < o; ++q) {
-            const std::vector<int>& other = blk.unpaired_k[q];
-            const bool same = other[0] == idx[0] && other[1] == idx[1];
-            const bool opposite = other[0] == -idx[0] && other[1] == -idx[1];
-            if ((same || opposite) && is_sin[q] == is_sin[o])
-                throw std::runtime_error(label + ": two unpaired orbitals are the same "
-                                         "function (k and ±k), so the determinant vanishes");
-        }
+    try {
+        return make_explicit_plane_wave_orbitals(ctx.cell, blk.unpaired_k, blk.unpaired_sin);
+    } catch (const std::invalid_argument& e) {
+        throw std::runtime_error(label + ": " + e.what());
     }
-    return std::make_unique<PlaneWaveOrbitalSet>(2, std::move(k), std::move(is_sin));
 }
 
 }  // namespace

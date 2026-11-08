@@ -57,6 +57,20 @@ SimulationCell::SimulationCell(std::size_t dim, std::span<const double> vectors)
             "SimulationCell: expected " + std::to_string(dim * dim) +
             " lattice-vector components, got " + std::to_string(vectors.size()));
     for (std::size_t k = 0; k < dim * dim; ++k) a_[k] = vectors[k];
+    // Dual of the given basis, before finalize_periodic reorders and reduces it:
+    // given_b_i · v_j = 2π δ_ij (a singular basis is refused just below).
+    constexpr double kTwoPi = 6.283185307179586476925286766559;
+    if (dim == 1) {
+        if (vectors[0] != 0.0) given_b_[0] = kTwoPi / vectors[0];
+    } else {
+        const double det = vectors[0] * vectors[3] - vectors[1] * vectors[2];
+        if (det != 0.0) {
+            given_b_[0] = kTwoPi * vectors[3] / det;
+            given_b_[1] = -kTwoPi * vectors[2] / det;
+            given_b_[2] = -kTwoPi * vectors[1] / det;
+            given_b_[3] = kTwoPi * vectors[0] / det;
+        }
+    }
     finalize_periodic();
 }
 

@@ -52,8 +52,6 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import yaml
-
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 WINDOWS = os.name == "nt"
@@ -90,6 +88,10 @@ def twist_grid(ns, offset, use_symmetry):
 # -- make ---------------------------------------------------------------------
 
 def cmd_make(args):
+    # PyYAML only here, so that twist_grid() can be imported (moire_cells.py
+    # reports shells on this very grid) with the standard library alone.
+    import yaml
+
     base = yaml.safe_load(Path(args.base).read_text(encoding="utf-8"))
     lat = base.get("system", {}).get("lattice", {})
     if lat.get("type") != "periodic":

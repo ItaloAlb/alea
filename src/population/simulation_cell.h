@@ -87,6 +87,17 @@ public:
     [[nodiscard]] std::span<const double> reciprocal() const noexcept {
         return {b_, dim_ * dim_};
     }
+    // The reciprocal basis dual to the lattice vectors AS GIVEN to the
+    // constructor, in their order: given_b_i · v_j = 2π δ_ij.  vectors() and
+    // reciprocal() hold the basis after axis alignment and Gauss reduction,
+    // which the folds need; a hexagonal basis sits exactly on the reduction's
+    // tie, so which reduced basis comes out depends on rounding.  Coordinates
+    // a user writes in the reciprocal basis (lattice.twist, integer k of
+    // plane-wave orbitals) therefore refer to this one.  Same lattice either
+    // way; only the labelling differs.
+    [[nodiscard]] std::span<const double> given_reciprocal() const noexcept {
+        return {given_b_, dim_ * dim_};
+    }
 
     // ── Minimum image: fold a separation into the Wigner–Seitz cell ─────────
     // In-place on a single dim-component displacement.  No-op when open.
@@ -254,6 +265,7 @@ private:
     double a_[kMaxDim * kMaxDim]{};
     double ainv_[kMaxDim * kMaxDim]{};
     double b_[kMaxDim * kMaxDim]{};
+    double given_b_[kMaxDim * kMaxDim]{};  // dual of the vectors as given
     double cand_[kMaxCand * kMaxDim]{};  // Cartesian candidate translations
     std::size_t n_cand_ = 1;
 
