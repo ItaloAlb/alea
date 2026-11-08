@@ -593,6 +593,157 @@ TEST_CASE("an integer twist is the Gamma point and stays real", "[app][twist]") 
     }
 }
 
+// ── An explicit plane-wave occupation (orbitals.k / orbitals.sin) ───────────
+namespace {
+// Free electrons in a 4×4 square cell, b = 2π/4: the shells are k = 0, then
+// (±1, 0), (0, ±1), then (±1, ±1).
+std::string pw_list_yaml(int up, int down, const std::string& orbitals,
+                         const std::string& extra = "") {
+    return R"(
+system:
+  lattice: { type: periodic, dimension: 2, shape: square, L: 4.0)" + extra + R"( }
+  particles:
+    - { name: e, group: electrons, type: fermions, mass: 1.0, charge: -1, up: )" +
+           std::to_string(up) + ", down: " + std::to_string(down) + R"( }
+wavefunction:
+  - slater: { group: electrons, orbitals: )" + orbitals + R"( }
+)";
+}
+
+struct Evaluated {
+    std::vector<double> log_psi, grad, lap, energy;
+};
+
+Evaluated evaluate_pw_gas(const std::string& yaml, std::size_t np) {
+    const auto cfg = alea::io::parse_config(yaml);
+    const auto groups = build_groups(cfg);
+    const std::vector<double> cellv = {4.0, 0.0, 0.0, 4.0};
+    const alea::SimulationCell cell(2, std::span<const double>(cellv));
+    auto psi = build_wavefunction(cfg, groups, nullptr, cell);
+    auto ham = build_hamiltonian(cfg, groups, cell);
+    WalkerSet ws(/*nw=*/2, np, /*dim=*/2, cell);
+    for (std::size_t k = 0; k < ws.positions().size(); ++k)
+        ws.positions()[k] = 2.0 + 1.5 * std::sin(1.9 * static_cast<double>(k));
+    ws.dist_tables().build_all(ws.positions());
+    psi.evaluate_batch(ws);
+    ham.evaluate_batch(ws);
+    const auto copy = [](std::span<const double> s) { return std::vector<double>(s.begin(), s.end()); };
+    return {copy(ws.log_psi()), copy(ws.gradients()), copy(ws.laplacians()),
+            copy(ws.local_energies())};
+}
+}  // namespace
+
+TEST_CASE("an explicit plane-wave list equal to the closed shells is the default determinant",
+          "[app][plane_wave]") {
+    // 5 up, 1 down: the closed shells k = 0 and (±1, 0), (0, ±1) as cos/sin.
+    // The order and the sign of each sin differ from the default's, which only
+    // changes the sign of ψ, not ln|ψ| or its derivatives.
+    const Evaluated ref = evaluate_pw_gas(pw_list_yaml(5, 1, "{ type: plane_wave }"), 6);
+    const Evaluated got = evaluate_pw_gas(
+        pw_list_yaml(5, 1,
+                     "{ type: plane_wave, k: [[0, 0], [0, -1], [1, 0], [0, 1], [-1, 0]],\n"
+                     "                   sin: [false, true, true, false, false] }"),
+        6);
+    for (std::size_t w = 0; w < 2; ++w)
+        CHECK(got.log_psi[w] == Catch::Approx(ref.log_psi[w]).epsilon(1e-12));
+    for (std::size_t k = 0; k < ref.grad.size(); ++k) {
+        CHECK(got.grad[k] == Catch::Approx(ref.grad[k]).margin(1e-11));
+        CHECK(got.lap[k] == Catch::Approx(ref.lap[k]).margin(1e-10));
+    }
+}
+
+TEST_CASE("an explicit open-shell plane-wave occupation has the free-gas energy of its orbitals",
+          "[app][plane_wave]") {
+    // Any determinant of plane waves is an eigenstate of the free kinetic
+    // energy, E = Σ_i |k_i|²/2, at every configuration.  Up: k = 0 and two of
+    // the four (±1, 0), (0, ±1) states (an open shell the default refuses);
+    // down: the first two entries.
+    const double b = 2.0 * 3.14159265358979323846 / 4.0;
+    CHECK_THROWS(evaluate_pw_gas(pw_list_yaml(3, 2, "{ type: plane_wave }"), 5));
+    const Evaluated got = evaluate_pw_gas(
+        pw_list_yaml(3, 2, "{ type: plane_wave, k: [[0, 0], [1, 0], [0, 1]], sin: [false, false, true] }"),
+        5);
+    const double exact = 0.5 * b * b * (0 + 1 + 1) + 0.5 * b * b * (0 + 1);
+    for (std::size_t w = 0; w < 2; ++w)
+        CHECK(got.energy[w] == Catch::Approx(exact).epsilon(1e-10));
+
+    // The same list carries a backflow (a polarized group: a like-spin channel).
+    const auto cfg = alea::io::parse_config(pw_list_yaml(
+        3, 0,
+        "{ type: plane_wave, k: [[0, 0], [1, 0], [0, 1]], sin: [false, false, true] },\n"
+        "      backflow: [{ from: electrons, params: [0.1] }]"));
+    const std::vector<double> cellv = {4.0, 0.0, 0.0, 4.0};
+    auto psi = build_wavefunction(cfg, build_groups(cfg), nullptr,
+                                  alea::SimulationCell(2, std::span<const double>(cellv)));
+    CHECK(psi.components()[0]->name() == "backflow_slater_determinant");
+}
+
+TEST_CASE("a twist and integer k refer to the lattice vectors as given, not the reduced basis",
+          "[app][plane_wave][twist]") {
+    // vectors (4, 0), (12, 4) are the 4×4 square lattice in a skewed basis,
+    // which the cell Gauss-reduces to (4, 0), (0, 4).  In the GIVEN basis
+    // b1 = (π/2, −3π/2), b2 = (0, π/2).  A free electron in the lowest
+    // twisted plane wave has E = |θ|²/2; one in cos(b1·r) on top of k = 0 has
+    // E = |b1|²/2.  Read in the reduced basis, both would be different numbers.
+    const double pi = 3.14159265358979323846;
+    const auto energy = [](const std::string& yaml, std::size_t np) {
+        const auto cfg = alea::io::parse_config(yaml);
+        const auto groups = build_groups(cfg);
+        const alea::SimulationCell cell = alea::build_cell(cfg, np);
+        auto psi = build_wavefunction(cfg, groups, nullptr, cell);
+        auto ham = build_hamiltonian(cfg, groups, cell);
+        WalkerSet ws(/*nw=*/1, np, /*dim=*/2, cell);
+        for (std::size_t k = 0; k < ws.positions().size(); ++k)
+            ws.positions()[k] = 1.0 + 0.7 * static_cast<double>(k);
+        ws.dist_tables().build_all(ws.positions());
+        psi.evaluate_batch(ws);
+        ham.evaluate_batch(ws);
+        return ws.local_energies()[0];
+    };
+    const std::string skewed = "vectors: [[4.0, 0.0], [12.0, 4.0]]";
+    const auto gas = [&](int up, const std::string& orbitals, const std::string& extra) {
+        return R"(
+system:
+  lattice: { type: periodic, dimension: 2, )" + skewed + extra + R"( }
+  particles:
+    - { name: e, group: electrons, type: fermions, mass: 1.0, charge: -1, up: )" +
+               std::to_string(up) + R"(, down: 0 }
+wavefunction:
+  - slater: { group: electrons, orbitals: )" + orbitals + R"( }
+)";
+    };
+    // θ = 0.1 b1 + 0.05 b2 = (0.05π, −0.125π).
+    CHECK(energy(gas(1, "{ type: plane_wave }", ", twist: [0.1, 0.05]"), 1) ==
+          Catch::Approx(0.5 * pi * pi * (0.05 * 0.05 + 0.125 * 0.125)).epsilon(1e-10));
+    // cos(0·r), cos(b1·r): E = |b1|²/2 = (π²/4)(1 + 9)/2.
+    CHECK(energy(gas(2, "{ type: plane_wave, k: [[0, 0], [1, 0]] }", ""), 2) ==
+          Catch::Approx(0.5 * pi * pi * 0.25 * 10.0).epsilon(1e-10));
+}
+
+TEST_CASE("an explicit plane-wave list is refused where it cannot be right", "[app][plane_wave]") {
+    using Catch::Matchers::ContainsSubstring;
+    const auto build = [](const std::string& yaml) { return evaluate_pw_gas(yaml, 3); };
+    // Not one entry per particle of the larger spin block.
+    CHECK_THROWS_WITH(build(pw_list_yaml(3, 0, "{ type: plane_wave, k: [[0, 0], [1, 0]] }")),
+                      ContainsSubstring("larger spin block"));
+    // The same function twice (cos at k and at −k), and sin at k = 0.
+    CHECK_THROWS_WITH(build(pw_list_yaml(3, 0, "{ type: plane_wave, k: [[0, 0], [1, 0], [-1, 0]] }")),
+                      ContainsSubstring("same function"));
+    CHECK_THROWS_WITH(build(pw_list_yaml(3, 0, "{ type: plane_wave, k: [[0, 0], [1, 0], [0, 0]], "
+                                               "sin: [false, false, true] }")),
+                      ContainsSubstring("sin at k = 0"));
+    // Real cos/sin exist at Γ only.
+    CHECK_THROWS_WITH(build(pw_list_yaml(3, 0, "{ type: plane_wave, k: [[0, 0], [1, 0], [0, 1]] }",
+                                         ", twist: [0.2, 0.1]")),
+                      ContainsSubstring("Gamma"));
+    // `sin:` must match `k:`, and `k:` belongs to plane waves.
+    CHECK_THROWS_WITH(alea::io::parse_config(
+                          pw_list_yaml(3, 0, "{ type: plane_wave, k: [[0, 0], [1, 0], [0, 1]], sin: [true] }")),
+                      ContainsSubstring("one entry per"));
+    CHECK_THROWS_WITH(build(pw_list_yaml(3, 0, "{ type: gaussian, alpha: 1.0, k: [[0, 0], [1, 0], [0, 1]] }")),
+                      ContainsSubstring("plane waves"));
+}
+
 namespace {
 // One electron (m = 0.7) in a parabolic dot ω₀ = 0.5 with B = 1.3, in the l = −1
 // Fock–Darwin state at the exact width β = mΩ:  E = 2Ω + ω_c/2, ω_c = qB/m.

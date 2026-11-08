@@ -521,7 +521,7 @@ Config parse_config(const std::string& yaml_text) {
             if (const YAML::Node orb = sn["orbitals"]) {
                 require_keys(orb, "slater orbitals of group " + s.group,
                              {"type", "centers", "alphas", "sites", "alpha",
-                              "alpha_fixed", "l", "beta"});
+                              "alpha_fixed", "l", "beta", "k", "sin"});
                 if (orb["type"]) s.orbital_type = orb["type"].as<std::string>();
                 if (orb["centers"])
                     for (const YAML::Node& cn : orb["centers"])
@@ -534,6 +534,17 @@ Config parse_config(const std::string& yaml_text) {
                     s.alpha_fixed = orb["alpha_fixed"].as<bool>();
                 if (orb["l"])    s.ls   = orb["l"].as<std::vector<int>>();
                 if (orb["beta"]) s.beta = orb["beta"].as<double>();
+                if (const YAML::Node kn = orb["k"]) {
+                    if (!kn.IsSequence() || kn.size() == 0)
+                        throw std::runtime_error("slater orbitals of group " + s.group +
+                                                 ": `k:` is a nonempty list of integer "
+                                                 "reciprocal indices [n1, n2]");
+                    for (const YAML::Node& k1 : kn) s.pw_k.push_back(k1.as<std::vector<int>>());
+                }
+                if (orb["sin"]) s.pw_sin = orb["sin"].as<std::vector<bool>>();
+                if (!s.pw_sin.empty() && s.pw_sin.size() != s.pw_k.size())
+                    throw std::runtime_error("slater orbitals of group " + s.group +
+                                             ": `sin:` needs one entry per `k:` entry");
             }
             c.wavefunction.emplace_back(std::move(s));
         } else if (const YAML::Node mn = item["moire_jastrow"]) {

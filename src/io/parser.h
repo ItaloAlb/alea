@@ -198,6 +198,12 @@ struct SlaterSpec {
     // (= mΩ for the exact one-body state).  See FockDarwinOrbitalSet.
     std::vector<int>                 ls;
     std::optional<double>            beta;
+    // plane_wave: an explicit occupation at Γ, one orbital per entry: integer
+    // reciprocal indices [n1, n2] of the cell and cos (false) or sin (true).
+    // Empty → the closed shells of the cell.  Lets a group fill an open shell
+    // with a chosen subset of its degenerate cos/sin.
+    std::vector<std::vector<int>>    pw_k;
+    std::vector<bool>                pw_sin;
     // `backflow:` channels (empty → the plain determinant).  gaussian and
     // plane_wave (at Γ or a twist); the builder refuses fock_darwin.
     std::vector<BackflowSpec>        backflow;

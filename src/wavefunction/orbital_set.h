@@ -690,6 +690,54 @@ inline std::unique_ptr<PlaneWaveOrbitalSet> make_plane_wave_orbitals(
     return std::make_unique<PlaneWaveOrbitalSet>(dim, std::move(k), std::move(s));
 }
 
+// Real plane waves listed one by one: orbital o is cos(k_o·r), or sin(k_o·r)
+// when is_sin[o], with k_o = Σ_i n_oi b_i for the integer indices n_o of the
+// reciprocal vectors b_i dual to the lattice vectors as given
+// (SimulationCell::given_reciprocal; is_sin empty: all cosines).  This is how a
+// caller fills an OPEN shell with a subset of its degenerate cos/sin of its
+// own choosing, which make_plane_wave_orbitals refuses to guess.  Two entries
+// that are the same function up to sign (cos or sin at k and at ±k, or sin at
+// k = 0, which vanishes) make every determinant zero; they are refused
+// (std::invalid_argument), as are indices of the wrong length.
+inline std::unique_ptr<PlaneWaveOrbitalSet> make_explicit_plane_wave_orbitals(
+    const SimulationCell& cell, const std::vector<std::vector<int>>& k_indices,
+    const std::vector<bool>& is_sin) {
+    const std::size_t dim = cell.dim();
+    if (!cell.is_periodic())
+        throw std::invalid_argument("plane-wave orbitals need a periodic cell");
+    if (!is_sin.empty() && is_sin.size() != k_indices.size())
+        throw std::invalid_argument("`sin:` needs one entry per k");
+    const std::span<const double> b = cell.given_reciprocal();
+    const std::size_t n = k_indices.size();
+    std::vector<double> k(n * dim, 0.0);
+    std::vector<char>   s(n, 0);
+    for (std::size_t o = 0; o < n; ++o) {
+        const std::vector<int>& idx = k_indices[o];
+        if (idx.size() != dim)
+            throw std::invalid_argument("each k is " + std::to_string(dim) +
+                                        " integers, in units of the reciprocal lattice "
+                                        "vectors");
+        bool zero = true;
+        for (std::size_t i = 0; i < dim; ++i) {
+            zero = zero && idx[i] == 0;
+            for (std::size_t d = 0; d < dim; ++d) k[o * dim + d] += idx[i] * b[i * dim + d];
+        }
+        s[o] = !is_sin.empty() && is_sin[o];
+        if (s[o] && zero) throw std::invalid_argument("sin at k = 0 vanishes everywhere");
+        for (std::size_t q = 0; q < o; ++q) {
+            bool same = true, opposite = true;
+            for (std::size_t i = 0; i < dim; ++i) {
+                same = same && k_indices[q][i] == idx[i];
+                opposite = opposite && k_indices[q][i] == -idx[i];
+            }
+            if ((same || opposite) && s[q] == s[o])
+                throw std::invalid_argument("two orbitals are the same function (k and ±k), "
+                                            "so the determinant vanishes");
+        }
+    }
+    return std::make_unique<PlaneWaveOrbitalSet>(dim, std::move(k), std::move(s));
+}
+
 // ── Triangular crystal sites commensurate with the cell ────────────────────
 // The N sites of a triangular lattice that tile the simulation cell exactly.
 // They exist only when the cell is a superlattice of the site lattice, i.e.
