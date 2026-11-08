@@ -207,9 +207,32 @@ only in the determinant. Units are effective atomic units (`a_B*`, `Ha*`), so
 
 Before writing, it checks that the cell is a supercell of the moiré lattice and
 holds exactly `M = N_e/ν` moiré cells. It also checks that the crystal sites
-sit on the moiré minima and form the commensurate sublattice (√3×√3 at 1/3,
-2×2 at 1/4), and that `N_e` closes a reciprocal shell, so the fluid determinant
-is non-degenerate.
+sit on the deepest moiré minima and form the commensurate pattern (√3×√3 at
+1/3, 2×2 at 1/4, the honeycomb of √3×√3 vacancies at 2/3), and that every spin
+group of the liquid closes a reciprocal shell at Γ, or does not tie at the
+Fermi edge at the requested `--twist`.
+
+- **Cells.** `--cell hex`: the hexagonal `(p, q)` supercells. `--cell rect`:
+  `n × m` rectangles of `a_M × √3 a_M` (two moiré cells each), the most compact
+  first, written axis-aligned (θ₀ = −30° by default) so alea takes its
+  orthorhombic fast path. `--shape` picks one.
+- **Spin.** `--spin polarized` (one group, `electron_group`) or `unpolarized`
+  (groups `e_up` and `e_dn`, N/2 each, as backflow needs). The unpolarized
+  crystal is the collinear stripe state (alternate rows of sites up and down),
+  in cells the stripes tile.
+- **Units.** `--x` with `--kappa` or `--lam` (λ = V₀/E_M, κ = λ/x²), or a
+  material preset (`--material geier2025`, Geier et al. 2025) with
+  `--epsilon` or `--inv-epsilon`.
+- **Open shells.** At Γ a liquid whose shell is open needs an explicit choice
+  of real orbitals, written as `orbitals.k`/`orbitals.sin`: `--pw-pick` with
+  indices into the open shell, or `--pw-variants` for one file per symmetry
+  class of choices (classes found with the symmetries of H in the cell).
+- **Report.** `--report FILE.md` lists, per filling, spin and cell type, the
+  cells that hold the crystal, the Γ occupation per spin and the twists of a
+  `twist_grid.py` grid where the occupation ties (alea refuses those);
+  `--detail ν:N:cell:spin` adds the open shell's orbitals, their symmetry
+  classes, every twist of the grid, and the tied twists of other grids.
+  `--list` is the short form for one filling.
 
 Seeds written into the config:
 - the Gaussian width, from the harmonic curvature of the moiré well plus the
@@ -229,12 +252,26 @@ py -3 tools/moire_cells.py --nu 1/3 --ne 19 --x 15 --kappa 0.02 --phi-deg 60 \
     --state crystal --out crystal_N19.yaml
 # add a DMC chain (tau*omega values, HEG2D-rs30 scale):
 #   --dmc-tau-omega 0.006 0.003 0.0015
+py -3 tools/moire_cells.py --nu 1/3 --ne 42 --cell rect --spin unpolarized \
+    --x 9 --lam 4 --phi-deg 225 --state crystal --out crystal_N42.yaml
+py -3 tools/moire_cells.py --nu 2/3 --ne 18 --material geier2025 --inv-epsilon 0.11 \
+    --phi-deg 225 --state liquid --pw-variants --out liquid.yaml
+py -3 tools/moire_cells.py --report shells.md --nu 1/3 2/3 --spin unpolarized polarized \
+    --cells hex rect --twist-grid 4 --detail 2/3:18:hex:polarized --phi-deg 225
 ```
 
-Scope: `ν = 1/m` with `m` Loeschian (1, 3, 4, 7, ...), a spin-polarized group,
-and single-minimum moiré shapes (for example `φ = 60°`). Other fillings need
-approximant cells, and honeycomb shapes (`φ ≈ 0°`) need a different site
-lattice; both are refused with a message. Standard library only.
+The selftest checks, among others: sites on the deep minima at φ = 225°
+(−4.24 V₀); N_e = ν M for every cell; no hexagonal cell closing a Γ shell for
+the unpolarized liquid at ν = 1/3, and among compact rectangles (aspect ≤ 2,
+N ≥ 12) only 9 × 7 (N = 42) and 9 × 9 (N = 54); the open shell 13 + 5/6 of 18
+polarized electrons in 27 cells; and, within a symmetry class of open-shell
+choices, |ψ| of one choice equal to |ψ| of another at transformed coordinates.
+
+Scope: `ν = 1/m` with `m` Loeschian (1, 3, 4, 7, ...) and `ν = 2/3`
+(polarized), on single-minimum moiré shapes (for example φ = 60° or 225°).
+Honeycomb shapes (φ ≈ 0°), `ν = 1/2` (stripes and the floating crystal) and
+crystals on the shallow wells are not handled; they are refused with a message.
+Standard library only (it imports `twist_grid.py` for the twist grid).
 
 ## `twist_grid.py` — twist-averaged boundary conditions
 
