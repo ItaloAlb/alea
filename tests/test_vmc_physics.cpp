@@ -786,6 +786,18 @@ TEST_CASE("DMC with a one-pair pairing determinant gives the exact bilayer excit
           Catch::Approx(-0.5065190623).margin(0.005));
 }
 
+// The same exciton with a backflow pairing determinant (e displaced by h, h
+// by e): psi stays positive, so DMC stays exact.  Over 16 seeds (2026-11-08)
+// this run gives DMC - exact = +1.02(50)e-3 with standard deviation 2.0e-3
+// (printed ±~1.7e-3); the plain determinant of the same run length gives
+// +0.71(42)e-3 and 1.7e-3, so the backflow adds no bias at the 6e-4 level and
+// the common offset is the time step's.  Margin = |mean| + 4 deviations.
+TEST_CASE("DMC with a backflow pairing determinant gives the exact bilayer exciton",
+          "[dmc][physics][pairing][backflow]") {
+    CHECK(dmc_energy_ha("bilayer_exciton_pairing_backflow_dmc.yaml") ==
+          Catch::Approx(-0.5065190623).margin(9e-3));
+}
+
 // ── DMC: monolayer TMD exciton binding energies (Rytova–Keldysh) ─────────────
 //
 // Validates the whole physics chain (Hartree atomic units, the Rytova–Keldysh

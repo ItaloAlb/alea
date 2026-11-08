@@ -647,3 +647,33 @@ TEST_CASE("snapshot writes optimised backflow coefficients and cutoffs back",
     CHECK(bf[1]["cutoff"].as<double>() == 1.75);
     CHECK(bf[1]["from"].as<std::string>() == "h");
 }
+
+TEST_CASE("snapshot writes a pairing orbital and its backflow channels back",
+          "[config_writer][pairing][backflow]") {
+    // [p_0, p_1, c_0, c_2, L | bf0: c0, c1, L | bf1: c0, c2, L].
+    TempDir tmp("pairing_backflow");
+    const fs::path src = tmp.path / "eh.yaml";
+    std::ofstream(src) << R"(wavefunction:
+  - pairing:
+      blocks: [{ rows: e, columns: h }]
+      orbital: { shells: 2, poly_order: 2, cutoff: 3.0, params: [1.0, 0.5, 1.0, 0.0] }
+      backflow:
+        - { group: e, from: h, params: [0.0, 0.0] }
+        - { group: h, from: h, cutoff: 2.0, params: [0.1, 0.0] }
+)";
+    const fs::path run_dir = tmp.path / "run";
+    fs::create_directories(run_dir);
+    alea::io::write_config_snapshot(
+        src.string(), {{1.0, 0.25, 1.0, -0.125, 2.75, 0.3, -0.2, 2.5, 0.05, 0.01, 1.8}}, run_dir, 5);
+    const auto cfg = alea::io::parse_config_file((run_dir / "eh.yaml").string());
+    const auto& ps = std::get<alea::io::PairingSpec>(cfg.wavefunction[0]);
+    REQUIRE(ps.params.size() == 4);
+    CHECK(ps.params[1] == 0.25);
+    CHECK(ps.cutoff == 2.75);
+    REQUIRE(ps.backflow.size() == 2);
+    CHECK(ps.backflow[0].params == std::vector<double>{0.3, -0.2});
+    CHECK(ps.backflow[0].cutoff == 2.5);
+    CHECK(ps.backflow[1].group == "h");
+    CHECK(ps.backflow[1].params == std::vector<double>{0.05, 0.01});
+    CHECK(ps.backflow[1].cutoff == 1.8);
+}

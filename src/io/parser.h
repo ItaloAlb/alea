@@ -161,6 +161,9 @@ inline std::string jastrow_pairs_label(const JastrowSpec& j) {
 // `cutoff` L: required in an open cell, the Wigner–Seitz inradius by default
 // under periodic boundaries (and never beyond it).
 struct BackflowSpec {
+    // pairing items only: the row or column group the channel displaces (a
+    // slater item displaces its own group and refuses the key).
+    std::string           group;
     std::string           from;
     int                   truncation = 3;       // C (≥ 2; 3 keeps E_L continuous at L)
     std::optional<double> cutoff;
@@ -282,6 +285,9 @@ struct PairingSpec {
     bool                cutoff_fixed = false; // optimize L unless true
     std::vector<double> params;               // [p_0..p_{S−1}, c_0, c_2..c_M]
     std::vector<bool>   is_fixed;             // same order; fixed unless false
+    // `backflow:` channels {group, from, ...} (empty → no backflow); every
+    // row and column quasi-coordinate may be displaced.
+    std::vector<BackflowSpec> backflow;
 };
 
 using WavefunctionItem = std::variant<JastrowSpec, SlaterSpec, MoireJastrowSpec,

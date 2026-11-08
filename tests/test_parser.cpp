@@ -1275,3 +1275,21 @@ TEST_CASE("a slater item reads its backflow channels", "[parser][backflow]") {
                           ContainsSubstring("backflow"));
     }
 }
+
+TEST_CASE("a pairing item reads backflow channels that name their group", "[parser][backflow]") {
+    const std::string head = "wavefunction:\n  - pairing:\n      blocks: [{rows: e, columns: h}]\n"
+                             "      orbital: {poly_order: 2, cutoff: 3.0}\n";
+    auto c = parse_config(head + "      backflow: [{group: e, from: h, params: [0.1, 0.0]}]\n");
+    const auto& ps = std::get<alea::io::PairingSpec>(c.wavefunction[0]);
+    REQUIRE(ps.backflow.size() == 1);
+    CHECK(ps.backflow[0].group == "e");
+    CHECK(ps.backflow[0].from == "h");
+    using Catch::Matchers::ContainsSubstring;
+    // A pairing channel must name its group; a slater channel must not.
+    CHECK_THROWS_WITH(parse_config(head + "      backflow: [{from: h, params: [0.1]}]\n"),
+                      ContainsSubstring("group"));
+    CHECK_THROWS_WITH(parse_config("wavefunction:\n  - slater:\n      group: e\n"
+                                   "      orbitals: { type: plane_wave }\n"
+                                   "      backflow: [{group: e, from: e, params: [0.1]}]\n"),
+                      ContainsSubstring("group"));
+}

@@ -106,58 +106,29 @@ BackflowSlaterDeterminant::BackflowSlaterDeterminant(std::vector<Block> blocks,
         }
     n_orbital_params_ = params_.size();
 
-    if (channels.empty())
-        throw std::invalid_argument("backflow determinant: no backflow channel");
+    // Every channel displaces the rows; a same-group (like-spin) one needs a
+    // group of one spin (the transformation derives its eta'(0) = 0).
+    std::vector<BackflowTransformation::Channel> tc;
     for (std::size_t c = 0; c < channels.size(); ++c) {
-        Channel& ch = channels[c];
-        const std::string label = "backflow channel " + std::to_string(c);
-        if (ch.source_last <= ch.source_first)
-            throw std::invalid_argument(label + ": the source group is empty");
-        for (const ChannelState& other : channels_)
-            if (ch.source_first < other.source_last && other.source_first < ch.source_last)
-                throw std::invalid_argument(label + ": two channels share source particles; "
-                                            "give each source group one channel");
-        // A source overlapping the rows must be the group itself, of one spin:
-        // its pairs are like-spin, and η'(0) = 0 follows (backflow_function.h).
-        const bool overlaps = ch.source_first < first_row_ + n_rows_ &&
-                              first_row_ < ch.source_last;
-        if (overlaps && (ch.source_first != first_row_ || ch.source_last != first_row_ + n_rows_))
-            throw std::invalid_argument(label + ": a source overlapping the determinant's "
-                                        "group must be that whole group");
-        if (overlaps && blocks_.size() != 1)
+        const Channel& ch = channels[c];
+        const bool own = ch.source_first < first_row_ + n_rows_ && first_row_ < ch.source_last;
+        if (own && blocks_.size() != 1)
             throw std::invalid_argument(
-                label + ": a same-group channel needs a group of one spin; with both "
-                "spins in one group its pairs are partly like-spin (eta'(0) = 0) and "
-                "partly not.  Put each spin in its own group");
-        if (ch.params.size() < 2)
-            throw std::invalid_argument(label + ": needs c_0 and the cutoff L");
-        std::vector<double> free;
-        for (std::size_t k = 0; k + 1 < ch.params.size(); ++k) free.push_back(ch.params[k].value);
-        const double L = ch.params.back().value;
-        if (cell_.is_periodic() && L > cell_.ws_radius())
-            throw std::invalid_argument(
-                label + ": cutoff " + std::to_string(L) + " exceeds the Wigner-Seitz "
-                "inradius " + std::to_string(cell_.ws_radius()) + "; beyond it the "
-                "minimum image is not the periodic sum");
-        BackflowFunction eta(ch.truncation, L, std::move(free), overlaps);
-        // Names [c_0, (c_1), c_2.., L], the cutoff positive and, under PBC,
-        // clamped at the inradius by the optimizer.
-        std::size_t power = 0;
-        for (std::size_t k = 0; k + 1 < ch.params.size(); ++k, ++power) {
-            if (overlaps && power == 1) ++power;
-            ch.params[k].name = "bf" + std::to_string(c) + "_c" + std::to_string(power);
-        }
-        Parameter& cut = ch.params.back();
-        cut.name = "bf" + std::to_string(c) + "_L";
-        cut.sign_locked = true;
-        if (cell_.is_periodic()) cut.upper_bound = cell_.ws_radius();
-        channels_.push_back({ch.source_first, ch.source_last, std::move(eta), params_.size()});
-        params_.insert(params_.end(), ch.params.begin(), ch.params.end());
+                "backflow channel " + std::to_string(c) + ": a same-group channel needs a "
+                "group of one spin; with both spins in one group its pairs are partly "
+                "like-spin (eta'(0) = 0) and partly not.  Put each spin in its own group");
+        tc.push_back({first_row_, first_row_ + n_rows_, ch.source_first, ch.source_last,
+                      ch.truncation, ch.params});
     }
+    std::vector<std::size_t> rows(n_rows_);
+    for (std::size_t i = 0; i < n_rows_; ++i) rows[i] = first_row_ + i;
+    transform_ = BackflowTransformation(std::move(tc), std::move(rows), cell_);
+    const auto& bf = transform_.initial_parameters();
+    params_.insert(params_.end(), bf.begin(), bf.end());
 }
 
 BackflowSlaterDeterminant::BackflowSlaterDeterminant(const BackflowSlaterDeterminant& o)
-    : WavefunctionComponent(o), channels_(o.channels_), cell_(o.cell_),
+    : WavefunctionComponent(o), transform_(o.transform_), cell_(o.cell_),
       first_row_(o.first_row_), n_rows_(o.n_rows_), max_block_(o.max_block_),
       block_of_row_(o.block_of_row_), inv_offset_(o.inv_offset_), inv_size_(o.inv_size_),
       dim_(o.dim_), np_(o.np_), nw_(o.nw_), params_(o.params_),
@@ -181,15 +152,7 @@ void BackflowSlaterDeterminant::rebuild() {
         const auto [b, k] = orbital_owner_[q];
         blocks_[b].orbitals->set_parameter(k, params_[q].value);
     }
-    for (ChannelState& ch : channels_)
-        for (std::size_t k = 0; k < ch.eta.n_parameters(); ++k) {
-            const Parameter& p = params_[ch.param_offset + k];
-            if (k + 1 == ch.eta.n_parameters() && p.value > p.upper_bound)
-                throw std::runtime_error("backflow: cutoff " + p.name + " = " +
-                                         std::to_string(p.value) + " exceeds its bound " +
-                                         std::to_string(p.upper_bound));
-            ch.eta.set_parameter(k, p.value);
-        }
+    transform_.set_parameters(std::span<const Parameter>(params_).subspan(n_orbital_params_));
 }
 
 // ── Sizes ───────────────────────────────────────────────────────────────────
@@ -215,9 +178,7 @@ void BackflowSlaterDeterminant::resize_state(std::size_t nw) {
 void BackflowSlaterDeterminant::prepare(std::size_t nw, std::size_t np, std::size_t dim) {
     if (first_row_ + n_rows_ > np)
         throw std::invalid_argument("backflow determinant: rows beyond the particle count");
-    for (const ChannelState& ch : channels_)
-        if (ch.source_last > np)
-            throw std::invalid_argument("backflow determinant: source beyond the particle count");
+    transform_.prepare(np, dim);
     resize_caches(nw, np, dim);
     if (np != np_ || dim != dim_) ++scratch_generation_;   // slots resize on next use
     dim_ = dim;
@@ -233,9 +194,8 @@ void BackflowSlaterDeterminant::prepare(std::size_t nw, std::size_t np, std::siz
 
 void BackflowSlaterDeterminant::size_scratch(Scratch& s) const {
     const std::size_t np = np_, dim = dim_;
-    std::size_t max_channel_params = 1, max_orbital_params = 1;
-    for (const ChannelState& ch : channels_)
-        max_channel_params = std::max(max_channel_params, ch.eta.n_parameters());
+    const std::size_t max_channel_params = transform_.max_channel_parameters();
+    std::size_t max_orbital_params = 1;
     for (const Block& b : blocks_)
         max_orbital_params = std::max(max_orbital_params, b.orbitals->n_parameters());
     const std::size_t n = max_block_, rows = n_rows_;
@@ -245,9 +205,8 @@ void BackflowSlaterDeterminant::size_scratch(Scratch& s) const {
         s.val.assign(rows * n, 0.0);
         s.grad.assign(rows * n * dim, 0.0);
         s.hess.assign(rows * n * dim * dim, 0.0);
-        s.pair_b.assign(rows * np * dim * dim, 0.0);
-        s.pair_s.assign(rows * np * dim * dim, 0.0);
-        s.linked.assign(rows * np, 0);
+        transform_.size_tables(s.tables);
+        s.pderiv.assign(transform_.n_parameters(), 0.0);
         s.work.assign(n * n, 0.0);
         s.at.assign(n * n, 0.0);
         s.gmat.assign(dim * inv_size_, 0.0);
@@ -284,10 +243,7 @@ BackflowSlaterDeterminant::Scratch& BackflowSlaterDeterminant::scratch() const {
 }
 
 bool BackflowSlaterDeterminant::affects(std::size_t p) const noexcept {
-    if (p >= first_row_ && p < first_row_ + n_rows_) return true;
-    for (const ChannelState& ch : channels_)
-        if (p >= ch.source_first && p < ch.source_last) return true;
-    return false;
+    return transform_.affects(p);
 }
 
 void BackflowSlaterDeterminant::permute_caches(std::span<const std::size_t> src) {
@@ -328,120 +284,6 @@ void BackflowSlaterDeterminant::load_positions(const WalkerSet& batch, std::size
     for (std::size_t k = 0; k < np_; ++k)
         for (std::size_t d = 0; d < dim_; ++d)
             s.pos[k * dim_ + d] = pos[(k * dim_ + d) * nw + w];
-}
-
-std::size_t BackflowSlaterDeterminant::channel_of_source(std::size_t j) const noexcept {
-    for (std::size_t c = 0; c < channels_.size(); ++c)
-        if (j >= channels_[c].source_first && j < channels_[c].source_last) return c;
-    return npos;
-}
-
-// The pair (row at ri, source at rj) of channel ch: adds sign * eta(r) r_ij to
-// x and, when B is given, fills B_ab = eta delta_ab + eta' r_a r_b / r and
-// s_ab = d^2/dr_b^2 [eta(r) r_a].  False (nothing added) beyond the cutoff.  At
-// r = 0 the r-hat terms of B vanish with r (B -> eta(0) delta) and s is bounded
-// and direction-dependent; that single point is left at zero.
-bool BackflowSlaterDeterminant::pair_terms(const ChannelState& ch, const double* ri,
-                                           const double* rj, double sign, double* x,
-                                           double* B, double* S) const {
-    const std::size_t dim = dim_;
-    double del[SimulationCell::kMaxDim] = {};
-    for (std::size_t d = 0; d < dim; ++d) del[d] = ri[d] - rj[d];
-    cell_.min_image(del);
-    double r2 = 0.0;
-    for (std::size_t d = 0; d < dim; ++d) r2 += del[d] * del[d];
-    const double r = std::sqrt(r2);
-    if (r >= ch.eta.cutoff()) return false;
-    double eta = 0.0, e1 = 0.0, e2 = 0.0;
-    ch.eta.evaluate(r, eta, e1, e2);
-    for (std::size_t d = 0; d < dim; ++d) x[d] += sign * eta * del[d];
-    if (!B) return true;
-    const double inv_r = r > 0.0 ? 1.0 / r : 0.0;
-    for (std::size_t a = 0; a < dim; ++a)
-        for (std::size_t b = 0; b < dim; ++b) {
-            B[a * dim + b] = (a == b ? eta : 0.0) + e1 * del[a] * del[b] * inv_r;
-            const double rb2 = del[b] * del[b] * inv_r * inv_r;
-            S[a * dim + b] = (a == b ? 2.0 * e1 * del[b] * inv_r : 0.0) +
-                             del[a] * (e2 * rb2 + e1 * inv_r * (1.0 - rb2));
-        }
-    return true;
-}
-
-void BackflowSlaterDeterminant::quasi_coordinates(Scratch& s) const {
-    const std::size_t dim = dim_, np = np_, dd = dim * dim;
-    std::fill(s.linked.begin(), s.linked.end(), 0);
-    std::fill(s.pair_b.begin(), s.pair_b.end(), 0.0);
-    std::fill(s.pair_s.begin(), s.pair_s.end(), 0.0);
-    for (std::size_t i = 0; i < n_rows_; ++i) {
-        const std::size_t P = first_row_ + i;
-        double* x = s.x.data() + i * dim;
-        for (std::size_t d = 0; d < dim; ++d) x[d] = s.pos[P * dim + d];
-        for (const ChannelState& ch : channels_)
-            for (std::size_t j = ch.source_first; j < ch.source_last; ++j) {
-                if (j == P) continue;
-                const std::size_t e = i * np + j;
-                s.linked[e] = pair_terms(ch, s.pos.data() + P * dim, s.pos.data() + j * dim,
-                                         1.0, x, s.pair_b.data() + e * dd,
-                                         s.pair_s.data() + e * dd);
-            }
-    }
-}
-
-// Only the table entries the derivatives of particle k read: its own row
-// against every source (rebuilding that row of s.x from scratch), and every row
-// against k.  O(N) pairs instead of the O(N^2) of quasi_coordinates; the other
-// entries keep whatever they held.
-void BackflowSlaterDeterminant::particle_tables(Scratch& s, std::size_t k) const {
-    const std::size_t dim = dim_, np = np_, dd = dim * dim;
-    const auto clear = [&](std::size_t e) {
-        s.linked[e] = 0;
-        std::fill_n(s.pair_b.begin() + static_cast<std::ptrdiff_t>(e * dd), dd, 0.0);
-        std::fill_n(s.pair_s.begin() + static_cast<std::ptrdiff_t>(e * dd), dd, 0.0);
-    };
-    if (k >= first_row_ && k < first_row_ + n_rows_) {
-        const std::size_t ik = k - first_row_;
-        double* x = s.x.data() + ik * dim;
-        for (std::size_t d = 0; d < dim; ++d) x[d] = s.pos[k * dim + d];
-        for (std::size_t j = 0; j < np; ++j) clear(ik * np + j);
-        for (const ChannelState& ch : channels_)
-            for (std::size_t j = ch.source_first; j < ch.source_last; ++j) {
-                if (j == k) continue;
-                const std::size_t e = ik * np + j;
-                s.linked[e] = pair_terms(ch, s.pos.data() + k * dim, s.pos.data() + j * dim,
-                                         1.0, x, s.pair_b.data() + e * dd,
-                                         s.pair_s.data() + e * dd);
-            }
-    }
-    const std::size_t c = channel_of_source(k);
-    for (std::size_t i = 0; i < n_rows_; ++i) {
-        const std::size_t P = first_row_ + i;
-        if (P == k) continue;
-        const std::size_t e = i * np + k;
-        clear(e);
-        if (c == npos) continue;
-        double unused[SimulationCell::kMaxDim] = {};
-        s.linked[e] = pair_terms(channels_[c], s.pos.data() + P * dim, s.pos.data() + k * dim,
-                                 1.0, unused, s.pair_b.data() + e * dd,
-                                 s.pair_s.data() + e * dd);
-    }
-}
-
-// x' of a move of k from old_r to s.pos[k]: s.x holds the committed x, and
-// every row that k displaces shifts by eta(r'_ik) r'_ik - eta(r_ik) r_ik.  The
-// own row of k is rebuilt by particle_tables.
-void BackflowSlaterDeterminant::shift_quasi_coordinates(Scratch& s, std::size_t k,
-                                                        const double* old_r) const {
-    const std::size_t c = channel_of_source(k);
-    if (c == npos) return;
-    const std::size_t dim = dim_;
-    for (std::size_t i = 0; i < n_rows_; ++i) {
-        const std::size_t P = first_row_ + i;
-        if (P == k) continue;
-        double* x = s.x.data() + i * dim;
-        pair_terms(channels_[c], s.pos.data() + P * dim, s.pos.data() + k * dim, 1.0, x,
-                   nullptr, nullptr);
-        pair_terms(channels_[c], s.pos.data() + P * dim, old_r, -1.0, x, nullptr, nullptr);
-    }
 }
 
 void BackflowSlaterDeterminant::evaluate_rows(Scratch& s) const {
@@ -488,66 +330,6 @@ void BackflowSlaterDeterminant::compute_f(const Scratch& s, const double* inv,
     }
 }
 
-void BackflowSlaterDeterminant::particle_gradient(const Scratch& s, const double* f,
-                                                  std::size_t k, double* out) const {
-    const std::size_t dim = dim_, np = np_, dd = dim * dim;
-    for (std::size_t b = 0; b < dim; ++b) out[b] = 0.0;
-    const bool in_rows = k >= first_row_ && k < first_row_ + n_rows_;
-    // Own row: J_{k,k} = 1 + Σ_j B(r_kj).
-    if (in_rows) {
-        const std::size_t ik = k - first_row_;
-        const double* F = f + ik * dim;
-        for (std::size_t b = 0; b < dim; ++b) out[b] += F[b];
-        for (std::size_t j = 0; j < np; ++j) {
-            if (!s.linked[ik * np + j]) continue;
-            const double* B = s.pair_b.data() + (ik * np + j) * dd;
-            for (std::size_t a = 0; a < dim; ++a)
-                for (std::size_t b = 0; b < dim; ++b) out[b] += F[a] * B[a * dim + b];
-        }
-    }
-    // Rows k displaces: J_{i,k} = −B(r_ik).
-    for (std::size_t i = 0; i < n_rows_; ++i) {
-        if (!s.linked[i * np + k]) continue;
-        const double* F = f + i * dim;
-        const double* B = s.pair_b.data() + (i * np + k) * dd;
-        for (std::size_t a = 0; a < dim; ++a)
-            for (std::size_t b = 0; b < dim; ++b) out[b] -= F[a] * B[a * dim + b];
-    }
-}
-
-double BackflowSlaterDeterminant::jacobian_column(Scratch& s, const double* f, std::size_t k,
-                                                  std::size_t beta) const {
-    const std::size_t dim = dim_, np = np_, dd = dim * dim;
-    std::fill(s.v.begin(), s.v.end(), 0.0);
-    double fs = 0.0;   // Σ_{iα} F_iα S_{iα,kβ}
-    const bool in_rows = k >= first_row_ && k < first_row_ + n_rows_;
-    if (in_rows) {
-        const std::size_t ik = k - first_row_;
-        double* v = s.v.data() + ik * dim;
-        v[beta] = 1.0;
-        for (std::size_t j = 0; j < np; ++j) {
-            if (!s.linked[ik * np + j]) continue;
-            const double* B = s.pair_b.data() + (ik * np + j) * dd;
-            const double* S = s.pair_s.data() + (ik * np + j) * dd;
-            for (std::size_t a = 0; a < dim; ++a) {
-                v[a] += B[a * dim + beta];
-                fs += f[ik * dim + a] * S[a * dim + beta];
-            }
-        }
-    }
-    for (std::size_t i = 0; i < n_rows_; ++i) {
-        if (!s.linked[i * np + k]) continue;
-        const double* B = s.pair_b.data() + (i * np + k) * dd;
-        const double* S = s.pair_s.data() + (i * np + k) * dd;
-        double* v = s.v.data() + i * dim;
-        for (std::size_t a = 0; a < dim; ++a) {
-            v[a] = -B[a * dim + beta];
-            fs += f[i * dim + a] * S[a * dim + beta];
-        }
-    }
-    return fs;
-}
-
 // T_i^{αγ} = Σ_m A_mi ∂_α∂_γ φ_m(x_i) of every row into s.t.
 void BackflowSlaterDeterminant::hessian_traces(Scratch& s, const double* inv) const {
     const std::size_t dd = dim_ * dim_, n_max = max_block_;
@@ -570,7 +352,7 @@ void BackflowSlaterDeterminant::particle_laplacian(Scratch& s, const double* inv
     const std::size_t dim = dim_, dd = dim * dim, n_max = max_block_;
     hessian_traces(s, inv);
     for (std::size_t beta = 0; beta < dim; ++beta) {
-        double lap = jacobian_column(s, f, k, beta);
+        double lap = transform_.jacobian_column(s.tables, f, k, beta, s.v.data());
         // Diagonal (orbital Hessian) term.
         for (std::size_t i = 0; i < n_rows_; ++i) {
             const double* v = s.v.data() + i * dim;
@@ -648,9 +430,9 @@ void BackflowSlaterDeterminant::all_derivatives(Scratch& s, const double* inv, c
     std::fill(lap, lap + np_ * dim, 0.0);
     for (std::size_t k = 0; k < np_; ++k) {
         if (!affects(k)) continue;
-        particle_gradient(s, f, k, grad + k * dim);
+        transform_.gradient(s.tables, f, k, grad + k * dim);
         for (std::size_t beta = 0; beta < dim; ++beta) {
-            double l = jacobian_column(s, f, k, beta);
+            double l = transform_.jacobian_column(s.tables, f, k, beta, s.v.data());
             for (std::size_t i = 0; i < n_rows_; ++i) {
                 const double* v = s.v.data() + i * dim;
                 const double* T = s.t.data() + i * dd;
@@ -694,7 +476,7 @@ void BackflowSlaterDeterminant::evaluate_batch(WalkerSet& batch) {
         const auto w = static_cast<std::size_t>(ws);
         Scratch& s = scratch();
         load_positions(batch, w, s);
-        quasi_coordinates(s);
+        transform_.full(s.pos.data(), s.x.data(), s.tables);
         evaluate_rows(s);
         double* inv = inv_.data() + w * inv_size_;
         if (!invert_blocks(s, inv, log_det_.data() + w * nb, sign_.data() + w * nb)) {
@@ -753,8 +535,8 @@ void BackflowSlaterDeterminant::ratio_batch(WalkerSet& batch, std::size_t p,
         // x' from the committed x: O(N) pairs, not the O(N^2) of a rebuild.
         std::copy_n(x_.begin() + static_cast<std::ptrdiff_t>(w * n_rows_ * dim), n_rows_ * dim,
                     s.x.begin());
-        shift_quasi_coordinates(s, p, old_r);
-        particle_tables(s, p);
+        transform_.shift(s.pos.data(), p, old_r, s.x.data());
+        transform_.particle_tables(s.pos.data(), p, s.x.data(), s.tables);
         evaluate_rows(s);
         double* pinv = pinv_.data() + w * inv_size_;
         double* plog = plog_det_.data() + w * nb;
@@ -779,7 +561,7 @@ void BackflowSlaterDeterminant::ratio_batch(WalkerSet& batch, std::size_t p,
         double* pf = pf_.data() + w * n_rows_ * dim;
         compute_f(s, pinv, pf);
         double g[SimulationCell::kMaxDim] = {}, l[SimulationCell::kMaxDim] = {};
-        particle_gradient(s, pf, p, g);
+        transform_.gradient(s.tables, pf, p, g);
         // Skipped, l = 0, when the driver refreshes before reading it.
         if (proposal_laplacian_) particle_laplacian(s, pinv, pf, p, l);
         for (std::size_t d = 0; d < dim; ++d) {
@@ -855,7 +637,7 @@ void BackflowSlaterDeterminant::refresh_walker(WalkerSet& batch, std::size_t w,
         const std::span<const double> new_pos = batch.new_pos();
         for (std::size_t d = 0; d < dim; ++d) s.pos[moved * dim + d] = new_pos[d * nw + w];
     }
-    quasi_coordinates(s);
+    transform_.full(s.pos.data(), s.x.data(), s.tables);
     // The rebuilt x replaces the committed one, whose incremental updates
     // (shift_quasi_coordinates) have accumulated rounding since the last rebuild.
     std::copy(s.x.begin(), s.x.end(), x_.begin() + static_cast<std::ptrdiff_t>(w * n_rows_ * dim));
@@ -891,9 +673,9 @@ void BackflowSlaterDeterminant::refresh_particle_derivatives(WalkerSet& batch, s
     // as committed until refresh_derivatives (it needs every G^α, O(d N³)).
     for (std::size_t w = w_begin; w < w_end; ++w) {
         load_positions(batch, w, s);
-        particle_tables(s, p);
+        transform_.particle_tables(s.pos.data(), p, s.x.data(), s.tables);
         double g[SimulationCell::kMaxDim] = {};
-        particle_gradient(s, f_.data() + w * n_rows_ * dim, p, g);
+        transform_.gradient(s.tables, f_.data() + w * n_rows_ * dim, p, g);
         for (std::size_t d = 0; d < dim; ++d) {
             const std::size_t j = (p * dim + d) * nw + w;
             if (g[d] != grad_c_[j]) bg[j] = (bg[j] - grad_c_[j]) + g[d];
@@ -925,37 +707,10 @@ void BackflowSlaterDeterminant::compute_parameter_derivatives(const WalkerSet& b
         load_positions(batch, w, s);
         const double* f = f_.data() + w * n_rows_ * dim;
         // Backflow parameters: Σ_i (F_i · r_ij) ∂η(r_ij)/∂p.
-        for (const ChannelState& ch : channels_) {
-            const std::size_t np_c = ch.eta.n_parameters();
-            bool any = false;
-            for (std::size_t q = 0; q < np_c; ++q)
-                any = any || column[ch.param_offset + q] != npos;
-            if (!any) continue;
-            for (std::size_t q = 0; q < np_c; ++q)
-                if (column[ch.param_offset + q] != npos)
-                    derivs[column[ch.param_offset + q] * nw + w] = 0.0;
-            for (std::size_t i = 0; i < n_rows_; ++i) {
-                const std::size_t P = first_row_ + i;
-                for (std::size_t j = ch.source_first; j < ch.source_last; ++j) {
-                    if (j == P) continue;
-                    double del[SimulationCell::kMaxDim] = {};
-                    for (std::size_t d = 0; d < dim; ++d)
-                        del[d] = s.pos[P * dim + d] - s.pos[j * dim + d];
-                    cell_.min_image(del);
-                    double r2 = 0.0, fd = 0.0;
-                    for (std::size_t d = 0; d < dim; ++d) {
-                        r2 += del[d] * del[d];
-                        fd += f[i * dim + d] * del[d];
-                    }
-                    const double r = std::sqrt(r2);
-                    if (r >= ch.eta.cutoff()) continue;
-                    ch.eta.parameter_derivatives(r, std::span<double>(s.param.data(), np_c));
-                    for (std::size_t q = 0; q < np_c; ++q)
-                        if (column[ch.param_offset + q] != npos)
-                            derivs[column[ch.param_offset + q] * nw + w] += fd * s.param[q];
-                }
-            }
-        }
+        transform_.parameter_derivatives(s.pos.data(), f, s.pderiv, s.param);
+        for (std::size_t q = 0; q < transform_.n_parameters(); ++q)
+            if (column[n_orbital_params_ + q] != npos)
+                derivs[column[n_orbital_params_ + q] * nw + w] = s.pderiv[q];
         // Orbital parameters: Σ_i Σ_m A_mi ∂φ_m(x_i)/∂p at the committed x.
         for (std::size_t q = 0; q < n_orbital_params_; ++q) {
             if (column[q] == npos) continue;

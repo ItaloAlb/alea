@@ -209,7 +209,8 @@ $\eta(r) = (1 - r/L)^C\,\Theta(L - r)\sum_k c_k r^k$:
 ```
 
 Backflow is available for real determinants (`gaussian`, and `plane_wave` at
-the Γ twist); `fock_darwin` and twisted plane waves refuse it. Every move
+the Γ twist, and the `pairing` determinant); `fock_darwin` and twisted plane
+waves refuse it. Every move
 rebuilds and inverts the determinants, $O(N^3)$ per move instead of the
 $O(N^2)$ rank-one update. PIMC refuses backflow nodes. The optimizer moves the
 backflow parameters without the curvature term of $\bar H$ (the log warns), so
@@ -249,6 +250,23 @@ also gives every same-group pair of a block group the P-wave cusp in the
 Jastrow factor. $\psi$ is unchanged by a common scale of all $p$ and $c$, so
 at least one of them must stay fixed. The parameters set the nodes and are
 optimized in the `nodal` scope.
+
+**Backflow.** A `backflow:` list, with the keys of the `slater` channels plus
+`group`, evaluates the pair and unpaired orbitals at quasi-coordinates of both
+the row and the column particles, $\varphi(\mathbf x_i - \mathbf y_j)$; each
+channel `{ group: g, from: s, params: [...] }` displaces group $g$ (a row or
+column group of some block) by the particles of $s$. A group displacing itself
+has $c_1 = C c_0/L$ derived, as in the `slater` channels; any other source
+lists $c_1$. The parameters follow the orbital's.
+
+```yaml
+- pairing:
+    blocks: [{ rows: e, columns: h }]
+    orbital: { poly_order: 2 }
+    backflow:
+      - { group: e, from: h, params: [0.0, 0.0] }   # c0, c1; L = inradius
+      - { group: h, from: e, params: [0.0, 0.0] }
+```
 
 Walkers start with column particle $j$ of every block next to row particle
 $j$, displaced by a Gaussian of width $L/8$ per axis (the inradius replaces

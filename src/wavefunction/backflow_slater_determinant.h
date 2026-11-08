@@ -14,6 +14,7 @@
 
 #include "../population/simulation_cell.h"
 #include "backflow_function.h"
+#include "backflow_transformation.h"
 #include "orbital_set.h"
 #include "wavefunction_component.h"
 
@@ -144,8 +145,8 @@ public:
     // The orbital parameters come first in parameters(); the channels follow.
     [[nodiscard]] std::size_t n_orbital_parameters() const noexcept { return n_orbital_params_; }
     [[nodiscard]] std::size_t n_rows() const noexcept { return n_rows_; }
-    [[nodiscard]] std::size_t n_channels() const noexcept { return channels_.size(); }
-    [[nodiscard]] const BackflowFunction& eta(std::size_t c) const { return channels_.at(c).eta; }
+    [[nodiscard]] std::size_t n_channels() const noexcept { return transform_.n_channels(); }
+    [[nodiscard]] const BackflowFunction& eta(std::size_t c) const { return transform_.eta(c); }
     // Committed quasi-coordinates of walker w: [n_rows * dim], row i at
     // [i*dim + d] (row i is particle first_row + i).
     [[nodiscard]] std::span<const double> quasi_coordinates(std::size_t w) const {
@@ -153,11 +154,6 @@ public:
     }
 
 private:
-    struct ChannelState {
-        std::size_t      source_first, source_last;
-        BackflowFunction eta;
-        std::size_t      param_offset;  // first entry in params_
-    };
     // One thread's scratch for one configuration; see prepare().
     struct Scratch {
         std::vector<double> pos;     // [np * dim] AoS positions of the configuration
@@ -165,9 +161,7 @@ private:
         std::vector<double> val;     // [n_rows * maxN]              val[i*maxN + m]
         std::vector<double> grad;    // [n_rows * maxN * dim]        [(i*maxN + m)*dim + α]
         std::vector<double> hess;    // [n_rows * maxN * dim * dim]  [((i*maxN + m)*dim + α)*dim + γ]
-        std::vector<double> pair_b;  // [n_rows * np * dim * dim]   B_c(r_ik) (0 off-channel)
-        std::vector<double> pair_s;  // [n_rows * np * dim * dim]   s_c(r_ik)_{αβ}
-        std::vector<char>   linked;  // [n_rows * np] k displaces row i
+        BackflowTransformation::Tables tables;  // B, s and links of every (row, source)
         std::vector<double> work;    // [maxN * maxN] Gauss–Jordan input
         std::vector<double> at;      // [maxN * maxN] Aᵀ: at[j*N + m] = A[m][j]
         std::vector<double> gmat;    // [dim * maxN * maxN] G^α[j][i] of one block
@@ -177,6 +171,7 @@ private:
         std::vector<double> u;       // [maxN * maxN] U_ji (or the product Aᵀ W)
         std::vector<double> w;       // [maxN * maxN] W_im = Σ_α v_iα ∂_α φ_m(x_i)
         std::vector<double> param;   // [max channel parameters] ∂η/∂p
+        std::vector<double> pderiv;  // [backflow parameters] ∂ln|D|/∂p
         std::vector<double> dval;    // [maxN * max orbital parameters] orbital ∂φ/∂p
         std::vector<double> out_grad, out_lap;  // [np * dim] one configuration's ∂, ∂²
         std::size_t generation = 0;  // the sizes it was built for (scratch_generation_)
@@ -186,18 +181,6 @@ private:
     [[nodiscard]] Scratch& scratch() const;
     void size_scratch(Scratch& s) const;
     void load_positions(const WalkerSet& batch, std::size_t w, Scratch& s) const;
-    // The channel whose sources include particle j, or npos.
-    [[nodiscard]] std::size_t channel_of_source(std::size_t j) const noexcept;
-    // One (row, source) pair: sign * eta r_ij added to x, B and s filled when B
-    // is not null.  False beyond the cutoff.
-    bool pair_terms(const ChannelState& ch, const double* ri, const double* rj, double sign,
-                    double* x, double* B, double* S) const;
-    // Quasi-coordinates and the pair tables (B, s, links) of s.pos.
-    void quasi_coordinates(Scratch& s) const;
-    // The table entries the derivatives of particle k read, and its own row of s.x.
-    void particle_tables(Scratch& s, std::size_t k) const;
-    // s.x (holding the committed x) moved to a move of k from old_r to s.pos[k].
-    void shift_quasi_coordinates(Scratch& s, std::size_t k, const double* old_r) const;
     // Orbital values, gradients and Hessians at s.x for every row.
     void evaluate_rows(Scratch& s) const;
     // Invert every block of s.val into inv ([inv_size]); log|det| and sign
@@ -205,11 +188,6 @@ private:
     bool invert_blocks(Scratch& s, double* inv, double* log_det, double* sign) const;
     // F_iα of every row from inv and s.grad.
     void compute_f(const Scratch& s, const double* inv, double* f) const;
-    // ∂_k ln|D| ([dim]) from F and the pair tables.
-    void particle_gradient(const Scratch& s, const double* f, std::size_t k,
-                           double* out) const;
-    // The J column v of (k, β) into s.v, and Σ F·S of (k, β).
-    double jacobian_column(Scratch& s, const double* f, std::size_t k, std::size_t beta) const;
     // T_i^{αγ} of every row into s.t.
     void hessian_traces(Scratch& s, const double* inv) const;
     // ∂²_k ln|D| ([dim]) by one Aᵀ W product per β (a single particle).
@@ -225,7 +203,7 @@ private:
     void resize_state(std::size_t nw);
 
     std::vector<Block>        blocks_;
-    std::vector<ChannelState> channels_;
+    BackflowTransformation    transform_;   // the quasi-coordinates of the rows
     SimulationCell            cell_;
     std::size_t first_row_ = 0, n_rows_ = 0, max_block_ = 0;
     std::vector<std::size_t>  block_of_row_;   // [n_rows]
