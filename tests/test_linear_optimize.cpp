@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <initializer_list>
 #include <limits>
 #include <memory>
 #include <span>
@@ -971,73 +972,136 @@ TEST_CASE("LinearOptimize samples with Langevin moves when use_drift is set",
     CHECK(metropolis != langevin);
 }
 
-// A complex factor's log-derivatives are complex, and the linear method takes
-// real ones: a stage that would move such a parameter is refused, and one that
-// leaves it fixed (the Jastrow of a twisted run) runs.
+// ═══════════════════════════════════════════════════════════════════════════
+//  A complex factor: a parameter that moves only the phase
+//
+//  ψ = e^{−α r²} e^{iκx} for one particle in a 2-D trap, H = −½∇² + ½r²: the
+//  ground state boosted by κ, E(α, κ) = α + 1/(4α) + κ²/2, minimum at α = ½,
+//  κ = 0.  O_κ = ix is purely imaginary: the linear method sees κ only
+//  through Im O and Im E_L = κx (CostFunction's complex accumulation) — with
+//  real log-derivatives alone its overlap would be zero.  Re E_L at α = ½ is
+//  1 + κ²/2 at every configuration, and a step in κ leaves |ψ| unchanged, so
+//  correlated sampling scores it exactly.
+// ═══════════════════════════════════════════════════════════════════════════
 namespace {
-class FreeComplexFactor final : public alea::WavefunctionComponent {
+class BoostFactor final : public alea::WavefunctionComponent {
 public:
-    std::string name() const override { return "free_complex_factor"; }
+    explicit BoostFactor(double kappa) : params_{{"kappa", kappa, false}} {}
+    std::string name() const override { return "boost"; }
     [[nodiscard]] bool is_complex() const override { return true; }
-    [[nodiscard]] bool is_nodal() const override { return true; }
     void evaluate_batch(alea::WalkerSet& batch) override {
         resize_caches(batch.num_walkers(), batch.n_particles(), batch.dim());
+        const std::size_t nw = batch.num_walkers(), dim = batch.dim();
+        for (std::size_t p = 0; p < batch.n_particles(); ++p)
+            for (std::size_t w = 0; w < nw; ++w) batch.phase_gradients()[p * dim * nw + w] += kappa();
     }
-    void ratio_batch(alea::WalkerSet&, std::size_t, std::size_t, std::size_t) override {}
+    // arg(ψ'/ψ) = κ (x' − x); ∇φ = κ x̂ everywhere, ∇²φ = 0.
+    void ratio_batch(alea::WalkerSet& batch, std::size_t p, std::size_t w_begin,
+                     std::size_t w_end) override {
+        const std::size_t nw = batch.num_walkers(), dim = batch.dim();
+        if (w_end > nw) w_end = nw;
+        for (std::size_t w = w_begin; w < w_end; ++w) {
+            batch.phase_diffs()[w] +=
+                kappa() * (batch.new_pos()[w] - batch.positions()[p * dim * nw + w]);
+            batch.new_phase_grad()[w] += kappa();
+        }
+    }
     void apply_move_batch(alea::WalkerSet&, std::size_t, std::span<const bool>, std::size_t,
                           std::size_t) override {}
     [[nodiscard]] std::unique_ptr<alea::WavefunctionComponent> clone() const override {
-        return std::make_unique<FreeComplexFactor>(*this);
+        return std::make_unique<BoostFactor>(*this);
     }
     std::span<Parameter> parameters() override { return params_; }
     std::span<const Parameter> parameters() const override { return params_; }
     void rebuild() override {}
-    void compute_parameter_derivatives(const alea::WalkerSet&, std::span<double>) const override {}
+    void compute_parameter_derivatives(const alea::WalkerSet& batch,
+                                       std::span<double> derivs) const override {
+        std::fill(derivs.begin(), derivs.end(), 0.0);
+        (void)batch;
+    }
+    // O_κ = i Σ_p x_p.
+    void compute_complex_parameter_derivatives(const alea::WalkerSet& batch,
+                                               std::span<double> derivs,
+                                               std::span<double> phase_derivs) const override {
+        const std::size_t nw = batch.num_walkers(), dim = batch.dim();
+        if (params_[0].is_fixed) return;
+        for (std::size_t w = 0; w < nw; ++w) {
+            derivs[w] = 0.0;
+            phase_derivs[w] = 0.0;
+            for (std::size_t p = 0; p < batch.n_particles(); ++p)
+                phase_derivs[w] += batch.positions()[p * dim * nw + w];
+        }
+    }
+    // ∂_κ ∇φ = x̂, everything else zero.
+    [[nodiscard]] bool supports_parameter_gradient_derivatives() const override { return true; }
+    bool compute_parameter_gradient_derivatives(const alea::WalkerSet&, std::span<double> dgrad,
+                                                std::span<double> dlap) const override {
+        std::fill(dgrad.begin(), dgrad.end(), 0.0);
+        std::fill(dlap.begin(), dlap.end(), 0.0);
+        return true;
+    }
+    bool compute_complex_parameter_gradient_derivatives(
+        const alea::WalkerSet& batch, std::span<double> dgrad, std::span<double> dlap,
+        std::span<double> dpgrad, std::span<double> dplap) const override {
+        for (std::span<double> s : {dgrad, dlap, dpgrad, dplap}) std::fill(s.begin(), s.end(), 0.0);
+        if (params_[0].is_fixed) return true;
+        const std::size_t nw = batch.num_walkers(), dim = batch.dim();
+        for (std::size_t p = 0; p < batch.n_particles(); ++p)
+            for (std::size_t w = 0; w < nw; ++w) dpgrad[p * dim * nw + w] = 1.0;
+        return true;
+    }
 
 private:
-    std::vector<Parameter> params_{{"bf0_c0", 0.1, false}};
+    double kappa() const { return params_[0].value; }
+    std::vector<Parameter> params_;
 };
 }  // namespace
 
-TEST_CASE("LinearOptimize refuses to move a complex factor's parameters",
+TEST_CASE("LinearOptimize moves a parameter that changes only the phase, to its closed-form optimum",
           "[linear_optimize][optimize][twist]") {
-    const std::size_t nw = 32, dim = 2;
+    const std::size_t nw = 256, dim = 2;
     const ParticleGroup electron = make_group("e", -1.0, 1.0, 0, 1);
-    const ParticleGroup hole     = make_group("h", +1.0, 1.0, 1, 2);
-    const std::vector<ParticleGroup> groups = {electron, hole};
-    auto run_scope = [&](const std::string& scope) {
+    const std::vector<ParticleGroup> groups = {electron};
+    for (const bool with_width : {false, true}) {
+        INFO("the Gaussian width is " << (with_width ? "free (starts at 0.25)" : "fixed at 1/2"));
+        const double alpha0 = with_width ? 0.25 : 0.5;
+        std::vector<alea::SlaterDeterminant::Block> blocks;
+        blocks.push_back({0, 1,
+                          std::make_unique<alea::GaussianOrbitalSet>(
+                              dim, std::vector<double>{0.0, 0.0}, std::vector<double>{alpha0})});
+        auto det = std::make_unique<alea::SlaterDeterminant>(std::move(blocks));
+        det->parameters()[0].is_fixed = !with_width;
         alea::TrialWavefunction psi;
-        psi.add_component(std::make_unique<FreeComplexFactor>());
-        psi.add_component(std::make_unique<alea::PadeJastrow>(
-            1, 0, electron, hole, std::vector<Parameter>{{"c", -0.5, false}}));
+        psi.add_component(std::move(det));
+        psi.add_component(std::make_unique<BoostFactor>(0.5));
+        REQUIRE(psi.is_complex());
+
         alea::Hamiltonian ham;
         ham.add_component(std::make_unique<alea::Kinetic>(groups));
-        ham.add_component(std::make_unique<HarmonicTrap>(1.0, 2));
+        ham.add_component(std::make_unique<HarmonicTrap>(1.0, 1));
         alea::WalkerEnsemble ensemble(nw, groups, dim);
-        alea::numerics::Random rng(7);
+        alea::numerics::Random rng(2026);
         for (auto& w : ensemble.walkers())
-            w.set_positions(std::vector<double>{0.8 * rng.gaussian(), 0.8 * rng.gaussian(),
-                                                0.8 * rng.gaussian(), 0.8 * rng.gaussian()});
+            w.set_positions(std::vector<double>{0.7 * rng.gaussian(), 0.7 * rng.gaussian()});
+
         alea::OptimizeConfig cfg;
         cfg.n_walkers              = static_cast<int>(nw);
-        cfg.n_equilibration_blocks = 2;
-        cfg.n_accumulation_blocks  = 2;
-        cfg.n_steps                = 5;
+        cfg.n_equilibration_blocks = 20;
+        cfg.n_accumulation_blocks  = 20;
+        cfg.n_steps                = 10;
         cfg.tau                    = 0.5;
-        cfg.max_iterations         = 1;
+        cfg.max_iterations         = 15;
+        cfg.seed                   = 7;
         cfg.n_threads              = 1;
-        cfg.parameters             = scope;
-        alea::LinearOptimize opt(cfg, ensemble, psi, ham);
-        if (scope == "jastrow") {
-            CHECK_NOTHROW(opt.run());
-        } else {
-            CHECK_THROWS_WITH(opt.run(), Catch::Matchers::ContainsSubstring("free_complex_factor") &&
-                                             Catch::Matchers::ContainsSubstring("Gamma"));
-        }
-        // The stage's scope is undone either way.
-        CHECK_FALSE(psi.components()[0]->parameters()[0].is_fixed);
-    };
-    run_scope("all");
-    run_scope("nodal");
-    run_scope("jastrow");
+        alea::LinearOptimize optimizer(cfg, ensemble, psi, ham);
+        optimizer.run();
+
+        const double alpha = psi.components()[0]->parameters()[0].value;
+        const double kappa = psi.components()[1]->parameters()[0].value;
+        INFO("alpha = " << alpha << ", kappa = " << kappa << ", iterations = "
+                        << optimizer.result().iterations);
+        CHECK(std::abs(kappa) < 1e-3);
+        CHECK(alpha == Catch::Approx(0.5).margin(0.002));
+        CHECK(optimizer.result().final_energy == Catch::Approx(1.0).margin(1e-4));
+    }
 }

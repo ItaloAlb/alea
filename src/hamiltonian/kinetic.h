@@ -56,6 +56,12 @@ public:
         std::span<const double> dlap, std::size_t n_opt,
         std::span<double> out) const override;
 
+    // Complex trial; see the derivation at the definition.
+    void complex_local_energy_parameter_derivatives(
+        const WalkerSet& batch, std::span<const double> dgrad, std::span<const double> dlap,
+        std::span<const double> dpgrad, std::span<const double> dplap, std::size_t n_opt,
+        std::span<double> out_re, std::span<double> out_im) const override;
+
     // K_w into out[w] (accumulated), read-only on the batch.
     void accumulate_psi_dependent_energy(const WalkerSet& batch,
                                          std::span<double> out) const override;

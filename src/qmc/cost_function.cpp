@@ -7,7 +7,9 @@
 #include <cmath>
 
 #include <algorithm>
+#include <initializer_list>
 #include <numeric>
+#include <stdexcept>
 
 namespace alea {
 
@@ -21,6 +23,17 @@ void CostFunction::clear() {
     energy_deriv_prods_.clear();
     el_deriv_sums_.clear();
     deriv_el_deriv_prods_.clear();
+    complex_ = false;
+    c_energy_sum_ = cplx{};
+    for (std::vector<cplx>* v : {&c_o_, &c_oo_, &c_oe_, &c_eo_, &c_oeo_, &c_del_, &c_odel_})
+        v->clear();
+}
+
+void CostFunction::ensure_complex_capacity(std::size_t n_params) {
+    if (c_o_.size() == n_params) return;
+    for (std::vector<cplx>* v : {&c_o_, &c_oe_, &c_eo_, &c_del_}) v->assign(n_params, cplx{});
+    for (std::vector<cplx>* v : {&c_oo_, &c_oeo_, &c_odel_})
+        v->assign(n_params * n_params, cplx{});
 }
 
 void CostFunction::ensure_capacity(std::size_t n_params) {
@@ -39,6 +52,8 @@ void CostFunction::add_samples(std::span<const double> local_energies,
                                std::size_t n_params,
                                std::size_t n_samples) {
     if (n_samples == 0) return;
+    if (complex_)
+        throw std::logic_error("CostFunction: real samples added to a complex accumulation");
     if (n_params == 0) {
         // No parameters to track, but we still accumulate the energy.
         for (std::size_t w = 0; w < n_samples; ++w) {
@@ -91,6 +106,52 @@ void CostFunction::add_samples(std::span<const double> local_energies,
     n_samples_ += n_samples;
 }
 
+void CostFunction::add_complex_samples(std::span<const double> local_energies,
+                                       std::span<const double> local_energies_imag,
+                                       std::span<const double> param_derivs,
+                                       std::span<const double> param_phase_derivs,
+                                       std::span<const double> el_derivs,
+                                       std::span<const double> el_derivs_imag,
+                                       std::size_t n_params,
+                                       std::size_t n_samples) {
+    if (n_samples == 0) return;
+    if (n_params == 0) {
+        add_samples(local_energies, {}, {}, 0, n_samples);
+        return;
+    }
+    if (!complex_ && n_samples_ > 0)
+        throw std::logic_error("CostFunction: complex samples added to a real accumulation");
+    complex_ = true;
+    ensure_complex_capacity(n_params);
+    const bool curvature = !el_derivs.empty();
+    std::vector<cplx> o(n_params), del(n_params);   // one sample's O and ∂E_L
+    for (std::size_t w = 0; w < n_samples; ++w) {
+        const cplx e(local_energies[w], local_energies_imag[w]);
+        energy_sum_ += e.real();
+        energy_sq_sum_ += e.real() * e.real();
+        c_energy_sum_ += e;
+        for (std::size_t i = 0; i < n_params; ++i) {
+            o[i] = cplx(param_derivs[i * n_samples + w], param_phase_derivs[i * n_samples + w]);
+            del[i] = curvature ? cplx(el_derivs[i * n_samples + w], el_derivs_imag[i * n_samples + w])
+                               : cplx{};
+        }
+        for (std::size_t i = 0; i < n_params; ++i) {
+            const cplx oi_conj = std::conj(o[i]);
+            const cplx oi_conj_e = oi_conj * e;
+            c_o_[i] += o[i];
+            c_oe_[i] += oi_conj_e;
+            c_eo_[i] += e * o[i];
+            c_del_[i] += del[i];
+            for (std::size_t j = 0; j < n_params; ++j) {
+                c_oo_[i * n_params + j] += oi_conj * o[j];
+                c_oeo_[i * n_params + j] += oi_conj_e * o[j];
+                c_odel_[i * n_params + j] += oi_conj * del[j];
+            }
+        }
+    }
+    n_samples_ += n_samples;
+}
+
 double CostFunction::mean_energy() const noexcept {
     if (n_samples_ == 0) return 0.0;
     return energy_sum_ / static_cast<double>(n_samples_);
@@ -110,10 +171,26 @@ void CostFunction::merge(const CostFunction& other) {
         *this = other;
         return;
     }
+    if (complex_ != other.complex_)
+        throw std::logic_error("CostFunction: merging a real and a complex accumulation");
 
     n_samples_ += other.n_samples_;
     energy_sum_ += other.energy_sum_;
     energy_sq_sum_ += other.energy_sq_sum_;
+    if (complex_) {
+        c_energy_sum_ += other.c_energy_sum_;
+        const auto add = [](std::vector<cplx>& to, const std::vector<cplx>& from) {
+            for (std::size_t k = 0; k < to.size(); ++k) to[k] += from[k];
+        };
+        add(c_o_, other.c_o_);
+        add(c_oo_, other.c_oo_);
+        add(c_oe_, other.c_oe_);
+        add(c_eo_, other.c_eo_);
+        add(c_oeo_, other.c_oeo_);
+        add(c_del_, other.c_del_);
+        add(c_odel_, other.c_odel_);
+        return;
+    }
 
     const std::size_t np = deriv_sums_.size();
     for (std::size_t i = 0; i < np; ++i) {
@@ -139,6 +216,10 @@ void CostFunction::build_matrices(Eigen::MatrixXd& Sbar,
     Hbar.setZero();
 
     if (n_samples_ == 0) return;
+    if (complex_) {
+        build_complex_matrices(Sbar, Hbar, n_params);
+        return;
+    }
 
     const double inv_n = 1.0 / static_cast<double>(n_samples_);
     const double mean_e = energy_sum_ * inv_n;
@@ -189,6 +270,37 @@ void CostFunction::build_matrices(Eigen::MatrixXd& Sbar,
             Hbar(i + 1, j + 1) = (mean_eprod - mean_e * mean_prod)
                                  - m_j * cov_i - m_i * cov_j
                                  + mean_e * s_ij + curv;
+        }
+    }
+}
+
+// The complex case of build_matrices (see the header), each centred mean
+// expanded onto the raw sums as in the real case, m_i = <O_i>:
+//   <D_i* D_j>     = <O_i* O_j> − m_i* m_j
+//   <D_i* E_L>     = <O_i* E_L> − m_i* <E_L>
+//   <D_i* E_L D_j> = <O_i* E_L O_j> − m_i* <E_L O_j> − <O_i* E_L> m_j + m_i* <E_L> m_j
+//   <D_i* ∂_j E_L> = <O_i* ∂_j E_L> − m_i* <∂_j E_L>
+void CostFunction::build_complex_matrices(Eigen::MatrixXd& Sbar, Eigen::MatrixXd& Hbar,
+                                          std::size_t n_params) const {
+    const double inv_n = 1.0 / static_cast<double>(n_samples_);
+    const cplx mean_e = c_energy_sum_ * inv_n;
+    Sbar(0, 0) = 1.0;
+    Hbar(0, 0) = mean_e.real();
+    for (std::size_t i = 0; i < n_params; ++i) {
+        const cplx m_i_conj = std::conj(c_o_[i] * inv_n);
+        const cplx oe_i = c_oe_[i] * inv_n;
+        const double cov_i = (oe_i - m_i_conj * mean_e).real();
+        Sbar(0, i + 1) = Sbar(i + 1, 0) = 0.0;
+        Hbar(0, i + 1) = Hbar(i + 1, 0) = cov_i;
+        for (std::size_t j = 0; j < n_params; ++j) {
+            const std::size_t ij = i * n_params + j;
+            const cplx m_j = c_o_[j] * inv_n;
+            const cplx eo_j = c_eo_[j] * inv_n;
+            Sbar(i + 1, j + 1) = (c_oo_[ij] * inv_n - m_i_conj * m_j).real();
+            const cplx d_e_d = c_oeo_[ij] * inv_n - m_i_conj * eo_j - oe_i * m_j +
+                               m_i_conj * mean_e * m_j;
+            const cplx curv = c_odel_[ij] * inv_n - m_i_conj * (c_del_[j] * inv_n);
+            Hbar(i + 1, j + 1) = (d_e_d + curv).real();
         }
     }
 }

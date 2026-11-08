@@ -13,12 +13,14 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <complex>
 #include <memory>
 #include <random>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -325,6 +327,141 @@ void commit(TrialWavefunction& psi, WalkerSet& ws, std::size_t p, std::span<cons
     ws.apply_move(p, ws.new_pos(), ws.new_grad(), ws.new_lap(), accept);
 }
 
+// ── Parameter derivatives ────────────────────────────────────────────────────
+
+// sys with the component's parameter q (parameters() order: each channel's
+// [c_0, (c_1), c_2.., L]) shifted by delta, in the oracle's coefficients too:
+// a like-spin channel derives c_1 = C c_0 / L, so c_0 and L both move it.
+System with_shifted_parameter(System sys, std::size_t q, double delta) {
+    const std::size_t g0 = sys.blocks.front().first, g1 = sys.blocks.back().second;
+    for (std::size_t c = 0; c < sys.channels.size(); ++c) {
+        std::vector<double>& fp = sys.free_params[c];
+        if (q >= fp.size()) {
+            q -= fp.size();
+            continue;
+        }
+        fp[q] += delta;
+        OracleChannel& ch = sys.channels[c];
+        ch.L = fp.back();
+        ch.c = {fp[0]};
+        if (ch.source_first == g0 && ch.source_last == g1)
+            ch.c.push_back(static_cast<double>(ch.C) * fp[0] / ch.L);
+        for (std::size_t k = 1; k + 1 < fp.size(); ++k) ch.c.push_back(fp[k]);
+        return sys;
+    }
+    throw std::out_of_range("no backflow parameter " + std::to_string(q));
+}
+
+std::size_t n_parameters(const System& sys) {
+    std::size_t n = 0;
+    for (const auto& fp : sys.free_params) n += fp.size();
+    return n;
+}
+
+TrialWavefunction free_trial_of(const System& sys) {
+    TrialWavefunction psi = trial_of(sys);
+    for (Parameter& p : psi.components()[0]->parameters()) p.is_fixed = false;
+    return psi;
+}
+
+// The four planes (∇u, ∇²u, ∇φ, ∇²φ) of ψ at the configurations, parameter q
+// shifted by delta.
+std::array<std::vector<double>, 4> planes_at(const System& sys,
+                                             const std::vector<std::vector<double>>& configs,
+                                             std::size_t q, double delta) {
+    const System shifted = with_shifted_parameter(sys, q, delta);
+    Batch b(shifted, configs);
+    TrialWavefunction psi = trial_of(shifted);
+    psi.evaluate_batch(b.ws);
+    const auto copy = [](std::span<const double> s) { return std::vector<double>(s.begin(), s.end()); };
+    return {copy(b.ws.gradients()), copy(b.ws.laplacians()), copy(b.ws.phase_gradients()),
+            copy(b.ws.phase_laplacians())};
+}
+
+// The component's O (both parts) and curvature (four planes) at walker set ws,
+// every parameter free.
+struct ParameterDerivatives {
+    std::vector<double> re, im;                   // [n * nw]
+    std::array<std::vector<double>, 4> planes;    // dgrad, dlap, dpgrad, dplap [n * field]
+};
+ParameterDerivatives parameter_derivatives_of(const TrialWavefunction& psi, const WalkerSet& ws) {
+    const std::size_t n = psi.total_optimizable_params(), nw = ws.num_walkers();
+    const std::size_t field = ws.n_particles() * ws.dim() * nw;
+    ParameterDerivatives out;
+    out.re.assign(n * nw, 0.0);
+    out.im.assign(n * nw, 0.0);
+    psi.compute_complex_parameter_derivatives(ws, out.re, out.im);
+    for (auto& p : out.planes) p.assign(n * field, 0.0);
+    std::vector<char> supported(n, 0);
+    REQUIRE(psi.compute_complex_parameter_gradient_derivatives(
+        ws, out.planes[0], out.planes[1], out.planes[2], out.planes[3], supported));
+    for (char s : supported) CHECK(s == 1);
+    return out;
+}
+
+ParameterDerivatives fresh_parameter_derivatives(const System& sys,
+                                                 const std::vector<std::vector<double>>& configs) {
+    Batch b(sys, configs);
+    TrialWavefunction psi = free_trial_of(sys);
+    psi.evaluate_batch(b.ws);
+    return parameter_derivatives_of(psi, b.ws);
+}
+
+// O against central differences of the oracle's ln ψ in every parameter, and
+// the curvature against central differences of the component's own planes
+// (checked against the oracle by the battery above); Richardson over h, h/2,
+// with |D(h) − D(h/2)| joining the margin.
+void check_parameter_derivatives(const System& sys,
+                                 const std::vector<std::vector<double>>& configs) {
+    const ParameterDerivatives got = fresh_parameter_derivatives(sys, configs);
+    const std::size_t nw = configs.size(), field = sys.np * sys.dim * nw;
+    for (std::size_t q = 0; q < n_parameters(sys); ++q) {
+        INFO("parameter " << q);
+        double value = 0.0;
+        {
+            std::size_t r = q;
+            for (const auto& fp : sys.free_params) {
+                if (r < fp.size()) {
+                    value = fp[r];
+                    break;
+                }
+                r -= fp.size();
+            }
+        }
+        const double h = 1e-4 * std::max(1.0, std::abs(value));
+        std::vector<cplx> o[2];
+        std::array<std::vector<double>, 4> fd[2];
+        for (int level = 0; level < 2; ++level) {
+            const double hl = level == 0 ? h : 0.5 * h;
+            const System up = with_shifted_parameter(sys, q, hl);
+            const System down = with_shifted_parameter(sys, q, -hl);
+            o[level].resize(nw);
+            for (std::size_t w = 0; w < nw; ++w)
+                o[level][w] = log_diff(oracle(up, configs[w]), oracle(down, configs[w])) / (2.0 * hl);
+            const auto pu = planes_at(sys, configs, q, hl), pd = planes_at(sys, configs, q, -hl);
+            for (std::size_t k = 0; k < 4; ++k) {
+                fd[level][k].resize(field);
+                for (std::size_t e = 0; e < field; ++e)
+                    fd[level][k][e] = (pu[k][e] - pd[k][e]) / (2.0 * hl);
+            }
+        }
+        for (std::size_t w = 0; w < nw; ++w) {
+            const cplx ref = (4.0 * o[1][w] - o[0][w]) / 3.0;
+            const double err = std::abs(o[0][w] - o[1][w]);
+            CHECK(got.re[q * nw + w] == Catch::Approx(ref.real()).margin(1e-8 + err));
+            CHECK(got.im[q * nw + w] == Catch::Approx(ref.imag()).margin(1e-8 + err));
+        }
+        for (std::size_t k = 0; k < 4; ++k)
+            for (std::size_t e = 0; e < field; ++e) {
+                const double ref = (4.0 * fd[1][k][e] - fd[0][k][e]) / 3.0;
+                const double err = std::abs(fd[0][k][e] - fd[1][k][e]);
+                INFO("plane " << k << " entry " << e << "  fd error estimate " << err);
+                CHECK(got.planes[k][q * field + e] ==
+                      Catch::Approx(ref).margin((k % 2 == 0 ? 1e-7 : 1e-6) + err));
+            }
+    }
+}
+
 }  // namespace
 
 // ── Orbitals ─────────────────────────────────────────────────────────────────
@@ -361,6 +498,34 @@ TEST_CASE("twisted plane-wave Hessians match evaluate() and finite differences o
                 CHECK(hess[(m * 2 + a) * 2 + b].imag() == Catch::Approx(fd.imag()).margin(1e-8));
             }
         }
+    }
+}
+
+TEST_CASE("twisted plane-wave third derivatives match finite differences of the Hessian",
+          "[backflow][twist][orbitals]") {
+    const SimulationCell box(2, std::vector<double>{6.0, 0.0, 0.0, 6.0});
+    const auto orb = make_twisted_plane_wave_orbitals(box, 5, {0.2, 0.13});
+    REQUIRE(orb->supports_third_derivatives());
+    const std::size_t n = orb->size();
+    const std::vector<double> pos = {0.4, 5.9};
+    std::vector<cplx> third(n * 8);
+    orb->evaluate_third_derivatives(pos, 2, third);
+    const double h = 1e-5;
+    for (std::size_t c = 0; c < 2; ++c) {
+        std::vector<double> pp = pos, pm = pos;
+        pp[c] += h;
+        pm[c] -= h;
+        std::vector<cplx> v(n), g(n * 2), hp(n * 4), hm(n * 4);
+        orb->evaluate_hessian(pp, 2, v, g, hp);
+        orb->evaluate_hessian(pm, 2, v, g, hm);
+        for (std::size_t m = 0; m < n; ++m)
+            for (std::size_t a = 0; a < 2; ++a)
+                for (std::size_t b = 0; b < 2; ++b) {
+                    const std::size_t e = (m * 2 + a) * 2 + b;
+                    const cplx fd = (hp[e] - hm[e]) / (2 * h);
+                    CHECK(third[e * 2 + c].real() == Catch::Approx(fd.real()).margin(1e-8));
+                    CHECK(third[e * 2 + c].imag() == Catch::Approx(fd.imag()).margin(1e-8));
+                }
     }
 }
 
@@ -770,9 +935,9 @@ TEST_CASE("complex backflow is unchanged by a lattice translation of one particl
     CHECK(b.ws.log_psi()[0] == Catch::Approx(l0.real()).epsilon(1e-12));
 }
 
-// ── Parameters and refusals ──────────────────────────────────────────────────
+// ── Parameters ───────────────────────────────────────────────────────────────
 
-TEST_CASE("complex backflow names its parameters as the real one and refuses free ones",
+TEST_CASE("complex backflow names its parameters as the real one and rebuild moves psi",
           "[backflow][twist][optimize]") {
     const System sys = hexagonal_system();
     auto det = make_component(sys);
@@ -785,10 +950,11 @@ TEST_CASE("complex backflow names its parameters as the real one and refuses fre
     CHECK(params[6].name == "bf1_L");
     CHECK(det->is_nodal());
     CHECK(det->is_complex());
-    CHECK_FALSE(det->supports_parameter_gradient_derivatives());
+    CHECK(det->supports_parameter_gradient_derivatives());
 
-    // rebuild() moves ψ.
     Batch a(sys, hexagonal_configs()), b(sys, hexagonal_configs());
+    a.ws.enable_phase();
+    b.ws.enable_phase();
     det->evaluate_batch(a.ws);
     auto changed = make_component(sys);
     changed->parameters()[0].value = 0.4;
@@ -799,12 +965,177 @@ TEST_CASE("complex backflow names its parameters as the real one and refuses fre
     moved.channels[0].c = {0.4, 3.0 * 0.4 / 2.5, -0.03};
     CHECK(b.ws.log_psi()[0] == Catch::Approx(oracle(moved, hexagonal_configs()[0]).real()).epsilon(1e-12));
 
-    // Fixed parameters: nothing to do.  A free one is refused.
-    std::vector<double> derivs;
-    CHECK_NOTHROW(det->compute_parameter_derivatives(a.ws, derivs));
-    det->parameters()[0].is_fixed = false;
-    std::vector<double> one(2);
-    CHECK_THROWS_WITH(det->compute_parameter_derivatives(a.ws, one), ContainsSubstring("Gamma"));
+    // Fixed parameters: nothing to write.
+    std::vector<double> none;
+    CHECK_NOTHROW(det->compute_complex_parameter_derivatives(a.ws, none, none));
+}
+
+TEST_CASE("complex backflow parameter derivatives: both parts of d ln psi/dp and of the "
+          "curvature match finite differences",
+          "[backflow][twist][optimize]") {
+    // Like-spin c_0 (which also moves the derived c_1) and L, a source
+    // channel's free c_1, two spin blocks, a hexagonal cell.
+    const auto cases = all_cases();
+    for (std::size_t c = 0; c < cases.size(); ++c) {
+        INFO("system " << c);
+        check_parameter_derivatives(cases[c].first, cases[c].second);
+    }
+}
+
+TEST_CASE("complex backflow parameter derivatives hold over random configurations and across "
+          "the cutoff",
+          "[backflow][twist][optimize]") {
+    std::mt19937_64 rng(20261109);
+    std::uniform_real_distribution<double> unit(0.0, 1.0);
+    const System sys = hexagonal_system();
+    std::vector<std::vector<double>> configs;
+    for (int k = 0; k < 6; ++k) {
+        std::vector<double> pos;
+        for (std::size_t p = 0; p < sys.np; ++p) {
+            const auto [x, y] = hex_point(unit(rng), unit(rng));
+            pos.push_back(x);
+            pos.push_back(y);
+        }
+        configs.push_back(pos);
+    }
+    // Particle 1 just inside and just outside the like-spin cutoff of particle 0.
+    const double L = sys.channels[0].L;
+    for (double f : {1.0 - 1e-3, 1.0 + 1e-3}) {
+        std::vector<double> pos = configs[0];
+        pos[2] = pos[0] + f * L * 0.6;
+        pos[3] = pos[1] + f * L * 0.8;
+        configs.push_back(pos);
+    }
+    check_parameter_derivatives(sys, configs);
+}
+
+TEST_CASE("complex backflow parameter derivatives after moves across wraps equal a fresh "
+          "evaluation",
+          "[backflow][twist][optimize]") {
+    // As VMC leaves the walkers before a measurement: deferred commits, a
+    // particle wrapped out of the cell (its committed x and row in another
+    // gauge than a fresh evaluation's), a refresh.  O and the curvature are
+    // gauge-free, so they equal those of a fresh evaluation at the wrapped
+    // positions.
+    for (const System& sys : {square_system(), two_block_system()}) {
+        Batch b(sys, square_configs());
+        TrialWavefunction psi = free_trial_of(sys);
+        psi.set_proposal_laplacian(false);
+        psi.evaluate_batch(b.ws);
+        const std::vector<std::pair<std::size_t, std::vector<double>>> moves = {
+            {0, {-0.4, 6.3}}, {sys.np - 1, {4.1, 5.0}}, {2, {5.8, -0.2}}};
+        for (std::size_t mv = 0; mv < moves.size(); ++mv) {
+            const auto& [p, to] = moves[mv];
+            psi.refresh_particle_derivatives(b.ws, p);
+            propose(b.ws, p, to);
+            psi.ratio_batch(b.ws, p);
+            std::array<bool, 2> accept = {true, mv != 1};
+            commit(psi, b.ws, p, accept, true);
+        }
+        psi.refresh_derivatives(b.ws);
+        const ParameterDerivatives got = parameter_derivatives_of(psi, b.ws);
+        const ParameterDerivatives ref =
+            fresh_parameter_derivatives(sys, {config_of(b.ws, 0), config_of(b.ws, 1)});
+        for (std::size_t e = 0; e < got.re.size(); ++e) {
+            CHECK(got.re[e] == Catch::Approx(ref.re[e]).margin(1e-11));
+            CHECK(got.im[e] == Catch::Approx(ref.im[e]).margin(1e-11));
+        }
+        for (std::size_t k = 0; k < 4; ++k)
+            for (std::size_t e = 0; e < got.planes[k].size(); ++e)
+                CHECK(got.planes[k][e] == Catch::Approx(ref.planes[k][e]).margin(1e-9));
+    }
+}
+
+TEST_CASE("at a twist that shifts a closed shell, the backflow parameter derivatives are the "
+          "real Gamma determinant's with no phase part",
+          "[backflow][twist][optimize]") {
+    // ln ψ_θ = ln ψ_Γ + iθ·Σ_j r_j + const (see the exact relation above), and
+    // θ·Σ r does not depend on the parameters: O_θ = O_Γ (real), ∂_p ∇ ln ψ_θ
+    // = ∂_p ∇ ln ψ_Γ.  The reference is the independent real backflow code.
+    const System sys = square_system({0.05, 0.03});
+    std::vector<std::vector<double>> configs = square_configs();
+    configs.push_back({2.9, 0.2, 0.4, 3.3, 5.0, 1.7, 3.6, 5.9, 1.1, 2.4});
+    const ParameterDerivatives twisted_d = fresh_parameter_derivatives(sys, configs);
+
+    std::vector<BackflowSlaterDeterminant::Block> blocks;
+    blocks.push_back({0, 5, make_plane_wave_orbitals(sys.cell, 5)});
+    std::vector<BackflowSlaterDeterminant::Channel> channels(1);
+    channels[0].source_first = 0;
+    channels[0].source_last = 5;
+    channels[0].truncation = 3;
+    for (double v : sys.free_params[0]) channels[0].params.push_back(Parameter{"", v, false});
+    TrialWavefunction real_psi;
+    real_psi.add_component(std::make_unique<BackflowSlaterDeterminant>(
+        std::move(blocks), std::move(channels), sys.cell));
+    Batch r(sys, configs);
+    real_psi.evaluate_batch(r.ws);
+    const std::size_t n = real_psi.total_optimizable_params(), nw = configs.size();
+    REQUIRE(n == n_parameters(sys));
+    const std::size_t field = sys.np * sys.dim * nw;
+    std::vector<double> o(n * nw), dg(n * field), dl(n * field);
+    std::vector<char> supported(n, 0);
+    real_psi.compute_parameter_derivatives(r.ws, o);
+    REQUIRE(real_psi.compute_parameter_gradient_derivatives(r.ws, dg, dl, supported));
+
+    for (std::size_t e = 0; e < o.size(); ++e) {
+        CHECK(twisted_d.re[e] == Catch::Approx(o[e]).margin(1e-10));
+        CHECK(twisted_d.im[e] == Catch::Approx(0.0).margin(1e-10));
+    }
+    for (std::size_t e = 0; e < dg.size(); ++e) {
+        CHECK(twisted_d.planes[0][e] == Catch::Approx(dg[e]).margin(1e-9));
+        CHECK(twisted_d.planes[1][e] == Catch::Approx(dl[e]).margin(1e-8));
+        CHECK(twisted_d.planes[2][e] == Catch::Approx(0.0).margin(1e-9));
+        CHECK(twisted_d.planes[3][e] == Catch::Approx(0.0).margin(1e-8));
+    }
+}
+
+TEST_CASE("complex backflow at -theta has the conjugate parameter derivatives",
+          "[backflow][twist][optimize]") {
+    const ParameterDerivatives plus = fresh_parameter_derivatives(square_system({0.2, 0.13}),
+                                                                  square_configs());
+    const ParameterDerivatives minus = fresh_parameter_derivatives(square_system({-0.2, -0.13}),
+                                                                   square_configs());
+    for (std::size_t e = 0; e < plus.re.size(); ++e) {
+        CHECK(plus.re[e] == Catch::Approx(minus.re[e]).margin(1e-11));
+        CHECK(plus.im[e] == Catch::Approx(-minus.im[e]).margin(1e-11));
+    }
+    for (std::size_t e = 0; e < plus.planes[0].size(); ++e) {
+        CHECK(plus.planes[0][e] == Catch::Approx(minus.planes[0][e]).margin(1e-9));
+        CHECK(plus.planes[1][e] == Catch::Approx(minus.planes[1][e]).margin(1e-8));
+        CHECK(plus.planes[2][e] == Catch::Approx(-minus.planes[2][e]).margin(1e-9));
+        CHECK(plus.planes[3][e] == Catch::Approx(-minus.planes[3][e]).margin(1e-8));
+    }
+}
+
+TEST_CASE("complex backflow reports the curvature term only when it can supply it",
+          "[backflow][twist][optimize]") {
+    // C = 2: eta'' steps at the cutoff, and the step moves with L.
+    System c2 = two_block_system();
+    c2.channels[0].C = 2;
+    TrialWavefunction psi = free_trial_of(c2);
+    CHECK_FALSE(psi.components()[0]->supports_parameter_gradient_derivatives());
+    Batch b(c2, square_configs());
+    psi.evaluate_batch(b.ws);
+    const std::size_t n = psi.total_optimizable_params(), field = c2.np * c2.dim * 2;
+    std::vector<double> dg(n * field), dl(n * field), dpg(n * field), dpl(n * field);
+    std::vector<char> supported(n, 1);
+    CHECK_FALSE(psi.compute_complex_parameter_gradient_derivatives(b.ws, dg, dl, dpg, dpl,
+                                                                   supported));
+    for (char s : supported) CHECK(s == 0);
+    // The real-only entry point gives the modulus parts of the complex one.
+    const System sys = hexagonal_system();
+    Batch h(sys, hexagonal_configs());
+    TrialWavefunction full = free_trial_of(sys);
+    full.evaluate_batch(h.ws);
+    const ParameterDerivatives both = parameter_derivatives_of(full, h.ws);
+    const std::size_t m = full.total_optimizable_params(), hf = sys.np * sys.dim * 2;
+    std::vector<double> rg(m * hf), rl(m * hf), ro(m * 2);
+    std::vector<char> ok(m, 0);
+    REQUIRE(full.compute_parameter_gradient_derivatives(h.ws, rg, rl, ok));
+    full.compute_parameter_derivatives(h.ws, ro);
+    CHECK(rg == both.planes[0]);
+    CHECK(rl == both.planes[1]);
+    CHECK(ro == both.re);
 }
 
 TEST_CASE("complex backflow refuses what it cannot represent", "[backflow][twist]") {
@@ -833,3 +1164,4 @@ TEST_CASE("complex backflow refuses what it cannot represent", "[backflow][twist
                           ContainsSubstring("Hessian"));
     }
 }
+

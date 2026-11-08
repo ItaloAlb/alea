@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <initializer_list>
 #include <omp.h>
 #include <stdexcept>
 #include <string>
@@ -198,6 +199,9 @@ void ComplexBackflowSlaterDeterminant::size_scratch(Scratch& s) const {
     s.f_im.assign(rows * dim, 0.0);
     s.out_grad.assign(np * dim, cplx(0.0, 0.0));
     s.out_lap.assign(np * dim, cplx(0.0, 0.0));
+    s.param.assign(std::max<std::size_t>(transform_.max_channel_parameters(), 1), 0.0);
+    s.pderiv_re.assign(transform_.n_parameters(), 0.0);
+    s.pderiv_im.assign(transform_.n_parameters(), 0.0);
     s.generation = scratch_generation_;
 }
 
@@ -737,14 +741,287 @@ void ComplexBackflowSlaterDeterminant::refresh_derivatives(WalkerSet& batch,
 
 void ComplexBackflowSlaterDeterminant::compute_parameter_derivatives(
     const WalkerSet& batch, std::span<double> derivs) const {
-    (void)batch;
-    (void)derivs;
-    for (const Parameter& p : params_)
-        if (!p.is_fixed)
-            throw std::logic_error(
-                "complex backflow determinant: parameter " + p.name +
-                " is free, but its log-derivative is complex and the optimizer takes "
-                "real ones; optimize the backflow at the Gamma twist");
+    compute_complex_parameter_derivatives(batch, derivs, {});
+}
+
+// O = Σ_{iα} F_iα ∂x_iα/∂p with ∂x/∂p real: BackflowTransformation contracts
+// the real and the imaginary part of F in turn.
+void ComplexBackflowSlaterDeterminant::compute_complex_parameter_derivatives(
+    const WalkerSet& batch, std::span<double> derivs, std::span<double> phase_derivs) const {
+    const std::size_t nw = batch.num_walkers(), xs = n_rows_ * dim_;
+    std::vector<std::size_t> column(params_.size(), npos);   // [k_opt * nw + w]
+    std::size_t n_opt = 0;
+    for (std::size_t q = 0; q < params_.size(); ++q)
+        if (!params_[q].is_fixed) column[q] = n_opt++;
+    if (n_opt == 0) return;
+    const bool phase = !phase_derivs.empty();
+    Scratch& s = scratch();
+    for (std::size_t w = 0; w < nw; ++w) {
+        load_positions(batch, w, s);
+        split_f(s, f_.data() + w * xs);
+        transform_.parameter_derivatives(s.pos.data(), s.f_re.data(), s.pderiv_re, s.param);
+        if (phase)
+            transform_.parameter_derivatives(s.pos.data(), s.f_im.data(), s.pderiv_im, s.param);
+        for (std::size_t q = 0; q < params_.size(); ++q) {
+            if (column[q] == npos) continue;
+            derivs[column[q] * nw + w] = s.pderiv_re[q];
+            if (phase) phase_derivs[column[q] * nw + w] = s.pderiv_im[q];
+        }
+    }
+}
+
+// ── Parameter derivatives of the gradient and Laplacian ─────────────────────
+
+bool ComplexBackflowSlaterDeterminant::supports_parameter_gradient_derivatives() const {
+    for (const Block& b : blocks_)
+        if (!b.orbitals->supports_third_derivatives()) return false;
+    for (std::size_t c = 0; c < transform_.n_channels(); ++c)
+        if (transform_.eta(c).truncation() < 3) return false;
+    return true;
+}
+
+void ComplexBackflowSlaterDeterminant::size_tangent(Tangent& t) const {
+    const std::size_t dim = dim_, dd = dim * dim, n = max_block_, rows = n_rows_;
+    t.third.assign(rows * n * dd * dim, cplx(0.0, 0.0));
+    t.x_dot.assign(rows * dim, 0.0);
+    transform_.size_tables(t.tables);
+    t.eta.assign(3 * std::max<std::size_t>(transform_.max_channel_parameters(), 1), 0.0);
+    t.m_dot.assign(rows * n, cplx(0.0, 0.0));
+    t.g_dot.assign(rows * n * dim, cplx(0.0, 0.0));
+    t.h_dot.assign(rows * n * dd, cplx(0.0, 0.0));
+    t.a_dot.assign(inv_size_, cplx(0.0, 0.0));
+    t.prod.assign(n * n, cplx(0.0, 0.0));
+    t.f_dot.assign(rows * dim, cplx(0.0, 0.0));
+    t.f_dot_re.assign(rows * dim, 0.0);
+    t.f_dot_im.assign(rows * dim, 0.0);
+    t.t_dot.assign(rows * dd, cplx(0.0, 0.0));
+    t.gmat_dot.assign(dim * inv_size_, cplx(0.0, 0.0));
+    t.v_dot.assign(rows * dim, 0.0);
+    t.v_tmp.assign(rows * dim, 0.0);
+    t.u.assign(n * n, cplx(0.0, 0.0));
+    t.u_dot.assign(n * n, cplx(0.0, 0.0));
+    t.out_grad.assign(np_ * dim, cplx(0.0, 0.0));
+    t.out_lap.assign(np_ * dim, cplx(0.0, 0.0));
+}
+
+// BackflowSlaterDeterminant::tangent_derivatives for a backflow parameter,
+// complex where the orbitals are.  T stays symmetric (a Hessian contracted
+// with A) but not Hermitian, so ∂(vᵀTv) = 2 v̇ᵀTv + vᵀṪv and
+// ∂(Σ U_ji U_ij) = 2 Σ U̇_ji U_ij hold without conjugation.
+void ComplexBackflowSlaterDeterminant::tangent_derivatives(Scratch& s, Tangent& t,
+                                                           const cplx* inv) const {
+    const std::size_t dim = dim_, dd = dim * dim, n_max = max_block_;
+    // Ȧ = −A Ṁ A per block, with Ṁ[r][m] = m_dot.
+    for (std::size_t b = 0; b < blocks_.size(); ++b) {
+        const std::size_t n = blocks_[b].last - blocks_[b].first;
+        const std::size_t row0 = blocks_[b].first - first_row_;
+        const cplx* A = inv + inv_offset_[b];
+        cplx* Ad = t.a_dot.data() + inv_offset_[b];
+        for (std::size_t m = 0; m < n; ++m)
+            for (std::size_t mp = 0; mp < n; ++mp) {
+                cplx acc(0.0, 0.0);
+                for (std::size_t r = 0; r < n; ++r)
+                    acc += A[m * n + r] * t.m_dot[(row0 + r) * n_max + mp];
+                t.prod[m * n + mp] = acc;
+            }
+        for (std::size_t m = 0; m < n; ++m)
+            for (std::size_t r = 0; r < n; ++r) {
+                cplx acc(0.0, 0.0);
+                for (std::size_t mp = 0; mp < n; ++mp) acc += t.prod[m * n + mp] * A[mp * n + r];
+                Ad[m * n + r] = -acc;
+            }
+    }
+    // Ḟ_iα = Σ_m [Ȧ_mi ∂_αφ_m + A_mi (∂_αφ_m)˙], Ṫ_i likewise with the Hessian.
+    for (std::size_t i = 0; i < n_rows_; ++i) {
+        const std::size_t b = block_of_row_[i];
+        const std::size_t n = blocks_[b].last - blocks_[b].first;
+        const std::size_t r = first_row_ + i - blocks_[b].first;
+        const cplx* A = inv + inv_offset_[b];
+        const cplx* Ad = t.a_dot.data() + inv_offset_[b];
+        for (std::size_t a = 0; a < dim; ++a) {
+            cplx acc(0.0, 0.0);
+            for (std::size_t m = 0; m < n; ++m) {
+                const std::size_t e = (i * n_max + m) * dim + a;
+                acc += Ad[m * n + r] * s.grad[e] + A[m * n + r] * t.g_dot[e];
+            }
+            t.f_dot[i * dim + a] = acc;
+            t.f_dot_re[i * dim + a] = acc.real();
+            t.f_dot_im[i * dim + a] = acc.imag();
+        }
+        for (std::size_t ag = 0; ag < dd; ++ag) {
+            cplx acc(0.0, 0.0);
+            for (std::size_t m = 0; m < n; ++m) {
+                const std::size_t e = (i * n_max + m) * dd + ag;
+                acc += Ad[m * n + r] * s.hess[e] + A[m * n + r] * t.h_dot[e];
+            }
+            t.t_dot[i * dd + ag] = acc;
+        }
+    }
+    // Ġ^α[j][r] = Σ_m [Ȧ_mj ∂_αφ_m(x_r) + A_mj (∂_αφ_m)˙(x_r)].
+    for (std::size_t b = 0; b < blocks_.size(); ++b) {
+        const std::size_t n = blocks_[b].last - blocks_[b].first;
+        const std::size_t row0 = blocks_[b].first - first_row_;
+        const cplx* A = inv + inv_offset_[b];
+        const cplx* Ad = t.a_dot.data() + inv_offset_[b];
+        for (std::size_t a = 0; a < dim; ++a) {
+            cplx* Gd = t.gmat_dot.data() + a * inv_size_ + inv_offset_[b];
+            for (std::size_t j = 0; j < n; ++j)
+                for (std::size_t r = 0; r < n; ++r) {
+                    cplx acc(0.0, 0.0);
+                    for (std::size_t m = 0; m < n; ++m) {
+                        const std::size_t e = ((row0 + r) * n_max + m) * dim + a;
+                        acc += Ad[m * n + j] * s.grad[e] + A[m * n + j] * t.g_dot[e];
+                    }
+                    Gd[j * n + r] = acc;
+                }
+        }
+    }
+
+    std::fill(t.out_grad.begin(), t.out_grad.end(), cplx(0.0, 0.0));
+    std::fill(t.out_lap.begin(), t.out_lap.end(), cplx(0.0, 0.0));
+    for (std::size_t k = 0; k < np_; ++k) {
+        if (!affects(k)) continue;
+        // ∂_p(∂_k ln D) = Σ_t (Ḟ_t·J_tk + F_t·J̇_tk); J̇ has no identity part.
+        double g1r[SimulationCell::kMaxDim] = {}, g1i[SimulationCell::kMaxDim] = {};
+        double g2r[SimulationCell::kMaxDim] = {}, g2i[SimulationCell::kMaxDim] = {};
+        transform_.gradient(s.tables, t.f_dot_re.data(), k, g1r);
+        transform_.gradient(s.tables, t.f_dot_im.data(), k, g1i);
+        transform_.gradient(t.tables, s.f_re.data(), k, g2r, /*with_identity=*/false);
+        transform_.gradient(t.tables, s.f_im.data(), k, g2i, /*with_identity=*/false);
+        for (std::size_t beta = 0; beta < dim; ++beta)
+            t.out_grad[k * dim + beta] = cplx(g1r[beta] + g2r[beta], g1i[beta] + g2i[beta]);
+
+        for (std::size_t beta = 0; beta < dim; ++beta) {
+            transform_.jacobian_column(s.tables, s.f_re.data(), k, beta, s.v.data());   // v
+            // Σ Ḟ·S by parts (each call rewrites the same v into v_tmp).
+            cplx l(transform_.jacobian_column(s.tables, t.f_dot_re.data(), k, beta,
+                                              t.v_tmp.data()),
+                   transform_.jacobian_column(s.tables, t.f_dot_im.data(), k, beta,
+                                              t.v_tmp.data()));
+            // Σ F·Ṡ by parts, and v̇.
+            l += cplx(transform_.jacobian_column(t.tables, s.f_re.data(), k, beta,
+                                                 t.v_dot.data(), /*with_identity=*/false),
+                      transform_.jacobian_column(t.tables, s.f_im.data(), k, beta,
+                                                 t.v_dot.data(), /*with_identity=*/false));
+            // ∂(vᵀ T v) = 2 v̇ᵀ T v + vᵀ Ṫ v.
+            for (std::size_t i = 0; i < n_rows_; ++i) {
+                const double* v = s.v.data() + i * dim;
+                const double* vd = t.v_dot.data() + i * dim;
+                const cplx* T = s.t.data() + i * dd;
+                const cplx* Td = t.t_dot.data() + i * dd;
+                for (std::size_t a = 0; a < dim; ++a)
+                    for (std::size_t g = 0; g < dim; ++g)
+                        l += 2.0 * vd[a] * v[g] * T[a * dim + g] + v[a] * v[g] * Td[a * dim + g];
+            }
+            // ∂(−Σ U_ji U_ij) = −2 Σ U̇_ji U_ij, U_ji = Σ_α v_iα G^α_ji.
+            for (std::size_t b = 0; b < blocks_.size(); ++b) {
+                const std::size_t n = blocks_[b].last - blocks_[b].first;
+                const std::size_t row0 = blocks_[b].first - first_row_;
+                for (std::size_t j = 0; j < n; ++j)
+                    for (std::size_t r = 0; r < n; ++r) {
+                        cplx acc(0.0, 0.0), acc_dot(0.0, 0.0);
+                        for (std::size_t a = 0; a < dim; ++a) {
+                            const std::size_t gi = a * inv_size_ + inv_offset_[b] + j * n + r;
+                            const double v = s.v[(row0 + r) * dim + a];
+                            const double vd = t.v_dot[(row0 + r) * dim + a];
+                            acc += v * s.gmat[gi];
+                            acc_dot += vd * s.gmat[gi] + v * t.gmat_dot[gi];
+                        }
+                        t.u[j * n + r] = acc;
+                        t.u_dot[j * n + r] = acc_dot;
+                    }
+                cplx uu(0.0, 0.0);
+                for (std::size_t j = 0; j < n; ++j)
+                    for (std::size_t r = 0; r < n; ++r) uu += t.u_dot[j * n + r] * t.u[r * n + j];
+                l -= 2.0 * uu;
+            }
+            t.out_lap[k * dim + beta] = l;
+        }
+    }
+}
+
+bool ComplexBackflowSlaterDeterminant::compute_parameter_gradient_derivatives(
+    const WalkerSet& batch, std::span<double> dgrad, std::span<double> dlap) const {
+    std::vector<double> dpgrad(dgrad.size()), dplap(dlap.size());
+    return compute_complex_parameter_gradient_derivatives(batch, dgrad, dlap, dpgrad, dplap);
+}
+
+bool ComplexBackflowSlaterDeterminant::compute_complex_parameter_gradient_derivatives(
+    const WalkerSet& batch, std::span<double> dgrad, std::span<double> dlap,
+    std::span<double> dpgrad, std::span<double> dplap) const {
+    if (!supports_parameter_gradient_derivatives()) return false;
+    const std::size_t nw = batch.num_walkers(), dim = dim_, dd = dim * dim, n_max = max_block_;
+    const std::size_t field = np_ * dim * nw, xs = n_rows_ * dim;
+    for (std::span<double> o : {dgrad, dlap, dpgrad, dplap}) std::fill(o.begin(), o.end(), 0.0);
+    std::vector<std::size_t> column(params_.size(), npos);
+    std::size_t n_opt = 0;
+    for (std::size_t q = 0; q < params_.size(); ++q)
+        if (!params_[q].is_fixed) column[q] = n_opt++;
+    if (n_opt == 0) return true;
+
+    Tangent t;   // measurement frequency: sized once per call
+    size_tangent(t);
+    Scratch& s = scratch();
+    for (std::size_t w = 0; w < nw; ++w) {
+        // Pair tables from the positions (separations only), orbitals at the
+        // committed x, in the gauge of the committed inverse and F.
+        load_positions(batch, w, s);
+        transform_.full(s.pos.data(), s.x.data(), s.tables);
+        std::copy_n(x_.begin() + static_cast<std::ptrdiff_t>(w * xs), xs, s.x.begin());
+        evaluate_rows(s);
+        for (std::size_t i = 0; i < n_rows_; ++i) {
+            const ComplexOrbitalSet& orb = *blocks_[block_of_row_[i]].orbitals;
+            orb.evaluate_third_derivatives(
+                std::span<const double>(s.x.data() + i * dim, dim), dim,
+                std::span<cplx>(t.third.data() + i * n_max * dd * dim, orb.size() * dd * dim));
+        }
+        const cplx* inv = inv_.data() + w * inv_size_;
+        split_f(s, f_.data() + w * xs);
+        gradient_matrices(s, inv);
+
+        for (std::size_t q = 0; q < params_.size(); ++q) {
+            if (column[q] == npos) continue;
+            // The orbitals ride along x: ∂_p(∂^n φ(x_i)) = ∇(∂^n φ)·ẋ_i.
+            transform_.parameter_tangent(s.pos.data(), q, t.x_dot.data(), t.tables, t.eta);
+            std::fill(t.m_dot.begin(), t.m_dot.end(), cplx(0.0, 0.0));
+            std::fill(t.g_dot.begin(), t.g_dot.end(), cplx(0.0, 0.0));
+            std::fill(t.h_dot.begin(), t.h_dot.end(), cplx(0.0, 0.0));
+            for (std::size_t i = 0; i < n_rows_; ++i) {
+                const std::size_t n = blocks_[block_of_row_[i]].orbitals->size();
+                const double* xd = t.x_dot.data() + i * dim;
+                for (std::size_t m = 0; m < n; ++m) {
+                    const std::size_t e = i * n_max + m;
+                    cplx mv(0.0, 0.0);
+                    for (std::size_t c = 0; c < dim; ++c) mv += s.grad[e * dim + c] * xd[c];
+                    t.m_dot[e] = mv;
+                    for (std::size_t a = 0; a < dim; ++a) {
+                        cplx gv(0.0, 0.0);
+                        for (std::size_t c = 0; c < dim; ++c)
+                            gv += s.hess[(e * dim + a) * dim + c] * xd[c];
+                        t.g_dot[e * dim + a] = gv;
+                        for (std::size_t g = 0; g < dim; ++g) {
+                            cplx hv(0.0, 0.0);
+                            for (std::size_t c = 0; c < dim; ++c)
+                                hv += t.third[((e * dim + a) * dim + g) * dim + c] * xd[c];
+                            t.h_dot[(e * dim + a) * dim + g] = hv;
+                        }
+                    }
+                }
+            }
+            tangent_derivatives(s, t, inv);
+            const std::size_t off = column[q] * field;
+            for (std::size_t k = 0; k < np_; ++k)
+                for (std::size_t d = 0; d < dim; ++d) {
+                    const std::size_t j = off + (k * dim + d) * nw + w;
+                    const cplx g = t.out_grad[k * dim + d], l = t.out_lap[k * dim + d];
+                    dgrad[j] = g.real();
+                    dlap[j] = l.real();
+                    dpgrad[j] = g.imag();
+                    dplap[j] = l.imag();
+                }
+        }
+    }
+    return true;
 }
 
 }  // namespace alea

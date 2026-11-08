@@ -190,6 +190,31 @@ public:
         return false;
     }
 
+    // ── Complex factors: both parts of the parameter derivatives ────────────
+    // For ψ_c = e^{u_c + iφ_c} the log-derivative is complex,
+    //   O_k = ∂ ln ψ_c/∂p_k = ∂u_c/∂p_k + i ∂φ_c/∂p_k,
+    // and the linear method of a complex trial needs both parts (CostFunction).
+    // derivs takes the real part (what compute_parameter_derivatives writes),
+    // phase_derivs the imaginary part, same layout [n_opt * nw].  The default
+    // is a real factor: Im O = 0.
+    virtual void compute_complex_parameter_derivatives(const WalkerSet& batch,
+                                                       std::span<double> derivs,
+                                                       std::span<double> phase_derivs) const {
+        compute_parameter_derivatives(batch, derivs);
+        std::fill(phase_derivs.begin(), phase_derivs.end(), 0.0);
+    }
+    // The same for the curvature term: ∂(∂_d u_c)/∂p_k, ∂(∂²_d u_c)/∂p_k into
+    // dgrad/dlap and ∂(∂_d φ_c)/∂p_k, ∂(∂²_d φ_c)/∂p_k into dpgrad/dplap, all
+    // in the layout of compute_parameter_gradient_derivatives.  Returns false,
+    // as that does, when the component cannot supply them.
+    virtual bool compute_complex_parameter_gradient_derivatives(
+        const WalkerSet& batch, std::span<double> dgrad, std::span<double> dlap,
+        std::span<double> dpgrad, std::span<double> dplap) const {
+        std::fill(dpgrad.begin(), dpgrad.end(), 0.0);
+        std::fill(dplap.begin(), dplap.end(), 0.0);
+        return compute_parameter_gradient_derivatives(batch, dgrad, dlap);
+    }
+
     // Read-only access to this component's cached contribution.
     // Populated by evaluate_batch and updated incrementally by apply_move_batch.
     // After a deferred commit, grad_c/lap_c may need the corresponding refresh.

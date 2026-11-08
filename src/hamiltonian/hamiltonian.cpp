@@ -144,4 +144,15 @@ void Hamiltonian::local_energy_parameter_derivatives(
         c->local_energy_parameter_derivatives(batch, dgrad, dlap, n_opt, out);
 }
 
+void Hamiltonian::complex_local_energy_parameter_derivatives(
+    const WalkerSet& batch, std::span<const double> dgrad, std::span<const double> dlap,
+    std::span<const double> dpgrad, std::span<const double> dplap, std::size_t n_opt,
+    std::span<double> out_re, std::span<double> out_im) const {
+    std::fill(out_re.begin(), out_re.end(), 0.0);
+    std::fill(out_im.begin(), out_im.end(), 0.0);
+    for (const auto& c : components_)
+        c->complex_local_energy_parameter_derivatives(batch, dgrad, dlap, dpgrad, dplap, n_opt,
+                                                      out_re, out_im);
+}
+
 }  // namespace alea

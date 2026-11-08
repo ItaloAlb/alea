@@ -121,6 +121,12 @@ struct OptimizeResult {
 // Runs an iterative optimisation loop: VMC sampling → CostFunction → LinearMethod
 // → parameter update → repeat.  Each thread owns independent clones of the
 // wavefunction, Hamiltonian, RNG, and CostFunction.
+//
+// A complex trial (twisted boundaries) has complex log-derivatives O_k and
+// local energies, and its matrices are the real parts of the complex ones
+// over real parameter steps (CostFunction::add_complex_samples), so the energy
+// gradient 2⟨Re[O*(E_L − E)]⟩ keeps its Im O · Im E_L term.  Correlated
+// sampling scores a candidate by Re E_L, whose mean is the energy.
 class LinearOptimize : public Driver {
 public:
     LinearOptimize(OptimizeConfig      cfg,

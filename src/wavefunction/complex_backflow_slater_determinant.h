@@ -65,10 +65,13 @@ namespace alea {
 // Each channel's [c_0, (c_1), c_2.., L], named "bf<c>_c<k>" and "bf<c>_L" and
 // ordered as BackflowSlaterDeterminant lists them for plane waves (which have
 // no orbital parameters), so the values a Γ-point optimization writes carry
-// over to a twisted run unchanged.  They are not optimized here: ∂ ln ψ/∂p is
-// complex, and ∂E/∂p = 2 ⟨Re[(∂_p ln ψ)* (E_L − E)]⟩ couples its imaginary
-// part to Im E_L, which a linear method on real log-derivatives drops.  The
-// optimizer refuses a complex factor with free parameters for that reason.
+// over to a twisted run unchanged.  Their log-derivative is complex,
+//   O = ∂ ln D/∂p = Σ_{iα} F_iα ∂x_iα/∂p,   ∂x_i/∂p = Σ_j ∂η(r_ij)/∂p r_ij (real),
+// and the optimizer takes both parts (CostFunction's complex accumulation).
+// The curvature term differentiates every quantity of the Derivatives
+// section along p, as BackflowSlaterDeterminant does, with complex Ȧ, Ḟ, Ṫ,
+// Ġ, U̇ and real ẋ, Ḃ, ṡ, v̇; the orbitals' third derivatives enter because
+// p moves x.
 class ComplexBackflowSlaterDeterminant final : public WavefunctionComponent {
 public:
     struct Block {
@@ -110,9 +113,29 @@ public:
     std::span<Parameter>       parameters() override { return params_; }
     std::span<const Parameter> parameters() const override { return params_; }
     void rebuild() override;
-    // Throws std::logic_error when a parameter is free: see Parameters above.
+    // Re O = ∂ ln|D|/∂p; compute_complex_parameter_derivatives gives both parts.
     void compute_parameter_derivatives(const WalkerSet& batch,
                                        std::span<double> derivs) const override;
+    // O = Σ_{iα} F_iα ∂x_iα/∂p from the committed F: Re into derivs, Im into
+    // phase_derivs (skipped when empty).  F and ∂x/∂p are gauge-free (see
+    // Twisted boundaries), so a wrapped walker needs nothing special.
+    void compute_complex_parameter_derivatives(const WalkerSet& batch, std::span<double> derivs,
+                                               std::span<double> phase_derivs) const override;
+
+    // ∂_p(∂_kβ ln D) and ∂_p(∂²_kβ ln D) (see Parameters), O(d² N³) per walker
+    // and parameter, at measurement frequency.  The orbitals are evaluated at
+    // the COMMITTED x, for the gauge reason refresh_walker gives.  Not
+    // supplied when an orbital set has no third derivatives or a channel has
+    // C < 3 (η'' then jumps at L: BackflowSlaterDeterminant explains why).
+    [[nodiscard]] bool supports_parameter_gradient_derivatives() const override;
+    // The modulus parts only (allocates the phase parts it discards).
+    bool compute_parameter_gradient_derivatives(const WalkerSet& batch, std::span<double> dgrad,
+                                                std::span<double> dlap) const override;
+    bool compute_complex_parameter_gradient_derivatives(const WalkerSet& batch,
+                                                        std::span<double> dgrad,
+                                                        std::span<double> dlap,
+                                                        std::span<double> dpgrad,
+                                                        std::span<double> dplap) const override;
 
     [[nodiscard]] std::size_t walker_state_bytes() const noexcept override;
 
@@ -147,8 +170,36 @@ private:
         std::vector<cplx>   w;       // [maxN * maxN] W_im = Σ_α v_iα ∂_α φ_m(x_i)
         std::vector<double> f_re, f_im;           // [n_rows * dim] the parts of one F
         std::vector<cplx>   out_grad, out_lap;    // [np * dim] one configuration's ∂, ∂²
+        std::vector<double> param;                // [max channel parameters] ∂η/∂p
+        std::vector<double> pderiv_re, pderiv_im; // [n parameters] Re, Im ∂ln D/∂p
         std::size_t generation = 0;  // the sizes it was built for (scratch_generation_)
     };
+
+    // ∂/∂p of one configuration's Scratch quantities (same layouts as the
+    // fields they differentiate), for the curvature term.
+    struct Tangent {
+        std::vector<cplx>   third;     // [n_rows * maxN * dim³] ∂_α∂_γ∂_δ φ_m(x_i)
+        std::vector<double> x_dot;     // [n_rows * dim]
+        BackflowTransformation::Tables tables;  // Ḃ, ṡ
+        std::vector<double> eta;       // [3 * max channel parameters] ∂η, ∂η', ∂η''
+        std::vector<cplx>   m_dot;     // [n_rows * maxN]          Ṁ_im
+        std::vector<cplx>   g_dot;     // [n_rows * maxN * dim]    (∂_αφ_m)˙ at x_i
+        std::vector<cplx>   h_dot;     // [n_rows * maxN * dim²]   (∂_α∂_γφ_m)˙ at x_i
+        std::vector<cplx>   a_dot;     // [inv_size]  Ȧ, layout of an inverse
+        std::vector<cplx>   prod;      // [maxN * maxN] A Ṁ of one block
+        std::vector<cplx>   f_dot;     // [n_rows * dim]
+        std::vector<double> f_dot_re, f_dot_im;  // [n_rows * dim] its parts
+        std::vector<cplx>   t_dot;     // [n_rows * dim²]
+        std::vector<cplx>   gmat_dot;  // [dim * inv_size] Ġ^α
+        std::vector<double> v_dot, v_tmp;  // [n_rows * dim] v̇, and a discarded copy of v
+        std::vector<cplx>   u, u_dot;  // [maxN * maxN] U and U̇ of one block
+        std::vector<cplx>   out_grad, out_lap;  // [np * dim] the result
+    };
+    void size_tangent(Tangent& t) const;
+    // Ȧ, Ḟ, Ṫ, Ġ from t.m_dot/g_dot/h_dot, then ∂_p of every particle's
+    // gradient and Laplacian into t.out_grad/out_lap; t.tables holds Ḃ, ṡ.
+    // s holds T, G (gradient_matrices) and the split committed F.
+    void tangent_derivatives(Scratch& s, Tangent& t, const cplx* inv) const;
 
     [[nodiscard]] bool affects(std::size_t p) const noexcept { return transform_.affects(p); }
     [[nodiscard]] Scratch& scratch() const;

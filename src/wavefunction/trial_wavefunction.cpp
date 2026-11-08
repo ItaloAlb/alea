@@ -5,6 +5,7 @@
 #include "wavefunction/trial_wavefunction.h"
 
 #include <algorithm>
+#include <initializer_list>
 
 #include "population/walker_set.h"
 
@@ -177,6 +178,41 @@ bool TrialWavefunction::compute_parameter_gradient_derivatives(
             dlap.subspan(offset * block, n * block));
         for (std::size_t k = 0; k < n; ++k)
             supported[offset + k] = ok ? 1 : 0;
+        any = any || ok;
+        offset += n;
+    }
+    return any;
+}
+
+void TrialWavefunction::compute_complex_parameter_derivatives(
+    const WalkerSet& batch, std::span<double> derivs, std::span<double> phase_derivs) const {
+    const std::size_t nw = batch.num_walkers();
+    std::size_t offset = 0;
+    for (const auto& c : components_) {
+        const std::size_t n = c->num_optimizable_params();
+        if (n == 0) continue;
+        c->compute_complex_parameter_derivatives(batch, derivs.subspan(offset, n * nw),
+                                                 phase_derivs.subspan(offset, n * nw));
+        offset += n * nw;
+    }
+}
+
+bool TrialWavefunction::compute_complex_parameter_gradient_derivatives(
+    const WalkerSet& batch, std::span<double> dgrad, std::span<double> dlap,
+    std::span<double> dpgrad, std::span<double> dplap, std::span<char> supported) const {
+    const std::size_t block = batch.n_particles() * batch.dim() * batch.num_walkers();
+    for (std::span<double> s : {dgrad, dlap, dpgrad, dplap}) std::fill(s.begin(), s.end(), 0.0);
+    std::fill(supported.begin(), supported.end(), 0);
+
+    std::size_t offset = 0;
+    bool any = false;
+    for (const auto& c : components_) {
+        const std::size_t n = c->num_optimizable_params();
+        if (n == 0) continue;
+        const auto part = [&](std::span<double> s) { return s.subspan(offset * block, n * block); };
+        const bool ok = c->compute_complex_parameter_gradient_derivatives(
+            batch, part(dgrad), part(dlap), part(dpgrad), part(dplap));
+        for (std::size_t k = 0; k < n; ++k) supported[offset + k] = ok ? 1 : 0;
         any = any || ok;
         offset += n;
     }

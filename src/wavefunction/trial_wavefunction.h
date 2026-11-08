@@ -118,6 +118,21 @@ public:
                                                 std::span<double> dlap,
                                                 std::span<char> supported) const;
 
+    // Complex trial: both parts of O_k = ∂ ln Ψ/∂p_k (real part into derivs,
+    // ∂ arg Ψ/∂p_k into phase_derivs, each [n_opt * nw]) and of its gradient
+    // and Laplacian derivatives (modulus parts into dgrad/dlap, phase parts
+    // into dpgrad/dplap, each [n_opt * np * dim * nw]); see
+    // WavefunctionComponent::compute_complex_parameter_derivatives.
+    void compute_complex_parameter_derivatives(const WalkerSet& batch,
+                                               std::span<double> derivs,
+                                               std::span<double> phase_derivs) const;
+    bool compute_complex_parameter_gradient_derivatives(const WalkerSet& batch,
+                                                        std::span<double> dgrad,
+                                                        std::span<double> dlap,
+                                                        std::span<double> dpgrad,
+                                                        std::span<double> dplap,
+                                                        std::span<char> supported) const;
+
 private:
     std::vector<std::unique_ptr<WavefunctionComponent>> components_;
 };

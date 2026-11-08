@@ -22,11 +22,16 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <omp.h>
+
 #include <algorithm>
 #include <cmath>
 #include <memory>
+#include <span>
 #include <string>
 #include <tuple>
+#include <utility>
+#include <variant>
 #include <vector>
 
 #include "hamiltonian/coulomb.h"
@@ -40,6 +45,8 @@
 #include "qmc/app.h"
 #include "qmc/run_result.h"
 #include "qmc/vmc.h"
+#include "population/simulation_cell.h"
+#include "wavefunction/complex_orbital_set.h"
 #include "wavefunction/pade_jastrow.h"
 #include "wavefunction/trial_wavefunction.h"
 #include "wavefunction/wavefunction_component.h"
@@ -1114,6 +1121,192 @@ TEST_CASE("Fixed-phase DMC with backflow is invariant under twist -> -twist",
     INFO("E(+θ) = " << ea << " +/- " << sa << "   E(−θ) = " << eb << " +/- " << sb);
     REQUIRE(std::isfinite(ea));
     CHECK(std::abs(ea - eb) < 4.0 * std::hypot(sa, sb) + 1e-12);
+}
+
+// Optimizing backflow at a twist.  At a twist that only shifts the Γ closed
+// shell, ψ_θ = e^{iθ·Σr} ψ_Γ exactly (heg2d_backflow_opt_shifted_shell.yaml),
+// so the complex optimizer (complex O, E_L, ∂E_L, the real parts of complex
+// matrices) must retrace the real Γ optimizer: same Metropolis decisions, the
+// same steps, every energy shifted by Nθ²/2.  An independent end-to-end check
+// of the complex path against the real one, with real code on the other side.
+namespace {
+struct OptimizerRun {
+    std::vector<double> params, energies;
+    double final_energy = 0.0;
+    int iterations = 0;
+};
+OptimizerRun run_shifted_shell_optimizer(std::vector<double> twist) {
+    const std::string path =
+        std::string(ALEA_CONFIG_DIR) + "/heg2d_backflow_opt_shifted_shell.yaml";
+    alea::io::Config cfg = alea::io::parse_config_file(path);
+    cfg.lattice.twist = std::move(twist);
+    alea::App app(cfg);
+    auto pack = app.build_drivers();
+    REQUIRE(pack.drivers.size() == 1);
+    pack.drivers[0]->run();
+    const alea::RunResult r = pack.drivers[0]->run_result();
+    OptimizerRun out;
+    for (const auto& [name, values] : r.series) {
+        if (name == "final_params") out.params = values;
+        if (name == "energy_history") out.energies = values;
+    }
+    out.final_energy = scalar_of(r, "final_energy");
+    out.iterations = static_cast<int>(scalar_of(r, "iterations"));
+    return out;
+}
+}  // namespace
+
+TEST_CASE("Optimizing backflow at a twist that shifts a closed shell retraces the Gamma "
+          "optimization",
+          "[optimize][physics][twist][backflow]") {
+    const std::vector<double> twist = {0.05, 0.03};
+    const OptimizerRun gamma = run_shifted_shell_optimizer({0.0, 0.0});
+    const OptimizerRun twisted = run_shifted_shell_optimizer(twist);
+
+    // N θ²/2 = Σ|k+θ|²/2 − Σ|k|²/2 over a closed shell (Σk = 0).
+    const std::string path =
+        std::string(ALEA_CONFIG_DIR) + "/heg2d_backflow_opt_shifted_shell.yaml";
+    const alea::SimulationCell cell = alea::build_cell(alea::io::parse_config_file(path), 7);
+    const double shift = alea::make_twisted_plane_wave_orbitals(cell, 7, twist)->kinetic_energy_sum() -
+                         alea::make_twisted_plane_wave_orbitals(cell, 7, {0.0, 0.0})->kinetic_energy_sum();
+    REQUIRE(shift > 0.0);
+
+    REQUIRE(gamma.params.size() == 3);   // bf0_c0, bf0_c2, the Jastrow α0
+    REQUIRE(twisted.params.size() == gamma.params.size());
+    REQUIRE(gamma.iterations > 0);
+    CHECK(twisted.iterations == gamma.iterations);
+    // The optimizer moved the parameters (from 0.1, 0.0, 0.5) ...
+    CHECK(std::abs(gamma.params[0] - 0.1) + std::abs(gamma.params[1]) > 1e-3);
+    // ... and the twisted run moved them identically.
+    for (std::size_t k = 0; k < gamma.params.size(); ++k) {
+        INFO("parameter " << k << ": Gamma " << gamma.params[k] << ", twist " << twisted.params[k]);
+        CHECK(twisted.params[k] == Catch::Approx(gamma.params[k]).epsilon(1e-7).margin(1e-9));
+    }
+    REQUIRE(twisted.energies.size() == gamma.energies.size());
+    for (std::size_t k = 0; k < gamma.energies.size(); ++k) {
+        INFO("iteration " << k);
+        CHECK(twisted.energies[k] - gamma.energies[k] == Catch::Approx(shift).margin(1e-8));
+    }
+    CHECK(twisted.final_energy - gamma.final_energy == Catch::Approx(shift).margin(1e-8));
+}
+
+// At a generic twist Im O and Im E_L do not vanish, and they are tied by the
+// hermiticity of H: under |ψ|², for any parameter p,
+//   <∂_p E_L> = <E_L* O_p> − <E_L O_p> = −2i <Im E_L · O_p>,
+// that is <Re ∂_p E_L> = 2 <Im E_L · Im O_p> and <Im ∂_p E_L> = −2 <Im E_L · Re O_p>.
+// The two sides come from different code (the kinetic derivative of the
+// backflow curvature term against the phase planes and Im O), on walkers left
+// by VMC moves (deferred commits, wraps, refreshes).  The optimizer's energy
+// gradient rests on exactly this.  Checked within 4 standard errors of the
+// (thread, block) means, which carry the serial correlation.  The backflow is
+// strong (c0 = 0.6, c2 = −0.1) so that 2<Im E_L Im O_p> stands 6σ above the
+// residual's error for every parameter: the check fails if that term is
+// dropped (it does not at the config's own c0 = 0.15, where it is 0.5σ).
+TEST_CASE("At a twist, the backflow parameters obey <dE_L/dp> = -2i <Im E_L O_p>",
+          "[vmc][physics][twist][backflow][optimize]") {
+    const std::string path = std::string(ALEA_CONFIG_DIR) + "/heg2d_twisted_backflow.yaml";
+    alea::io::Config cfg = alea::io::parse_config_file(path);
+    bool overridden = false;
+    for (alea::io::WavefunctionItem& item : cfg.wavefunction)
+        if (auto* slater = std::get_if<alea::io::SlaterSpec>(&item)) {
+            REQUIRE(slater->backflow.size() == 1);
+            slater->backflow[0].params = {0.6, -0.1};
+            overridden = true;
+        }
+    REQUIRE(overridden);
+    alea::App app(cfg);
+    auto pack = app.build_drivers();
+    REQUIRE(pack.psi->is_complex());
+    auto* vmc = dynamic_cast<alea::VMC*>(pack.drivers[0].get());
+    REQUIRE(vmc != nullptr);
+    const std::size_t n_opt = pack.psi->total_optimizable_params();
+    REQUIRE(n_opt == 3);   // bf0_c0, bf0_c2, bf0_L (the Jastrow is fixed)
+
+    // Per (thread, block): Σ of the residuals r1 = Re ∂E_L − 2 Im E_L Im O and
+    // r2 = Im ∂E_L + 2 Im E_L Re O, and of 2 Im E_L Im O alone (the size of
+    // what the identity balances), per parameter.
+    constexpr int kThreads = 2, kSteps = 10;
+    struct Acc {
+        std::vector<std::vector<double>> r1, r2, scale;   // [block][parameter]
+        std::vector<std::size_t> count;
+    };
+    std::vector<Acc> acc(kThreads);
+    std::vector<std::size_t> calls(kThreads, 0);
+    // Catch2 assertions are not thread-safe: the hook only records failures.
+    std::vector<char> unsupported(kThreads, 0);
+    bool thread_out_of_range = false;
+    const alea::Hamiltonian& ham = *pack.hamiltonian;
+    vmc->set_measure_hook([&](const alea::WalkerSet& ws, const alea::TrialWavefunction& psi) {
+        const int tid = omp_get_thread_num();
+        if (tid >= kThreads) {
+#pragma omp atomic write
+            thread_out_of_range = true;
+            return;
+        }
+        Acc& a = acc[static_cast<std::size_t>(tid)];
+        const std::size_t block = calls[static_cast<std::size_t>(tid)]++ / kSteps;
+        if (a.r1.size() <= block) {
+            a.r1.resize(block + 1, std::vector<double>(n_opt, 0.0));
+            a.r2.resize(block + 1, std::vector<double>(n_opt, 0.0));
+            a.scale.resize(block + 1, std::vector<double>(n_opt, 0.0));
+            a.count.resize(block + 1, 0);
+        }
+        const std::size_t nw = ws.num_walkers(), field = ws.n_particles() * ws.dim() * nw;
+        std::vector<double> o_re(n_opt * nw), o_im(n_opt * nw);
+        std::vector<double> dg(n_opt * field), dl(n_opt * field), dpg(n_opt * field),
+            dpl(n_opt * field), de_re(n_opt * nw), de_im(n_opt * nw);
+        std::vector<char> supported(n_opt);
+        psi.compute_complex_parameter_derivatives(ws, o_re, o_im);
+        if (!psi.compute_complex_parameter_gradient_derivatives(ws, dg, dl, dpg, dpl, supported))
+            unsupported[static_cast<std::size_t>(tid)] = 1;
+        ham.complex_local_energy_parameter_derivatives(ws, dg, dl, dpg, dpl, n_opt, de_re, de_im);
+        const std::span<const double> f = ws.local_energies_imag();
+        for (std::size_t k = 0; k < n_opt; ++k)
+            for (std::size_t w = 0; w < nw; ++w) {
+                const std::size_t j = k * nw + w;
+                a.r1[block][k] += de_re[j] - 2.0 * f[w] * o_im[j];
+                a.r2[block][k] += de_im[j] + 2.0 * f[w] * o_re[j];
+                a.scale[block][k] += 2.0 * f[w] * o_im[j];
+            }
+        a.count[block] += nw;
+    });
+    vmc->run();
+    REQUIRE_FALSE(thread_out_of_range);
+    for (char u : unsupported) REQUIRE(u == 0);
+
+    for (std::size_t k = 0; k < n_opt; ++k) {
+        double m1 = 0.0, q1 = 0.0, m2 = 0.0, q2 = 0.0, ms = 0.0, qs = 0.0;
+        std::size_t groups = 0;
+        for (const Acc& a : acc)
+            for (std::size_t b = 0; b < a.count.size(); ++b) {
+                if (a.count[b] == 0) continue;
+                const double n = static_cast<double>(a.count[b]);
+                const double g1 = a.r1[b][k] / n, g2 = a.r2[b][k] / n, gs = a.scale[b][k] / n;
+                m1 += g1;
+                q1 += g1 * g1;
+                m2 += g2;
+                q2 += g2 * g2;
+                ms += gs;
+                qs += gs * gs;
+                ++groups;
+            }
+        REQUIRE(groups > 10);
+        const double ng = static_cast<double>(groups);
+        const auto mean_err = [ng](double m, double q) {
+            const double mean = m / ng;
+            return std::pair{mean, std::sqrt(std::max(q / ng - mean * mean, 0.0) / (ng - 1.0))};
+        };
+        const auto [r1, e1] = mean_err(m1, q1);
+        const auto [r2, e2] = mean_err(m2, q2);
+        const auto [s, es] = mean_err(ms, qs);
+        INFO("parameter " << k << ": <Re dE_L> - 2<ImE ImO> = " << r1 << " +/- " << e1
+                          << ",  <Im dE_L> + 2<ImE ReO> = " << r2 << " +/- " << e2
+                          << ",  2<ImE ImO> = " << s << " +/- " << es);
+        CHECK(std::abs(r1) < 4.0 * e1);
+        CHECK(std::abs(r2) < 4.0 * e2);
+        // The Im O · Im E_L term carries weight: without it r1 would sit 4σ out.
+        CHECK(std::abs(s) > 4.0 * (e1 + es));
+    }
 }
 
 // ── Magnetic field (fixed phase with a vector potential) ────────────────────

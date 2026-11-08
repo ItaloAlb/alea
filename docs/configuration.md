@@ -214,12 +214,11 @@ move rebuilds and inverts the determinants, $O(N^3)$ per move instead of the
 $O(N^2)$ rank-one update. PIMC refuses backflow nodes.
 
 Away from Γ the plane-wave determinant is complex, and its backflow moves the
-phase as well as the nodes (DMC runs fixed-phase). Its parameters cannot be
-optimized there: their log-derivatives are complex, and the optimizer refuses
-any stage that would move them. They have the same names and order as at Γ, so
-the workflow is to optimize the backflow (and the Jastrow) at the Γ twist, then
-run every twist with those values (the Γ run's config snapshot holds them), with
-no optimizer stage or one with `parameters: jastrow`.
+phase as well as the nodes (DMC runs fixed-phase). Its parameters are optimized
+there like any other, with complex log-derivatives (see `method: optimizer`).
+They have the same names and order as at Γ, so the values of a Γ optimization
+(the Γ run's config snapshot holds them) can also be reused at every twist,
+with no optimizer stage or one with `parameters: jastrow`.
 
 The linear optimizer
 gets the curvature term of $\bar H$ ($\partial E_L/\partial p$) for the backflow
@@ -461,11 +460,13 @@ do not establish equilibrium: compare this series across discards and starts.
 ### `method: optimizer`
 
 The linear method (Toulouse & Umrigar 2007) with QMCPACK-style adaptive shifts.
-Only parameters with `is_fixed: false` move. The method works with real
-log-derivatives $\partial \ln\psi/\partial p$, so a stage that would move a
-parameter of a complex factor (the backflow of a twisted determinant) is
-refused; a real factor of a complex trial, such as the Jastrow at a twist, is
-optimized normally. A stage that ends on an accepted
+Only parameters with `is_fixed: false` move. With a complex trial (a twist) the
+log-derivatives $\partial \ln\psi/\partial p$ and the local energy are complex;
+the parameters stay real, and the method uses the real parts of the complex
+overlap and Hamiltonian matrices, which keeps the coupling of
+$\mathrm{Im}\,\partial_p\ln\psi$ to $\mathrm{Im}\,E_L$ in the energy gradient.
+This covers the backflow of a twisted determinant and the Jastrow of a twisted
+run alike. A stage that ends on an accepted
 step measures that step on one more VMC sample and undoes it when the energy
 rose by more than two combined standard errors (the log warns; the results
 record `last_step_checked`, `last_step_undone` and `check_energy`).
