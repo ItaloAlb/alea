@@ -1051,8 +1051,9 @@ double scalar_of(const alea::RunResult& r, const std::string& name) {
     return 0.0;
 }
 
-alea::RunResult run_twisted(std::size_t driver, std::vector<double> twist) {
-    const std::string path = std::string(ALEA_CONFIG_DIR) + "/heg2d_twisted.yaml";
+alea::RunResult run_twisted(std::size_t driver, std::vector<double> twist,
+                            const std::string& config = "heg2d_twisted.yaml") {
+    const std::string path = std::string(ALEA_CONFIG_DIR) + "/" + config;
     alea::io::Config cfg = alea::io::parse_config_file(path);
     cfg.lattice.twist = std::move(twist);
     alea::App app(cfg);
@@ -1083,6 +1084,31 @@ TEST_CASE("Fixed-phase DMC is invariant under twist -> -twist (time reversal)",
     for (const auto& [k, v] : a.metadata)
         if (k == "node_constraint") fixed_phase = (v == "fixed_phase");
     CHECK(fixed_phase);
+    const double ea = scalar_of(a, "energy"), eb = scalar_of(b, "energy");
+    const double sa = scalar_of(a, "energy_error"), sb = scalar_of(b, "energy_error");
+    INFO("E(+θ) = " << ea << " +/- " << sa << "   E(−θ) = " << eb << " +/- " << sb);
+    REQUIRE(std::isfinite(ea));
+    CHECK(std::abs(ea - eb) < 4.0 * std::hypot(sa, sb) + 1e-12);
+}
+
+// The same two checks with a like-spin backflow channel: the complex backflow
+// determinant's phase planes reach Im E_L, and its moves, refreshes and
+// branching run under fixed-phase DMC.
+TEST_CASE("VMC with backflow at a twist reports <Im E_L> consistent with zero",
+          "[vmc][physics][twist][backflow]") {
+    const alea::RunResult r = run_twisted(0, {0.2, 0.1}, "heg2d_twisted_backflow.yaml");
+    const double im = scalar_of(r, "energy_imag");
+    const double im_err = scalar_of(r, "energy_imag_error");
+    INFO("Im E_L = " << im << " +/- " << im_err
+                     << "   E = " << scalar_of(r, "energy"));
+    REQUIRE(im_err > 0.0);
+    CHECK(std::abs(im) < 4.0 * im_err);
+}
+
+TEST_CASE("Fixed-phase DMC with backflow is invariant under twist -> -twist",
+          "[dmc][physics][twist][backflow]") {
+    const alea::RunResult a = run_twisted(1, {0.2, 0.1}, "heg2d_twisted_backflow.yaml");
+    const alea::RunResult b = run_twisted(1, {-0.2, -0.1}, "heg2d_twisted_backflow.yaml");
     const double ea = scalar_of(a, "energy"), eb = scalar_of(b, "energy");
     const double sa = scalar_of(a, "energy_error"), sb = scalar_of(b, "energy_error");
     INFO("E(+θ) = " << ea << " +/- " << sa << "   E(−θ) = " << eb << " +/- " << sb);

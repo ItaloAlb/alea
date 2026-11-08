@@ -2434,16 +2434,50 @@ TEST_CASE("backflow is refused where it cannot be represented", "[app][backflow]
         return build_wavefunction(cfg, build_groups(cfg), nullptr, cell);
     };
     using Catch::Matchers::ContainsSubstring;
-    // Twisted plane waves are complex.
-    CHECK_THROWS_WITH(build(backflow_gas_yaml(", twist: [0.2, 0.1]",
-                                              "[{ from: holes, params: [0.1, 0.0] }]", 4, 0)),
-                      ContainsSubstring("backflow") && ContainsSubstring("twisted"));
-    // A same-group channel on a group with both spins.
-    CHECK_THROWS_WITH(build(backflow_gas_yaml("", "[{ from: electrons, params: [0.1] }]", 5, 1)),
-                      ContainsSubstring("one spin"));
-    // A cutoff beyond the inradius.
-    CHECK_THROWS_WITH(build(backflow_gas_yaml("", "[{ from: holes, cutoff: 2.5, params: [0.1, 0.0] }]")),
-                      ContainsSubstring("inradius"));
+    // The same rules at Γ (real determinant) and at a twist (complex one).
+    for (const std::string twist : {"", ", twist: [0.2, 0.13]"}) {
+        INFO("lattice extra '" << twist << "'");
+        // A same-group channel on a group with both spins.
+        CHECK_THROWS_WITH(build(backflow_gas_yaml(twist, "[{ from: electrons, params: [0.1] }]", 5, 1)),
+                          ContainsSubstring("one spin"));
+        // A cutoff beyond the inradius.
+        CHECK_THROWS_WITH(
+            build(backflow_gas_yaml(twist, "[{ from: holes, cutoff: 2.5, params: [0.1, 0.0] }]")),
+            ContainsSubstring("inradius"));
+    }
+}
+
+TEST_CASE("a slater item with backflow at a twist builds a complex backflow determinant "
+          "with the parameters of the Gamma one", "[app][backflow][twist]") {
+    const std::string channels =
+        "[{ from: electrons, params: [0.1, 0.02] }, "
+        "{ from: holes, cutoff: 1.5, cutoff_fixed: true, params: [-0.1, 0.05], "
+        "is_fixed: [false, true] }]";
+    const std::vector<double> cellv = {4.0, 0.0, 0.0, 4.0};
+    const alea::SimulationCell cell(2, std::span<const double>(cellv));
+    auto build = [&](const std::string& twist) {
+        const auto cfg = alea::io::parse_config(backflow_gas_yaml(twist, channels));
+        return build_wavefunction(cfg, build_groups(cfg), nullptr, cell);
+    };
+    auto gamma = build("");
+    auto twisted = build(", twist: [0.2, 0.13]");
+    REQUIRE(twisted.components().size() == 1);
+    const auto& det = *twisted.components()[0];
+    CHECK(det.name() == "complex_backflow_slater_determinant");
+    CHECK(det.is_complex());
+    CHECK(det.is_nodal());
+    // A Γ-point optimization's values carry over: same names, order and flags.
+    const auto a = gamma.components()[0]->parameters();
+    const auto b = det.parameters();
+    REQUIRE(a.size() == b.size());
+    for (std::size_t k = 0; k < a.size(); ++k) {
+        INFO(a[k].name);
+        CHECK(b[k].name == a[k].name);
+        CHECK(b[k].value == a[k].value);
+        CHECK(b[k].is_fixed == a[k].is_fixed);
+        CHECK(b[k].sign_locked == a[k].sign_locked);
+        CHECK(b[k].upper_bound == a[k].upper_bound);
+    }
 }
 
 TEST_CASE("an open-cell backflow channel needs a cutoff", "[app][backflow]") {

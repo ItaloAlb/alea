@@ -208,11 +208,20 @@ $\eta(r) = (1 - r/L)^C\,\Theta(L - r)\sum_k c_k r^k$:
       - { from: electrons, params: [0.0, 0.0, 0.0] }   # c0, c2, c3; L = inradius
 ```
 
-Backflow is available for real determinants (`gaussian`, and `plane_wave` at
-the Γ twist, and the `pairing` determinant); `fock_darwin` and twisted plane
-waves refuse it. Every move
-rebuilds and inverts the determinants, $O(N^3)$ per move instead of the
-$O(N^2)$ rank-one update. PIMC refuses backflow nodes. The linear optimizer
+Backflow is available for `gaussian` and `plane_wave` orbitals, at Γ and at
+any twist, and for the `pairing` determinant; `fock_darwin` refuses it. Every
+move rebuilds and inverts the determinants, $O(N^3)$ per move instead of the
+$O(N^2)$ rank-one update. PIMC refuses backflow nodes.
+
+Away from Γ the plane-wave determinant is complex, and its backflow moves the
+phase as well as the nodes (DMC runs fixed-phase). Its parameters cannot be
+optimized there: their log-derivatives are complex, and the optimizer refuses
+any stage that would move them. They have the same names and order as at Γ, so
+the workflow is to optimize the backflow (and the Jastrow) at the Γ twist, then
+run every twist with those values (the Γ run's config snapshot holds them), with
+no optimizer stage or one with `parameters: jastrow`.
+
+The linear optimizer
 gets the curvature term of $\bar H$ ($\partial E_L/\partial p$) for the backflow
 and orbital parameters, at about one determinant refresh per parameter at each
 measurement. The quasi-coordinates move with $p$, so the orbitals need third
@@ -452,7 +461,11 @@ do not establish equilibrium: compare this series across discards and starts.
 ### `method: optimizer`
 
 The linear method (Toulouse & Umrigar 2007) with QMCPACK-style adaptive shifts.
-Only parameters with `is_fixed: false` move. A stage that ends on an accepted
+Only parameters with `is_fixed: false` move. The method works with real
+log-derivatives $\partial \ln\psi/\partial p$, so a stage that would move a
+parameter of a complex factor (the backflow of a twisted determinant) is
+refused; a real factor of a complex trial, such as the Jastrow at a twist, is
+optimized normally. A stage that ends on an accepted
 step measures that step on one more VMC sample and undoes it when the energy
 rose by more than two combined standard errors (the log warns; the results
 record `last_step_checked`, `last_step_undone` and `check_energy`).

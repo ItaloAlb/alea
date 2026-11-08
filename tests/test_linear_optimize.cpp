@@ -4,12 +4,14 @@
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <memory>
 #include <span>
+#include <string>
 #include <vector>
 
 #include "hamiltonian/coulomb.h"
@@ -967,4 +969,75 @@ TEST_CASE("LinearOptimize samples with Langevin moves when use_drift is set",
     CHECK(std::isfinite(metropolis));
     CHECK(std::isfinite(langevin));
     CHECK(metropolis != langevin);
+}
+
+// A complex factor's log-derivatives are complex, and the linear method takes
+// real ones: a stage that would move such a parameter is refused, and one that
+// leaves it fixed (the Jastrow of a twisted run) runs.
+namespace {
+class FreeComplexFactor final : public alea::WavefunctionComponent {
+public:
+    std::string name() const override { return "free_complex_factor"; }
+    [[nodiscard]] bool is_complex() const override { return true; }
+    [[nodiscard]] bool is_nodal() const override { return true; }
+    void evaluate_batch(alea::WalkerSet& batch) override {
+        resize_caches(batch.num_walkers(), batch.n_particles(), batch.dim());
+    }
+    void ratio_batch(alea::WalkerSet&, std::size_t, std::size_t, std::size_t) override {}
+    void apply_move_batch(alea::WalkerSet&, std::size_t, std::span<const bool>, std::size_t,
+                          std::size_t) override {}
+    [[nodiscard]] std::unique_ptr<alea::WavefunctionComponent> clone() const override {
+        return std::make_unique<FreeComplexFactor>(*this);
+    }
+    std::span<Parameter> parameters() override { return params_; }
+    std::span<const Parameter> parameters() const override { return params_; }
+    void rebuild() override {}
+    void compute_parameter_derivatives(const alea::WalkerSet&, std::span<double>) const override {}
+
+private:
+    std::vector<Parameter> params_{{"bf0_c0", 0.1, false}};
+};
+}  // namespace
+
+TEST_CASE("LinearOptimize refuses to move a complex factor's parameters",
+          "[linear_optimize][optimize][twist]") {
+    const std::size_t nw = 32, dim = 2;
+    const ParticleGroup electron = make_group("e", -1.0, 1.0, 0, 1);
+    const ParticleGroup hole     = make_group("h", +1.0, 1.0, 1, 2);
+    const std::vector<ParticleGroup> groups = {electron, hole};
+    auto run_scope = [&](const std::string& scope) {
+        alea::TrialWavefunction psi;
+        psi.add_component(std::make_unique<FreeComplexFactor>());
+        psi.add_component(std::make_unique<alea::PadeJastrow>(
+            1, 0, electron, hole, std::vector<Parameter>{{"c", -0.5, false}}));
+        alea::Hamiltonian ham;
+        ham.add_component(std::make_unique<alea::Kinetic>(groups));
+        ham.add_component(std::make_unique<HarmonicTrap>(1.0, 2));
+        alea::WalkerEnsemble ensemble(nw, groups, dim);
+        alea::numerics::Random rng(7);
+        for (auto& w : ensemble.walkers())
+            w.set_positions(std::vector<double>{0.8 * rng.gaussian(), 0.8 * rng.gaussian(),
+                                                0.8 * rng.gaussian(), 0.8 * rng.gaussian()});
+        alea::OptimizeConfig cfg;
+        cfg.n_walkers              = static_cast<int>(nw);
+        cfg.n_equilibration_blocks = 2;
+        cfg.n_accumulation_blocks  = 2;
+        cfg.n_steps                = 5;
+        cfg.tau                    = 0.5;
+        cfg.max_iterations         = 1;
+        cfg.n_threads              = 1;
+        cfg.parameters             = scope;
+        alea::LinearOptimize opt(cfg, ensemble, psi, ham);
+        if (scope == "jastrow") {
+            CHECK_NOTHROW(opt.run());
+        } else {
+            CHECK_THROWS_WITH(opt.run(), Catch::Matchers::ContainsSubstring("free_complex_factor") &&
+                                             Catch::Matchers::ContainsSubstring("Gamma"));
+        }
+        // The stage's scope is undone either way.
+        CHECK_FALSE(psi.components()[0]->parameters()[0].is_fixed);
+    };
+    run_scope("all");
+    run_scope("nodal");
+    run_scope("jastrow");
 }

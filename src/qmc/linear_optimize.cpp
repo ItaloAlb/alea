@@ -653,6 +653,20 @@ void LinearOptimize::run() {
             "` (expected all, nodal or jastrow)");
     const ScopeGuard scope(psi_, cfg_.parameters);
 
+    // A complex factor's O = ∂ln ψ/∂p is complex, and the energy gradient
+    // ∂E/∂p = 2⟨Re[O*(E_L − E)]⟩ = 2⟨Re O (Re E_L − E) + Im O Im E_L⟩ couples
+    // Im O to Im E_L; the cost function here accumulates real O and Re E_L.
+    // (A real factor of a complex trial, a Jastrow, has Im O = 0 and is fine.)
+    for (const auto& comp : psi_.components())
+        if (comp->is_complex() && comp->num_optimizable_params() > 0)
+            throw std::runtime_error(
+                "optimizer: " + comp->name() + " is complex and this stage would move " +
+                std::to_string(comp->num_optimizable_params()) +
+                " of its parameters, whose log-derivatives are complex; the linear method "
+                "takes real ones.  Optimize them at the Gamma twist (a real determinant "
+                "with the same parameters) and keep them out of this stage "
+                "(`parameters: jastrow`, or fix them)");
+
     const std::size_t n_opt = psi_.total_optimizable_params();
     result_.final_params = current_params();
 
