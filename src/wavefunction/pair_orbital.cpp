@@ -128,6 +128,22 @@ void PairOrbital::radial(double r, double& g, double& dg, double& d2g) const noe
     d2g = f2 * P + 2.0 * f1 * P1 + f * P2;
 }
 
+double PairOrbital::radial_third(double r) const noexcept {
+    if (!has_polynomial() || r >= L_) return 0.0;
+    const double t = 1.0 - r / L_;
+    const double f = t * t * t, f1 = -3.0 * t * t / L_, f2 = 6.0 * t / (L_ * L_),
+                 f3 = -6.0 / (L_ * L_ * L_);
+    // P and its first three derivatives (Horner).
+    double P = c_.back(), P1 = 0.0, P2 = 0.0, P3 = 0.0;
+    for (std::size_t m = c_.size() - 1; m-- > 0;) {
+        P3 = P3 * r + 3.0 * P2;
+        P2 = P2 * r + 2.0 * P1;
+        P1 = P1 * r + P;
+        P = P * r + c_[m];
+    }
+    return f3 * P + 3.0 * f2 * P1 + 3.0 * f1 * P2 + f * P3;
+}
+
 void PairOrbital::radial_param(std::size_t j, double r, double& h, double& dh,
                                double& d2h) const noexcept {
     const std::size_t M = static_cast<std::size_t>(poly_order_);

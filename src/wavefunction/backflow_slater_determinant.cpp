@@ -398,9 +398,8 @@ void BackflowSlaterDeterminant::particle_laplacian(Scratch& s, const double* inv
     }
 }
 
-void BackflowSlaterDeterminant::all_derivatives(Scratch& s, const double* inv, const double* f,
-                                                double* grad, double* lap) const {
-    const std::size_t dim = dim_, dd = dim * dim, n_max = max_block_;
+void BackflowSlaterDeterminant::gradient_matrices(Scratch& s, const double* inv) const {
+    const std::size_t dim = dim_, n_max = max_block_;
     hessian_traces(s, inv);
     // G^α[j][r] = Σ_m A_mj ∂_α φ_m(x_r) of every block, at gmat[α*inv_size + off + j*n + r].
     for (std::size_t b = 0; b < blocks_.size(); ++b) {
@@ -426,6 +425,12 @@ void BackflowSlaterDeterminant::all_derivatives(Scratch& s, const double* inv, c
             }
         }
     }
+}
+
+void BackflowSlaterDeterminant::all_derivatives(Scratch& s, const double* inv, const double* f,
+                                                double* grad, double* lap) const {
+    const std::size_t dim = dim_, dd = dim * dim;
+    gradient_matrices(s, inv);
     std::fill(grad, grad + np_ * dim, 0.0);
     std::fill(lap, lap + np_ * dim, 0.0);
     for (std::size_t k = 0; k < np_; ++k) {
@@ -729,6 +734,273 @@ void BackflowSlaterDeterminant::compute_parameter_derivatives(const WalkerSet& b
             derivs[column[q] * nw + w] = acc;
         }
     }
+}
+
+// ── Parameter derivatives of the gradient and Laplacian ─────────────────────
+
+// With C = 2, η'' jumps at L, so E_L steps where a pair crosses r = L and the
+// step moves with L: ∂⟨E_L⟩/∂L then has a surface term that no pointwise
+// ∂E_L/∂L carries.  Such a channel reports no curvature term rather than a
+// wrong one (C ≥ 3, the default, is continuous).
+bool BackflowSlaterDeterminant::supports_parameter_gradient_derivatives() const {
+    for (const Block& b : blocks_)
+        if (!b.orbitals->supports_third_derivatives() || !b.orbitals->supports_parameter_hessian())
+            return false;
+    for (std::size_t c = 0; c < transform_.n_channels(); ++c)
+        if (transform_.eta(c).truncation() < 3) return false;
+    return true;
+}
+
+void BackflowSlaterDeterminant::size_tangent(Tangent& t) const {
+    const std::size_t dim = dim_, dd = dim * dim, n = max_block_, rows = n_rows_;
+    std::size_t max_orbital_params = 1;
+    for (const Block& b : blocks_)
+        max_orbital_params = std::max(max_orbital_params, b.orbitals->n_parameters());
+    t.third.assign(rows * n * dd * dim, 0.0);
+    t.x_dot.assign(rows * dim, 0.0);
+    transform_.size_tables(t.tables);
+    t.eta.assign(3 * transform_.max_channel_parameters(), 0.0);
+    t.m_dot.assign(rows * n, 0.0);
+    t.g_dot.assign(rows * n * dim, 0.0);
+    t.h_dot.assign(rows * n * dd, 0.0);
+    t.a_dot.assign(inv_size_, 0.0);
+    t.prod.assign(n * n, 0.0);
+    t.f_dot.assign(rows * dim, 0.0);
+    t.t_dot.assign(rows * dd, 0.0);
+    t.gmat_dot.assign(dim * inv_size_, 0.0);
+    t.v_dot.assign(rows * dim, 0.0);
+    t.v_tmp.assign(rows * dim, 0.0);
+    t.u.assign(n * n, 0.0);
+    t.u_dot.assign(n * n, 0.0);
+    t.o_val.assign(max_orbital_params * n, 0.0);
+    t.o_grad.assign(max_orbital_params * n * dim, 0.0);
+    t.o_hess.assign(max_orbital_params * n * dd, 0.0);
+    t.out_grad.assign(np_ * dim, 0.0);
+    t.out_lap.assign(np_ * dim, 0.0);
+}
+
+void BackflowSlaterDeterminant::tangent_derivatives(Scratch& s, Tangent& t, const double* inv,
+                                                    const double* f, bool moves_x) const {
+    const std::size_t dim = dim_, dd = dim * dim, n_max = max_block_;
+    // Ȧ = −A Ṁ A per block (∂A = −A ∂M A for A = M⁻¹), with Ṁ[r][m] = m_dot.
+    for (std::size_t b = 0; b < blocks_.size(); ++b) {
+        const std::size_t n = blocks_[b].last - blocks_[b].first;
+        const std::size_t row0 = blocks_[b].first - first_row_;
+        const double* A = inv + inv_offset_[b];
+        double* Ad = t.a_dot.data() + inv_offset_[b];
+        for (std::size_t m = 0; m < n; ++m)
+            for (std::size_t mp = 0; mp < n; ++mp) {
+                double acc = 0.0;
+                for (std::size_t r = 0; r < n; ++r)
+                    acc += A[m * n + r] * t.m_dot[(row0 + r) * n_max + mp];
+                t.prod[m * n + mp] = acc;
+            }
+        for (std::size_t m = 0; m < n; ++m)
+            for (std::size_t r = 0; r < n; ++r) {
+                double acc = 0.0;
+                for (std::size_t mp = 0; mp < n; ++mp) acc += t.prod[m * n + mp] * A[mp * n + r];
+                Ad[m * n + r] = -acc;
+            }
+    }
+    // Ḟ_iα = Σ_m [Ȧ_mi ∂_αφ_m + A_mi (∂_αφ_m)˙], Ṫ_i likewise with the Hessian.
+    for (std::size_t i = 0; i < n_rows_; ++i) {
+        const std::size_t b = block_of_row_[i];
+        const std::size_t n = blocks_[b].last - blocks_[b].first;
+        const std::size_t r = first_row_ + i - blocks_[b].first;
+        const double* A = inv + inv_offset_[b];
+        const double* Ad = t.a_dot.data() + inv_offset_[b];
+        for (std::size_t a = 0; a < dim; ++a) {
+            double acc = 0.0;
+            for (std::size_t m = 0; m < n; ++m) {
+                const std::size_t e = (i * n_max + m) * dim + a;
+                acc += Ad[m * n + r] * s.grad[e] + A[m * n + r] * t.g_dot[e];
+            }
+            t.f_dot[i * dim + a] = acc;
+        }
+        for (std::size_t ag = 0; ag < dd; ++ag) {
+            double acc = 0.0;
+            for (std::size_t m = 0; m < n; ++m) {
+                const std::size_t e = (i * n_max + m) * dd + ag;
+                acc += Ad[m * n + r] * s.hess[e] + A[m * n + r] * t.h_dot[e];
+            }
+            t.t_dot[i * dd + ag] = acc;
+        }
+    }
+    // Ġ^α[j][r] = Σ_m [Ȧ_mj ∂_αφ_m(x_r) + A_mj (∂_αφ_m)˙(x_r)].
+    for (std::size_t b = 0; b < blocks_.size(); ++b) {
+        const std::size_t n = blocks_[b].last - blocks_[b].first;
+        const std::size_t row0 = blocks_[b].first - first_row_;
+        const double* A = inv + inv_offset_[b];
+        const double* Ad = t.a_dot.data() + inv_offset_[b];
+        for (std::size_t a = 0; a < dim; ++a) {
+            double* Gd = t.gmat_dot.data() + a * inv_size_ + inv_offset_[b];
+            for (std::size_t j = 0; j < n; ++j)
+                for (std::size_t r = 0; r < n; ++r) {
+                    double acc = 0.0;
+                    for (std::size_t m = 0; m < n; ++m) {
+                        const std::size_t e = ((row0 + r) * n_max + m) * dim + a;
+                        acc += Ad[m * n + j] * s.grad[e] + A[m * n + j] * t.g_dot[e];
+                    }
+                    Gd[j * n + r] = acc;
+                }
+        }
+    }
+
+    std::fill(t.out_grad.begin(), t.out_grad.end(), 0.0);
+    std::fill(t.out_lap.begin(), t.out_lap.end(), 0.0);
+    for (std::size_t k = 0; k < np_; ++k) {
+        if (!affects(k)) continue;
+        // ∂_p(∂_k ln|D|) = Σ_t (Ḟ_t·J_tk + F_t·J̇_tk); J̇ has no identity part.
+        double g1[SimulationCell::kMaxDim] = {}, g2[SimulationCell::kMaxDim] = {};
+        transform_.gradient(s.tables, t.f_dot.data(), k, g1);
+        if (moves_x) transform_.gradient(t.tables, f, k, g2, /*with_identity=*/false);
+        for (std::size_t beta = 0; beta < dim; ++beta) t.out_grad[k * dim + beta] = g1[beta] + g2[beta];
+
+        for (std::size_t beta = 0; beta < dim; ++beta) {
+            transform_.jacobian_column(s.tables, f, k, beta, s.v.data());   // v
+            double l = transform_.jacobian_column(s.tables, t.f_dot.data(), k, beta,
+                                                  t.v_tmp.data());             // Σ Ḟ·S
+            if (moves_x)
+                l += transform_.jacobian_column(t.tables, f, k, beta, t.v_dot.data(),
+                                                /*with_identity=*/false);      // Σ F·Ṡ, v̇
+            else
+                std::fill(t.v_dot.begin(), t.v_dot.end(), 0.0);
+            // ∂(vᵀ T v) = 2 v̇ᵀ T v + vᵀ Ṫ v (T symmetric).
+            for (std::size_t i = 0; i < n_rows_; ++i) {
+                const double* v = s.v.data() + i * dim;
+                const double* vd = t.v_dot.data() + i * dim;
+                const double* T = s.t.data() + i * dd;
+                const double* Td = t.t_dot.data() + i * dd;
+                for (std::size_t a = 0; a < dim; ++a)
+                    for (std::size_t g = 0; g < dim; ++g)
+                        l += 2.0 * vd[a] * T[a * dim + g] * v[g] + v[a] * Td[a * dim + g] * v[g];
+            }
+            // ∂(−Σ U_ji U_ij) = −2 Σ U̇_ji U_ij, U_ji = Σ_α v_iα G^α_ji.
+            for (std::size_t b = 0; b < blocks_.size(); ++b) {
+                const std::size_t n = blocks_[b].last - blocks_[b].first;
+                const std::size_t row0 = blocks_[b].first - first_row_;
+                for (std::size_t j = 0; j < n; ++j)
+                    for (std::size_t r = 0; r < n; ++r) {
+                        double acc = 0.0, acc_dot = 0.0;
+                        for (std::size_t a = 0; a < dim; ++a) {
+                            const std::size_t gi = a * inv_size_ + inv_offset_[b] + j * n + r;
+                            const double v = s.v[(row0 + r) * dim + a];
+                            const double vd = t.v_dot[(row0 + r) * dim + a];
+                            acc += v * s.gmat[gi];
+                            acc_dot += vd * s.gmat[gi] + v * t.gmat_dot[gi];
+                        }
+                        t.u[j * n + r] = acc;
+                        t.u_dot[j * n + r] = acc_dot;
+                    }
+                double uu = 0.0;
+                for (std::size_t j = 0; j < n; ++j)
+                    for (std::size_t r = 0; r < n; ++r) uu += t.u_dot[j * n + r] * t.u[r * n + j];
+                l -= 2.0 * uu;
+            }
+            t.out_lap[k * dim + beta] = l;
+        }
+    }
+}
+
+bool BackflowSlaterDeterminant::compute_parameter_gradient_derivatives(
+    const WalkerSet& batch, std::span<double> dgrad, std::span<double> dlap) const {
+    if (!supports_parameter_gradient_derivatives()) return false;
+    const std::size_t nw = batch.num_walkers(), dim = dim_, dd = dim * dim, n_max = max_block_;
+    const std::size_t field = np_ * dim * nw;
+    std::fill(dgrad.begin(), dgrad.end(), 0.0);
+    std::fill(dlap.begin(), dlap.end(), 0.0);
+    std::vector<std::size_t> column(params_.size(), npos);
+    std::size_t n_opt = 0;
+    for (std::size_t q = 0; q < params_.size(); ++q)
+        if (!params_[q].is_fixed) column[q] = n_opt++;
+    if (n_opt == 0) return true;
+
+    Tangent t;   // measurement frequency: sized once per call
+    size_tangent(t);
+    Scratch& s = scratch();
+    for (std::size_t w = 0; w < nw; ++w) {
+        // The committed inverse and F at the rebuilt x (as refresh_walker reads them).
+        load_positions(batch, w, s);
+        transform_.full(s.pos.data(), s.x.data(), s.tables);
+        evaluate_rows(s);
+        for (std::size_t i = 0; i < n_rows_; ++i) {
+            const OrbitalSet& orb = *blocks_[block_of_row_[i]].orbitals;
+            orb.evaluate_third_derivatives(
+                std::span<const double>(s.x.data() + i * dim, dim), dim,
+                std::span<double>(t.third.data() + i * n_max * dd * dim, orb.size() * dd * dim),
+                0, 1);
+        }
+        const double* inv = inv_.data() + w * inv_size_;
+        const double* f = f_.data() + w * n_rows_ * dim;
+        gradient_matrices(s, inv);
+
+        for (std::size_t q = 0; q < params_.size(); ++q) {
+            if (column[q] == npos) continue;
+            const bool moves_x = q >= n_orbital_params_;
+            std::fill(t.m_dot.begin(), t.m_dot.end(), 0.0);
+            std::fill(t.g_dot.begin(), t.g_dot.end(), 0.0);
+            std::fill(t.h_dot.begin(), t.h_dot.end(), 0.0);
+            if (moves_x) {
+                // The orbitals ride along x: ∂_p(∂^n φ(x_i)) = ∇(∂^n φ)·ẋ_i.
+                transform_.parameter_tangent(s.pos.data(), q - n_orbital_params_,
+                                             t.x_dot.data(), t.tables, t.eta);
+                for (std::size_t i = 0; i < n_rows_; ++i) {
+                    const std::size_t n = blocks_[block_of_row_[i]].orbitals->size();
+                    const double* xd = t.x_dot.data() + i * dim;
+                    for (std::size_t m = 0; m < n; ++m) {
+                        const std::size_t e = i * n_max + m;
+                        double mv = 0.0;
+                        for (std::size_t c = 0; c < dim; ++c) mv += s.grad[e * dim + c] * xd[c];
+                        t.m_dot[e] = mv;
+                        for (std::size_t a = 0; a < dim; ++a) {
+                            double gv = 0.0;
+                            for (std::size_t c = 0; c < dim; ++c)
+                                gv += s.hess[(e * dim + a) * dim + c] * xd[c];
+                            t.g_dot[e * dim + a] = gv;
+                            for (std::size_t g = 0; g < dim; ++g) {
+                                double hv = 0.0;
+                                for (std::size_t c = 0; c < dim; ++c)
+                                    hv += t.third[((e * dim + a) * dim + g) * dim + c] * xd[c];
+                                t.h_dot[(e * dim + a) * dim + g] = hv;
+                            }
+                        }
+                    }
+                }
+            } else {
+                // An orbital parameter of block b: x does not move.
+                const auto [b, k] = orbital_owner_[q];
+                const OrbitalSet& orb = *blocks_[b].orbitals;
+                const std::size_t n = orb.size(), n_par = orb.n_parameters();
+                for (std::size_t r = 0; r < n; ++r) {
+                    const std::size_t i = blocks_[b].first - first_row_ + r;
+                    orb.evaluate_parameter_hessian(
+                        std::span<const double>(s.x.data() + i * dim, dim), dim,
+                        std::span<double>(t.o_val.data(), n_par * n),
+                        std::span<double>(t.o_grad.data(), n_par * n * dim),
+                        std::span<double>(t.o_hess.data(), n_par * n * dd), 0, 1);
+                    for (std::size_t m = 0; m < n; ++m) {
+                        const std::size_t e = i * n_max + m;
+                        t.m_dot[e] = t.o_val[k * n + m];
+                        for (std::size_t a = 0; a < dim; ++a) {
+                            t.g_dot[e * dim + a] = t.o_grad[(k * n + m) * dim + a];
+                            for (std::size_t g = 0; g < dim; ++g)
+                                t.h_dot[(e * dim + a) * dim + g] =
+                                    t.o_hess[((k * n + m) * dim + a) * dim + g];
+                        }
+                    }
+                }
+            }
+            tangent_derivatives(s, t, inv, f, moves_x);
+            double* og = dgrad.data() + column[q] * field;
+            double* ol = dlap.data() + column[q] * field;
+            for (std::size_t k = 0; k < np_; ++k)
+                for (std::size_t d = 0; d < dim; ++d) {
+                    og[(k * dim + d) * nw + w] = t.out_grad[k * dim + d];
+                    ol[(k * dim + d) * nw + w] = t.out_lap[k * dim + d];
+                }
+        }
+    }
+    return true;
 }
 
 }  // namespace alea

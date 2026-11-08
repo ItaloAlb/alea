@@ -11,6 +11,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <memory>
@@ -537,4 +538,219 @@ TEST_CASE("backflow pairing refuses channels it cannot represent", "[backflow][p
     outside.channels[0].target_last = 7;    // beyond every block
     outside.np = 7;
     CHECK_THROWS(make_component(outside));
+}
+
+// ── Curvature term: parameter derivatives of the gradient and Laplacian ──────
+
+namespace {
+
+// Open 3-D cell, one unbalanced block: three electrons [0,3) in rows, two
+// holes [3,5) in columns and one unpaired plane wave (explicit k); polynomial
+// pair orbital; e←e (like-spin), e←h and h←e channels.
+System open3d_system() {
+    System s;
+    s.dim = 3;
+    s.np = 5;
+    s.cell = SimulationCell(3);
+    s.blocks.push_back({group("e", 0, 3), group("h", 3, 5),
+                        std::make_shared<PlaneWaveOrbitalSet>(3, std::vector<double>{0.7, -0.3, 0.5},
+                                                              std::vector<char>{1})});
+    s.poly = 2;
+    s.c = {0.9, -0.06};
+    s.L = 3.0;
+    const double c0 = 0.18, L = 2.4;
+    s.channels.push_back({0, 3, 0, 3, 3, L, {c0, 3.0 * c0 / L, -0.03}, {c0, -0.03, L}});
+    s.channels.push_back({0, 3, 3, 5, 3, 2.6, {-0.12, 0.08, 0.02}, {-0.12, 0.08, 0.02, 2.6}});
+    s.channels.push_back({3, 5, 0, 3, 3, 2.2, {0.1, -0.1}, {0.1, -0.1, 2.2}});
+    return s;
+}
+
+std::vector<std::vector<double>> open3d_configs() {
+    return {{-0.6, 0.2, 0.1, 0.8, -0.2, -0.3, 0.1, -0.7, 0.6, 0.3, 0.4, -0.2, -0.4, -0.3, 0.5},
+            {-0.3, -0.4, 0.5, 0.6, 0.5, -0.1, 0.1, -0.9, 0.2, -0.7, 0.5, 0.3, 0.6, 0.2, -0.4}};
+}
+
+void unfix_all(BackflowPairingDeterminant& det) {
+    for (Parameter& p : det.parameters()) p.is_fixed = false;
+}
+
+std::pair<std::vector<double>, std::vector<double>> shifted_derivatives(
+    const System& sys, const std::vector<std::vector<double>>& configs, std::size_t q,
+    double shift) {
+    auto det = make_component(sys);
+    unfix_all(*det);
+    det->parameters()[q].value += shift;
+    det->rebuild();
+    Batch b(sys, configs);
+    det->evaluate_batch(b.ws);
+    return {std::vector<double>(det->grad_c().begin(), det->grad_c().end()),
+            std::vector<double>(det->lap_c().begin(), det->lap_c().end())};
+}
+
+void curvature_of(const System& sys, const std::vector<std::vector<double>>& configs,
+                  std::vector<double>& dg, std::vector<double>& dl) {
+    auto det = make_component(sys);
+    unfix_all(*det);
+    REQUIRE(det->supports_parameter_gradient_derivatives());
+    Batch b(sys, configs);
+    det->evaluate_batch(b.ws);
+    const std::size_t field = sys.np * sys.dim * configs.size();
+    dg.assign(det->parameters().size() * field, 0.0);
+    dl.assign(det->parameters().size() * field, 0.0);
+    REQUIRE(det->compute_parameter_gradient_derivatives(b.ws, dg, dl));
+}
+
+// Against Richardson-extrapolated central differences in every parameter
+// (|D(h) − D(h/2)| joins the margin), as in the backflow Slater test.
+void check_curvature(const System& sys, const std::vector<std::vector<double>>& configs) {
+    std::vector<double> dg, dl;
+    curvature_of(sys, configs, dg, dl);
+    auto det = make_component(sys);
+    const std::size_t field = sys.np * sys.dim * configs.size();
+    for (std::size_t q = 0; q < det->parameters().size(); ++q) {
+        const Parameter p = det->parameters()[q];
+        INFO("parameter " << q << " " << p.name);
+        const double h = 1e-4 * std::max(1.0, std::abs(p.value));
+        std::vector<double> g[2], l[2];
+        for (int level = 0; level < 2; ++level) {
+            const double hl = level == 0 ? h : 0.5 * h;
+            const auto [gp, lp] = shifted_derivatives(sys, configs, q, hl);
+            const auto [gm, lm] = shifted_derivatives(sys, configs, q, -hl);
+            g[level].resize(field);
+            l[level].resize(field);
+            for (std::size_t e = 0; e < field; ++e) {
+                g[level][e] = (gp[e] - gm[e]) / (2.0 * hl);
+                l[level][e] = (lp[e] - lm[e]) / (2.0 * hl);
+            }
+        }
+        for (std::size_t e = 0; e < field; ++e) {
+            const double gf = (4.0 * g[1][e] - g[0][e]) / 3.0;
+            const double lf = (4.0 * l[1][e] - l[0][e]) / 3.0;
+            INFO("entry " << e << "  fd error estimate " << std::abs(l[0][e] - l[1][e]));
+            CHECK(dg[q * field + e] == Catch::Approx(gf).margin(1e-7 + std::abs(g[0][e] - g[1][e])));
+            CHECK(dl[q * field + e] == Catch::Approx(lf).margin(1e-6 + std::abs(l[0][e] - l[1][e])));
+        }
+    }
+}
+
+}  // namespace
+
+TEST_CASE("pair orbital radial third derivative matches finite differences",
+          "[backflow][pairing][optimize]") {
+    for (const System& sys : {periodic_system(), open_system(), open3d_system()}) {
+        const PairOrbital orb = orbital_of(sys);
+        const double h = 1e-5;
+        for (double r : {0.05, 0.6, 1.4, 0.98 * sys.L}) {
+            INFO("r " << r);
+            double g = 0.0, dg = 0.0, d2p = 0.0, d2m = 0.0;
+            orb.radial(r + h, g, dg, d2p);
+            orb.radial(r - h, g, dg, d2m);
+            CHECK(orb.radial_third(r) == Catch::Approx((d2p - d2m) / (2 * h)).margin(1e-7));
+        }
+        CHECK(orb.radial_third(sys.L) == 0.0);
+    }
+}
+
+TEST_CASE("backflow pairing curvature: parameter derivatives of the gradient and Laplacian "
+          "match finite differences",
+          "[backflow][pairing][optimize]") {
+    // Stars, polynomial and cutoff of the pair orbital, every channel kind,
+    // an unpaired plane wave, two blocks, and 3-D.
+    SECTION("periodic unbalanced block") { check_curvature(periodic_system(), periodic_configs()); }
+    SECTION("open two blocks") { check_curvature(open_system(), open_configs()); }
+    SECTION("3-D") { check_curvature(open3d_system(), open3d_configs()); }
+}
+
+TEST_CASE("backflow pairing curvature over random configurations", "[backflow][pairing][optimize]") {
+    std::mt19937_64 rng(20261108);
+    std::uniform_real_distribution<double> unit(0.0, 1.0);
+    const System sys = periodic_system();
+    std::vector<std::vector<double>> configs;
+    for (int k = 0; k < 10; ++k) {
+        std::vector<double> pos;
+        for (std::size_t p = 0; p < sys.np * sys.dim; ++p) pos.push_back(6.0 * unit(rng));
+        configs.push_back(pos);
+    }
+    check_curvature(sys, configs);
+}
+
+TEST_CASE("backflow pairing curvature with eta = 0 matches the plain pairing determinant",
+          "[backflow][pairing][optimize]") {
+    // PairingDeterminant computes the orbital parameters' derivatives its own
+    // way; with eta = 0 the quasi-coordinates are the positions.
+    for (std::size_t c = 0; c < 2; ++c) {
+        INFO("system " << c);
+        auto [sys, configs] = cases()[c];
+        for (OracleChannel& ch : sys.channels)
+            for (std::size_t k = 0; k + 1 < ch.free.size(); ++k) ch.free[k] = 0.0;
+        std::vector<double> dg, dl;
+        curvature_of(sys, configs, dg, dl);
+
+        std::vector<PairingDeterminant::Block> blocks;
+        for (const OracleBlock& blk : sys.blocks)
+            blocks.push_back({blk.rows, blk.columns, blk.unpaired ? blk.unpaired->clone() : nullptr});
+        PairingDeterminant plain(orbital_of(sys), std::move(blocks), orbital_params(sys));
+        for (Parameter& p : plain.parameters()) p.is_fixed = false;
+        REQUIRE(plain.supports_parameter_gradient_derivatives());
+        Batch b(sys, configs);
+        plain.evaluate_batch(b.ws);
+        const std::size_t n_orb = plain.parameters().size();
+        const std::size_t field = sys.np * sys.dim * configs.size();
+        std::vector<double> pg(n_orb * field), pl(n_orb * field);
+        REQUIRE(plain.compute_parameter_gradient_derivatives(b.ws, pg, pl));
+        for (std::size_t e = 0; e < n_orb * field; ++e) {
+            CHECK(dg[e] == Catch::Approx(pg[e]).margin(1e-10));
+            CHECK(dl[e] == Catch::Approx(pl[e]).margin(1e-9));
+        }
+    }
+}
+
+TEST_CASE("backflow pairing curvature after moves equals that of a fresh evaluation",
+          "[backflow][pairing][optimize]") {
+    const System sys = periodic_system();
+    Batch b(sys, periodic_configs());
+    auto det = make_component(sys);
+    unfix_all(*det);
+    TrialWavefunction psi;
+    psi.add_component(std::move(det));
+    psi.set_proposal_laplacian(false);
+    psi.evaluate_batch(b.ws);
+    const std::vector<std::pair<std::size_t, std::vector<double>>> moves = {
+        {0, {0.9, 1.4}}, {4, {4.1, 5.0}}, {2, {2.2, 3.1}}};
+    for (const auto& [p, to] : moves) {
+        psi.refresh_particle_derivatives(b.ws, p);
+        propose(b.ws, p, to);
+        psi.ratio_batch(b.ws, p);
+        std::array<bool, 2> accept = {true, p != 4};
+        psi.apply_move_batch_deferred(b.ws, p, accept);
+        b.ws.apply_move(p, b.ws.new_pos(), b.ws.new_grad(), b.ws.new_lap(), accept);
+    }
+    psi.refresh_derivatives(b.ws);
+    const std::size_t nq = psi.total_optimizable_params();
+    const std::size_t field = sys.np * sys.dim * 2;
+    std::vector<double> dg(nq * field), dl(nq * field);
+    std::vector<char> supported(nq, 0);
+    REQUIRE(psi.compute_parameter_gradient_derivatives(b.ws, dg, dl, supported));
+    for (char s : supported) CHECK(s == 1);
+    std::vector<double> fg, fl;
+    curvature_of(sys, {config_of(b.ws, 0), config_of(b.ws, 1)}, fg, fl);
+    REQUIRE(fg.size() == dg.size());
+    for (std::size_t e = 0; e < dg.size(); ++e) {
+        CHECK(dg[e] == Catch::Approx(fg[e]).margin(1e-10));
+        CHECK(dl[e] == Catch::Approx(fl[e]).margin(1e-9));
+    }
+}
+
+TEST_CASE("backflow pairing reports the curvature term only when it can supply it",
+          "[backflow][pairing][optimize]") {
+    CHECK(make_component(periodic_system())->supports_parameter_gradient_derivatives());
+    System c2 = open_system();
+    c2.channels[0].C = 2;   // eta'' steps at the cutoff, and the step moves with L
+    auto det = make_component(c2);
+    CHECK_FALSE(det->supports_parameter_gradient_derivatives());
+    Batch b(c2, open_configs());
+    det->evaluate_batch(b.ws);
+    const std::size_t field = c2.np * c2.dim * 2;
+    std::vector<double> dg(det->parameters().size() * field), dl(dg.size());
+    CHECK_FALSE(det->compute_parameter_gradient_derivatives(b.ws, dg, dl));
 }

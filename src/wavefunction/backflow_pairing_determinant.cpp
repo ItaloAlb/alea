@@ -11,6 +11,8 @@
 #include <string>
 #include <utility>
 
+#include <Eigen/Dense>
+
 #include "population/walker_set.h"
 
 namespace alea {
@@ -392,8 +394,13 @@ bool BackflowPairingDeterminant::invert_blocks(Scratch& s, double* inv, double* 
 // owner of a paired entry, +g for the owner of an unpaired one.
 void BackflowPairingDeterminant::compute_f(const Scratch& s, const double* inv,
                                            double* f) const {
+    std::fill(f, f + n_t_ * dim_, 0.0);
+    accumulate_f(inv, s.g.data(), f);
+}
+
+void BackflowPairingDeterminant::accumulate_f(const double* inv, const double* g_all,
+                                              double* f) const {
     const std::size_t dim = dim_;
-    std::fill(f, f + n_t_ * dim, 0.0);
     for (std::size_t b = 0; b < blocks_.size(); ++b) {
         const Shape& sh = shape_[b];
         const std::size_t n = sh.n, off = mat_offset_[b];
@@ -401,7 +408,7 @@ void BackflowPairingDeterminant::compute_f(const Scratch& s, const double* inv,
             for (std::size_t c = 0; c < n; ++c) {
                 const std::size_t e = off + a * n + c;
                 const double A = inv[off + c * n + a];
-                const double* g = s.g.data() + e * dim;
+                const double* g = g_all + e * dim;
                 const Kind kind = sh.kind[a * n + c];
                 if (kind != Kind::column)
                     for (std::size_t d = 0; d < dim; ++d) f[sh.row_t[a] * dim + d] += A * g[d];
@@ -413,17 +420,36 @@ void BackflowPairingDeterminant::compute_f(const Scratch& s, const double* inv,
     }
 }
 
-void BackflowPairingDeterminant::direction(const Shape& sh, const Scratch& s, std::size_t a,
+void BackflowPairingDeterminant::accumulate_owner(const double* x_e, double* out) const {
+    const std::size_t dim = dim_;
+    for (std::size_t b = 0; b < blocks_.size(); ++b) {
+        const Shape& sh = shape_[b];
+        const std::size_t n = sh.n, off = mat_offset_[b];
+        for (std::size_t a = 0; a < n; ++a)
+            for (std::size_t c = 0; c < n; ++c) {
+                const double* x = x_e + (off + a * n + c) * dim;
+                const Kind kind = sh.kind[a * n + c];
+                if (kind != Kind::column)
+                    for (std::size_t d = 0; d < dim; ++d) out[sh.row_t[a] * dim + d] += x[d];
+                if (kind == Kind::paired)
+                    for (std::size_t d = 0; d < dim; ++d) out[sh.col_t[c] * dim + d] -= x[d];
+                if (kind == Kind::column)
+                    for (std::size_t d = 0; d < dim; ++d) out[sh.col_t[c] * dim + d] += x[d];
+            }
+    }
+}
+
+void BackflowPairingDeterminant::direction(const Shape& sh, const double* vt, std::size_t a,
                                            std::size_t c, double* u) const noexcept {
     const std::size_t dim = dim_;
     const Kind kind = sh.kind[a * sh.n + c];
     for (std::size_t d = 0; d < dim; ++d) u[d] = 0.0;
     if (kind != Kind::column)
-        for (std::size_t d = 0; d < dim; ++d) u[d] += s.v[sh.row_t[a] * dim + d];
+        for (std::size_t d = 0; d < dim; ++d) u[d] += vt[sh.row_t[a] * dim + d];
     if (kind == Kind::paired)
-        for (std::size_t d = 0; d < dim; ++d) u[d] -= s.v[sh.col_t[c] * dim + d];
+        for (std::size_t d = 0; d < dim; ++d) u[d] -= vt[sh.col_t[c] * dim + d];
     if (kind == Kind::column)
-        for (std::size_t d = 0; d < dim; ++d) u[d] += s.v[sh.col_t[c] * dim + d];
+        for (std::size_t d = 0; d < dim; ++d) u[d] += vt[sh.col_t[c] * dim + d];
 }
 
 // One particle: fs + tr(A d²M) − tr((A dM)²) with A dM formed directly.
@@ -441,7 +467,7 @@ void BackflowPairingDeterminant::particle_laplacian(Scratch& s, const double* in
                 for (std::size_t c = 0; c < n; ++c) {
                     const std::size_t e = off + a * n + c;
                     double u[SimulationCell::kMaxDim];
-                    direction(sh, s, a, c, u);
+                    direction(sh, s.v.data(), a, c, u);
                     double dmv = 0.0, d2 = 0.0;
                     for (std::size_t al = 0; al < dim; ++al) {
                         dmv += s.g[e * dim + al] * u[al];
@@ -540,7 +566,7 @@ void BackflowPairingDeterminant::all_derivatives(Scratch& s, const double* inv,
                     for (std::size_t c = 0; c < n; ++c) {
                         const std::size_t e = off + a * n + c;
                         double u[SimulationCell::kMaxDim];
-                        direction(sh, s, a, c, u);
+                        direction(sh, s.v.data(), a, c, u);
                         double d2 = 0.0;
                         for (std::size_t al = 0; al < dim; ++al)
                             for (std::size_t ga = 0; ga < dim; ++ga)
@@ -835,6 +861,366 @@ void BackflowPairingDeterminant::compute_parameter_derivatives(const WalkerSet& 
         for (std::size_t q = 0; q < n_orbital_params_; ++q)
             if (column[q] != npos) derivs[column[q] * nw + w] = s.param[q];
     }
+}
+
+// ── Parameter derivatives of the gradient and Laplacian ─────────────────────
+
+// Third derivatives at each entry's argument:
+//   cosines Σ_i w_i cos(k_i·Δ):  ∂_α∂_β∂_γ = Σ_i w_i k_α k_β k_γ sin(k_i·Δ);
+//   radial g(r), u = Δ/r:  ∂_α∂_β∂_γ g = g''' u_α u_β u_γ
+//       + ((g'' − g'/r)/r) (δ_αβ u_γ + δ_αγ u_β + δ_βγ u_α − 3 u_α u_β u_γ)
+//   (differentiate H = (g'' − g'/r) u uᵀ + (g'/r) 1, with ∂_γ u_α = (δ_αγ − u_α u_γ)/r);
+//   left at zero at r = 0, a single point where it depends on the direction;
+//   unpaired orbitals: their own third derivatives at the owner.
+void BackflowPairingDeterminant::entry_third(const Scratch& s, std::vector<double>& third,
+                                             std::vector<double>& unpaired_third) const {
+    const std::size_t dim = dim_, d3 = dim * dim * dim, nk = n_k_;
+    std::fill(third.begin(), third.end(), 0.0);
+    for (std::size_t b = 0; b < blocks_.size(); ++b) {
+        const Shape& sh = shape_[b];
+        const std::size_t n = sh.n, off = mat_offset_[b];
+        for (std::size_t a = 0; a < sh.n_rows; ++a)
+            for (std::size_t c = 0; c < sh.n_columns; ++c) {
+                const std::size_t ta = sh.row_t[a], tc = sh.col_t[c];
+                double* T = third.data() + (off + a * n + c) * d3;
+                for (std::size_t i = 0; i < nk; ++i) {
+                    const double ca = s.cx[ta * nk + i], sa = s.sx[ta * nk + i];
+                    const double cc = s.cx[tc * nk + i], sc = s.sx[tc * nk + i];
+                    const double wsk = orbital_.weight(i) * (sa * cc - ca * sc);   // w sin(k·Δ)
+                    const double* kv = orbital_.k(i);
+                    for (std::size_t al = 0; al < dim; ++al)
+                        for (std::size_t be = 0; be < dim; ++be)
+                            for (std::size_t ga = 0; ga < dim; ++ga)
+                                T[(al * dim + be) * dim + ga] += wsk * kv[al] * kv[be] * kv[ga];
+                }
+                if (!orbital_.has_polynomial()) continue;
+                double del[SimulationCell::kMaxDim] = {};
+                for (std::size_t d = 0; d < dim; ++d) del[d] = s.x[ta * dim + d] - s.x[tc * dim + d];
+                cell_.min_image(del);
+                double r2 = 0.0;
+                for (std::size_t d = 0; d < dim; ++d) r2 += del[d] * del[d];
+                const double r = std::sqrt(r2);
+                if (r < 1e-12) continue;
+                double gr = 0.0, dg = 0.0, d2g = 0.0;
+                orbital_.radial(r, gr, dg, d2g);
+                const double g3 = orbital_.radial_third(r);
+                const double q = (d2g - dg / r) / r;
+                double u[SimulationCell::kMaxDim] = {};
+                for (std::size_t d = 0; d < dim; ++d) u[d] = del[d] / r;
+                for (std::size_t al = 0; al < dim; ++al)
+                    for (std::size_t be = 0; be < dim; ++be)
+                        for (std::size_t ga = 0; ga < dim; ++ga) {
+                            const double uuu = u[al] * u[be] * u[ga];
+                            const double sym = (al == be ? u[ga] : 0.0) + (al == ga ? u[be] : 0.0) +
+                                               (be == ga ? u[al] : 0.0);
+                            T[(al * dim + be) * dim + ga] += g3 * uuu + q * (sym - 3.0 * uuu);
+                        }
+            }
+        const Block& blk = blocks_[b];
+        if (!blk.unpaired) continue;
+        const bool extra_columns = sh.n_rows > sh.n_columns;
+        const std::size_t owners = extra_columns ? sh.n_rows : sh.n_columns;
+        const std::size_t base = extra_columns ? sh.n_columns : sh.n_rows;
+        const std::size_t n_unp = blk.unpaired->size();
+        for (std::size_t j = 0; j < owners; ++j) {
+            const std::size_t t = extra_columns ? sh.row_t[j] : sh.col_t[j];
+            blk.unpaired->evaluate_third_derivatives(
+                std::span<const double>(s.x.data() + t * dim, dim), dim,
+                std::span<double>(unpaired_third.data(), n_unp * d3), 0, 1);
+            for (std::size_t o = 0; o < n_unp; ++o) {
+                const std::size_t a = extra_columns ? j : base + o;
+                const std::size_t c = extra_columns ? base + o : j;
+                std::copy_n(unpaired_third.begin() + static_cast<std::ptrdiff_t>(o * d3), d3,
+                            third.begin() + static_cast<std::ptrdiff_t>((off + a * n + c) * d3));
+            }
+        }
+    }
+}
+
+// The orbital polynomial has C = 3 (pair_orbital.h); a backflow channel with
+// C = 2 makes E_L step at its cutoff, a step that moves with L, so it reports
+// no curvature term rather than a pointwise one that misses the surface term
+// (as in the backflow Slater determinant).
+bool BackflowPairingDeterminant::supports_parameter_gradient_derivatives() const {
+    for (const Block& b : blocks_)
+        if (b.unpaired && !b.unpaired->supports_third_derivatives()) return false;
+    for (std::size_t c = 0; c < transform_.n_channels(); ++c)
+        if (transform_.eta(c).truncation() < 3) return false;
+    return true;
+}
+
+bool BackflowPairingDeterminant::compute_parameter_gradient_derivatives(
+    const WalkerSet& batch, std::span<double> dgrad, std::span<double> dlap) const {
+    if (!supports_parameter_gradient_derivatives()) return false;
+    const std::size_t nw = batch.num_walkers(), dim = dim_, dd = dim * dim, d3 = dd * dim;
+    const std::size_t T = n_t_, ms = mat_size_, np = np_, field = np * dim * nw;
+    std::fill(dgrad.begin(), dgrad.end(), 0.0);
+    std::fill(dlap.begin(), dlap.end(), 0.0);
+    std::vector<std::size_t> live;   // params_ index of each optimisable parameter
+    for (std::size_t q = 0; q < params_.size(); ++q)
+        if (!params_[q].is_fixed) live.push_back(q);
+    const std::size_t n_opt = live.size();
+    if (n_opt == 0) return true;
+    const std::size_t S = orbital_.n_stars(), nk = n_k_;
+
+    // Per-parameter tangents of one configuration (layouts of the fields they
+    // differentiate).  Measurement frequency: sized once per call.
+    struct Tangent {
+        bool moves_x = false;
+        std::vector<double> m_dot, g_dot, h_dot, a_dot;   // [ms], [ms dim], [ms dim²], [ms]
+        std::vector<double> f_dot, x_dot;                 // [T dim]
+        BackflowTransformation::Tables tables;            // Ḃ, ṡ (backflow parameters)
+    };
+    std::vector<Tangent> tan(n_opt);
+    for (std::size_t iq = 0; iq < n_opt; ++iq) {
+        Tangent& t = tan[iq];
+        t.moves_x = live[iq] >= n_orbital_params_;
+        t.m_dot.assign(ms, 0.0);
+        t.g_dot.assign(ms * dim, 0.0);
+        t.h_dot.assign(ms * dd, 0.0);
+        t.a_dot.assign(ms, 0.0);
+        t.f_dot.assign(T * dim, 0.0);
+        t.x_dot.assign(T * dim, 0.0);
+        if (t.moves_x) transform_.size_tables(t.tables);
+    }
+    std::vector<double> third(ms * d3), unpaired_third(n_max_ * d3);
+    std::vector<double> eta(3 * transform_.max_channel_parameters());
+    // Every parameter-dependent factor of the per-(k, β) sum, one row per
+    // parameter, entry-indexed (e = off + a n + c):
+    //   Y_q = [Ȧ_ca | Ḣ_e (dim²) | ġ_e (dim) | Ṁ_e],
+    // against the (k, β)-dependent z = [d²M_e | A_ca u_α u_γ | −2 R_ca u_α | 2 (E R)_ca],
+    // so Y z is every parameter's Σ_e [Ȧ d²M + A uᵀḢu − 2 R ġ·u + 2 Ṁ E R] at once.
+    const std::size_t K = ms * (2 + dim + dd);
+    const std::size_t off_h = ms, off_g = ms * (1 + dd), off_m = ms * (1 + dd + dim);
+    Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> Y(n_opt, K);
+    Eigen::VectorXd z(K), yz(n_opt);
+    std::vector<double> u_all(ms * dim), dm(ms), d2m(ms);
+    std::vector<double> e_buf(n_max_ * n_max_), r_buf(n_max_ * n_max_), er_buf(n_max_ * n_max_);
+    std::vector<double> x_e(ms * dim), x_sum(T * dim);
+    bool any_moves_x = false;
+    for (std::size_t q : live) any_moves_x = any_moves_x || q >= n_orbital_params_;
+    std::vector<double> v_tmp(T * dim), v_dot(T * dim);
+    std::vector<double> out_g(n_opt * np * dim), out_l(n_opt * np * dim);
+    using RowMat = Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
+    using ConstMap = Eigen::Map<const RowMat>;
+
+    Scratch& s = scratch();
+    for (std::size_t w = 0; w < nw; ++w) {
+        // The committed inverse and F at the rebuilt x (as refresh_walker reads them).
+        load_positions(batch, w, s);
+        transform_.full(s.pos.data(), s.x.data(), s.tables);
+        evaluate_entries(s);
+        entry_third(s, third, unpaired_third);
+        const double* inv = inv_.data() + w * ms;
+        const double* f = f_.data() + w * T * dim;
+
+        for (std::size_t iq = 0; iq < n_opt; ++iq) {
+            Tangent& t = tan[iq];
+            const std::size_t q = live[iq];
+            std::fill(t.m_dot.begin(), t.m_dot.end(), 0.0);
+            std::fill(t.g_dot.begin(), t.g_dot.end(), 0.0);
+            std::fill(t.h_dot.begin(), t.h_dot.end(), 0.0);
+            if (t.moves_x) {
+                // The arguments move: Δ̇ along ẋ; the entries ride along.
+                transform_.parameter_tangent(s.pos.data(), q - n_orbital_params_, t.x_dot.data(),
+                                             t.tables, eta);
+                for (std::size_t b = 0; b < blocks_.size(); ++b) {
+                    const Shape& sh = shape_[b];
+                    const std::size_t n = sh.n, off = mat_offset_[b];
+                    for (std::size_t a = 0; a < n; ++a)
+                        for (std::size_t c = 0; c < n; ++c) {
+                            const std::size_t e = off + a * n + c;
+                            double darg[SimulationCell::kMaxDim];
+                            direction(sh, t.x_dot.data(), a, c, darg);
+                            double mv = 0.0;
+                            for (std::size_t al = 0; al < dim; ++al) {
+                                mv += s.g[e * dim + al] * darg[al];
+                                double gv = 0.0;
+                                for (std::size_t ga = 0; ga < dim; ++ga) {
+                                    gv += s.hess[e * dd + al * dim + ga] * darg[ga];
+                                    double hv = 0.0;
+                                    for (std::size_t de = 0; de < dim; ++de)
+                                        hv += third[e * d3 + (al * dim + ga) * dim + de] * darg[de];
+                                    t.h_dot[e * dd + al * dim + ga] = hv;
+                                }
+                                t.g_dot[e * dim + al] = gv;
+                            }
+                            t.m_dot[e] = mv;
+                        }
+                }
+            } else {
+                // An orbital parameter: the paired entries change at fixed Δ.
+                for (std::size_t b = 0; b < blocks_.size(); ++b) {
+                    const Shape& sh = shape_[b];
+                    const std::size_t n = sh.n, off = mat_offset_[b];
+                    for (std::size_t a = 0; a < sh.n_rows; ++a)
+                        for (std::size_t c = 0; c < sh.n_columns; ++c) {
+                            const std::size_t e = off + a * n + c;
+                            const std::size_t ta = sh.row_t[a], tc = sh.col_t[c];
+                            double* gd = t.g_dot.data() + e * dim;
+                            double* hd = t.h_dot.data() + e * dd;
+                            if (q < S) {
+                                // ∂φ/∂p_s = Σ_{i ∈ s} mult_i cos(k_i·Δ).
+                                for (std::size_t i = 0; i < nk; ++i) {
+                                    if (orbital_.star(i) != q) continue;
+                                    const double m = orbital_.multiplicity(i);
+                                    const double ca = s.cx[ta * nk + i], sa = s.sx[ta * nk + i];
+                                    const double cc = s.cx[tc * nk + i], sc = s.sx[tc * nk + i];
+                                    const double ck = ca * cc + sa * sc, sk = sa * cc - ca * sc;
+                                    const double* kv = orbital_.k(i);
+                                    t.m_dot[e] += m * ck;
+                                    for (std::size_t al = 0; al < dim; ++al) {
+                                        gd[al] -= m * kv[al] * sk;
+                                        for (std::size_t ga = 0; ga < dim; ++ga)
+                                            hd[al * dim + ga] -= m * kv[al] * kv[ga] * ck;
+                                    }
+                                }
+                                continue;
+                            }
+                            // Polynomial parameter j: ∂g/∂θ_j as a radial function.
+                            double del[SimulationCell::kMaxDim] = {};
+                            for (std::size_t d = 0; d < dim; ++d)
+                                del[d] = s.x[ta * dim + d] - s.x[tc * dim + d];
+                            cell_.min_image(del);
+                            double r2 = 0.0;
+                            for (std::size_t d = 0; d < dim; ++d) r2 += del[d] * del[d];
+                            const double r = std::sqrt(r2);
+                            double h = 0.0, dh = 0.0, d2h = 0.0;
+                            orbital_.radial_param(q - S, r, h, dh, d2h);
+                            t.m_dot[e] = h;
+                            if (r < 1e-12) {
+                                for (std::size_t d = 0; d < dim; ++d) hd[d * dim + d] = d2h;
+                            } else {
+                                for (std::size_t al = 0; al < dim; ++al) {
+                                    const double ua = del[al] / r;
+                                    gd[al] = dh * ua;
+                                    for (std::size_t ga = 0; ga < dim; ++ga) {
+                                        const double ug = del[ga] / r;
+                                        hd[al * dim + ga] = d2h * ua * ug +
+                                                            dh / r * ((al == ga ? 1.0 : 0.0) - ua * ug);
+                                    }
+                                }
+                            }
+                        }
+                }
+            }
+            // Ȧ = −A Ṁ A per block: A (c, a) = inv[off + c n + a], Ṁ (a, c) entry-indexed.
+            for (std::size_t b = 0; b < blocks_.size(); ++b) {
+                const auto n = static_cast<Eigen::Index>(shape_[b].n);
+                const std::size_t off = mat_offset_[b];
+                const ConstMap A(inv + off, n, n), Md(t.m_dot.data() + off, n, n);
+                Eigen::Map<RowMat>(t.a_dot.data() + off, n, n).noalias() = -(A * Md) * A;
+            }
+            // Ḟ = Σ (Ȧ g + A ġ) per owner.
+            std::fill(t.f_dot.begin(), t.f_dot.end(), 0.0);
+            accumulate_f(t.a_dot.data(), s.g.data(), t.f_dot.data());
+            accumulate_f(inv, t.g_dot.data(), t.f_dot.data());
+            // Row iq of Y (Ȧ transposed to the entry index).
+            double* y = Y.row(static_cast<Eigen::Index>(iq)).data();
+            for (std::size_t b = 0; b < blocks_.size(); ++b) {
+                const std::size_t n = shape_[b].n, off = mat_offset_[b];
+                for (std::size_t a = 0; a < n; ++a)
+                    for (std::size_t c = 0; c < n; ++c) y[off + a * n + c] = t.a_dot[off + c * n + a];
+            }
+            std::copy(t.h_dot.begin(), t.h_dot.end(), y + off_h);
+            std::copy(t.g_dot.begin(), t.g_dot.end(), y + off_g);
+            std::copy(t.m_dot.begin(), t.m_dot.end(), y + off_m);
+        }
+
+        std::fill(out_g.begin(), out_g.end(), 0.0);
+        std::fill(out_l.begin(), out_l.end(), 0.0);
+        for (std::size_t k = 0; k < np; ++k) {
+            if (!transform_.affects(k)) continue;
+            for (std::size_t iq = 0; iq < n_opt; ++iq) {
+                const Tangent& t = tan[iq];
+                double g1[SimulationCell::kMaxDim] = {}, g2[SimulationCell::kMaxDim] = {};
+                transform_.gradient(s.tables, t.f_dot.data(), k, g1);
+                if (t.moves_x) transform_.gradient(t.tables, f, k, g2, /*with_identity=*/false);
+                for (std::size_t be = 0; be < dim; ++be)
+                    out_g[(iq * np + k) * dim + be] = g1[be] + g2[be];
+            }
+            for (std::size_t beta = 0; beta < dim; ++beta) {
+                // Parameter-independent: u, dM, d²M; E = A dM, R = E A and E R; then z
+                // and x_e = 2 A_ca H_e u_e − 2 R_ca g_e, the factor that multiplies u̇_e
+                // in ∂_p(A_ca d²M) − 2 R_ca ∂_p dM.
+                transform_.jacobian_column(s.tables, f, k, beta, s.v.data());
+                for (std::size_t b = 0; b < blocks_.size(); ++b) {
+                    const Shape& sh = shape_[b];
+                    const std::size_t n = sh.n, off = mat_offset_[b];
+                    for (std::size_t a = 0; a < n; ++a)
+                        for (std::size_t c = 0; c < n; ++c) {
+                            const std::size_t e = off + a * n + c;
+                            double* u = u_all.data() + e * dim;
+                            direction(sh, s.v.data(), a, c, u);
+                            double dmv = 0.0, d2 = 0.0;
+                            for (std::size_t al = 0; al < dim; ++al) {
+                                dmv += s.g[e * dim + al] * u[al];
+                                for (std::size_t ga = 0; ga < dim; ++ga)
+                                    d2 += u[al] * s.hess[e * dd + al * dim + ga] * u[ga];
+                            }
+                            dm[e] = dmv;
+                            d2m[e] = d2;
+                        }
+                    const auto ni = static_cast<Eigen::Index>(n);
+                    const ConstMap A(inv + off, ni, ni), dM(dm.data() + off, ni, ni);
+                    Eigen::Map<RowMat> E(e_buf.data(), ni, ni), R(r_buf.data(), ni, ni),
+                        ER(er_buf.data(), ni, ni);
+                    E.noalias() = A * dM;
+                    R.noalias() = E * A;
+                    ER.noalias() = E * R;
+                    for (std::size_t a = 0; a < n; ++a)
+                        for (std::size_t c = 0; c < n; ++c) {
+                            const std::size_t e = off + a * n + c;
+                            const auto ci = static_cast<Eigen::Index>(c), ai = static_cast<Eigen::Index>(a);
+                            const double Aca = inv[off + c * n + a], Rca = R(ci, ai);
+                            const double* u = u_all.data() + e * dim;
+                            const double* H = s.hess.data() + e * dd;
+                            z[static_cast<Eigen::Index>(e)] = d2m[e];
+                            for (std::size_t al = 0; al < dim; ++al) {
+                                double Hu = 0.0;
+                                for (std::size_t ga = 0; ga < dim; ++ga) {
+                                    z[static_cast<Eigen::Index>(off_h + e * dd + al * dim + ga)] =
+                                        Aca * u[al] * u[ga];
+                                    Hu += H[al * dim + ga] * u[ga];
+                                }
+                                z[static_cast<Eigen::Index>(off_g + e * dim + al)] = -2.0 * Rca * u[al];
+                                x_e[e * dim + al] = 2.0 * Aca * Hu - 2.0 * Rca * s.g[e * dim + al];
+                            }
+                            z[static_cast<Eigen::Index>(off_m + e)] = 2.0 * ER(ci, ai);
+                        }
+                }
+                // Every parameter's Σ_e [Ȧ d²M + A uᵀḢu − 2 R ġ·u + 2 Ṁ E R] at once.
+                yz.noalias() = Y * z;
+                // Σ_e u̇_e·x_e = Σ_t v̇_t · (x_e summed over t's entries with the owner's sign).
+                if (any_moves_x) {
+                    std::fill(x_sum.begin(), x_sum.end(), 0.0);
+                    accumulate_owner(x_e.data(), x_sum.data());
+                }
+                for (std::size_t iq = 0; iq < n_opt; ++iq) {
+                    const Tangent& t = tan[iq];
+                    double l = yz[static_cast<Eigen::Index>(iq)] +
+                               transform_.jacobian_column(s.tables, t.f_dot.data(), k, beta,
+                                                          v_tmp.data());              // Σ Ḟ·S
+                    if (t.moves_x) {
+                        l += transform_.jacobian_column(t.tables, f, k, beta, v_dot.data(),
+                                                        /*with_identity=*/false);     // Σ F·Ṡ, v̇
+                        for (std::size_t q = 0; q < T * dim; ++q) l += v_dot[q] * x_sum[q];
+                    }
+                    out_l[(iq * np + k) * dim + beta] = l;
+                }
+            }
+        }
+        for (std::size_t iq = 0; iq < n_opt; ++iq) {
+            double* og = dgrad.data() + iq * field;
+            double* ol = dlap.data() + iq * field;
+            for (std::size_t k = 0; k < np; ++k)
+                for (std::size_t d = 0; d < dim; ++d) {
+                    og[(k * dim + d) * nw + w] = out_g[(iq * np + k) * dim + d];
+                    ol[(k * dim + d) * nw + w] = out_l[(iq * np + k) * dim + d];
+                }
+        }
+    }
+    return true;
 }
 
 }  // namespace alea

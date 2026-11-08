@@ -101,6 +101,34 @@ public:
         throw std::logic_error("orbital set has no Hessian (supports_hessian() is false)");
     }
 
+    // ── Backflow curvature term ─────────────────────────────────────────────
+    // ∂(∇² ln ψ)/∂p of a backflow determinant moves the quasi-coordinates with
+    // p, so it differentiates the Hessian once more along x:
+    //   third : [n * dim³ * nw]  third[(((i*dim + a)*dim + b)*dim + c)*nw + w] = ∂_a∂_b∂_c φ_i
+    // and, for the orbitals' own parameters, needs the full Hessian's derivative:
+    //   dval [(k*n + i)*nw + w], dgrad [((k*n + i)*dim + a)*nw + w],
+    //   dhess [(((k*n + i)*dim + a)*dim + b)*nw + w] = ∂(∂_a∂_b φ_i)/∂p_k.
+    // Outputs are overwritten.  Measurement frequency only (the optimiser).
+    [[nodiscard]] virtual bool supports_third_derivatives() const noexcept { return false; }
+    virtual void evaluate_third_derivatives(std::span<const double> pos, std::size_t dim,
+                                            std::span<double> third, std::size_t w_begin,
+                                            std::size_t w_end) const {
+        (void)pos; (void)dim; (void)third; (void)w_begin; (void)w_end;
+        throw std::logic_error("orbital set has no third derivatives");
+    }
+    // A set without parameters needs nothing, so it supports this trivially.
+    [[nodiscard]] virtual bool supports_parameter_hessian() const noexcept {
+        return n_parameters() == 0;
+    }
+    virtual void evaluate_parameter_hessian(std::span<const double> pos, std::size_t dim,
+                                            std::span<double> dval, std::span<double> dgrad,
+                                            std::span<double> dhess, std::size_t w_begin,
+                                            std::size_t w_end) const {
+        (void)pos; (void)dim; (void)dval; (void)dgrad; (void)dhess; (void)w_begin; (void)w_end;
+        if (n_parameters() != 0)
+            throw std::logic_error("orbital set has no parameter Hessian");
+    }
+
     [[nodiscard]] virtual std::unique_ptr<OrbitalSet> clone() const = 0;
 };
 
@@ -292,6 +320,73 @@ public:
         }
     }
 
+    // ∂_a∂_b∂_c φ_i = φ_i [−8α³ Δ_aΔ_bΔ_c + 4α² (δ_ab Δ_c + δ_ac Δ_b + δ_bc Δ_a)],
+    // on the same minimum-image Δ.
+    [[nodiscard]] bool supports_third_derivatives() const noexcept override { return true; }
+    void evaluate_third_derivatives(std::span<const double> pos, std::size_t dim,
+                                    std::span<double> third, std::size_t w_begin,
+                                    std::size_t w_end) const override {
+        const std::size_t n  = alphas_.size();
+        const std::size_t nw = dim == 0 ? 0 : pos.size() / dim;
+        for (std::size_t i = 0; i < n; ++i) {
+            const double alpha = alphas_[i];
+            for (std::size_t w = w_begin; w < w_end; ++w) {
+                double del[SimulationCell::kMaxDim] = {};
+                double r2 = 0.0;
+                for (std::size_t d = 0; d < dim; ++d)
+                    del[d] = pos[d * nw + w] - centers_[i * dim + d];
+                cell_.min_image(del);
+                for (std::size_t d = 0; d < dim; ++d) r2 += del[d] * del[d];
+                const double phi = std::exp(-alpha * r2);
+                const double a2 = 4.0 * alpha * alpha, a3 = -8.0 * alpha * alpha * alpha;
+                for (std::size_t a = 0; a < dim; ++a)
+                    for (std::size_t b = 0; b < dim; ++b)
+                        for (std::size_t c = 0; c < dim; ++c) {
+                            const double delta = (a == b ? del[c] : 0.0) +
+                                                 (a == c ? del[b] : 0.0) +
+                                                 (b == c ? del[a] : 0.0);
+                            third[(((i * dim + a) * dim + b) * dim + c) * nw + w] =
+                                phi * (a3 * del[a] * del[b] * del[c] + a2 * delta);
+                        }
+            }
+        }
+    }
+
+    // ∂(∂_a∂_b φ)/∂α = −|Δ|² ∂_a∂_b φ + φ (8α Δ_aΔ_b − 2δ_ab), with the value
+    // and gradient derivatives of evaluate_parameter_derivatives().
+    [[nodiscard]] bool supports_parameter_hessian() const noexcept override { return true; }
+    void evaluate_parameter_hessian(std::span<const double> pos, std::size_t dim,
+                                    std::span<double> dval, std::span<double> dgrad,
+                                    std::span<double> dhess, std::size_t w_begin,
+                                    std::size_t w_end) const override {
+        if (!uniform_width_) return;
+        const std::size_t n  = alphas_.size();
+        const std::size_t nw = dim == 0 ? 0 : pos.size() / dim;
+        const double alpha = alphas_[0];
+        for (std::size_t i = 0; i < n; ++i) {
+            for (std::size_t w = w_begin; w < w_end; ++w) {
+                double del[SimulationCell::kMaxDim] = {};
+                double r2 = 0.0;
+                for (std::size_t d = 0; d < dim; ++d)
+                    del[d] = pos[d * nw + w] - centers_[i * dim + d];
+                cell_.min_image(del);
+                for (std::size_t d = 0; d < dim; ++d) r2 += del[d] * del[d];
+                const double phi = std::exp(-alpha * r2);
+                dval[i * nw + w] = -r2 * phi;
+                for (std::size_t a = 0; a < dim; ++a) {
+                    dgrad[(i * dim + a) * nw + w] = -2.0 * del[a] * phi * (1.0 - alpha * r2);
+                    for (std::size_t b = 0; b < dim; ++b) {
+                        const double kron = a == b ? 1.0 : 0.0;
+                        const double hess = phi * (4.0 * alpha * alpha * del[a] * del[b] -
+                                                   2.0 * alpha * kron);
+                        dhess[((i * dim + a) * dim + b) * nw + w] =
+                            -r2 * hess + phi * (8.0 * alpha * del[a] * del[b] - 2.0 * kron);
+                    }
+                }
+            }
+        }
+    }
+
     // exp(-α_min R_ws²): the minimum-image fold's largest neglected image.
     [[nodiscard]] double periodic_fold_bound() const noexcept override {
         if (!cell_.is_periodic() || alphas_.empty()) return 0.0;
@@ -402,6 +497,30 @@ public:
                     for (std::size_t b = 0; b < dim; ++b)
                         hess[((i * dim + a) * dim + b) * nw + w] = -ki[a] * ki[b] * v;
                 }
+            }
+        }
+    }
+
+    // ∂_a∂_b∂_c φ = −k_a k_b k_c ∂φ/∂phase: +k_a k_b k_c sin(k·r) for cos,
+    // −k_a k_b k_c cos(k·r) for sin.
+    [[nodiscard]] bool supports_third_derivatives() const noexcept override { return true; }
+    void evaluate_third_derivatives(std::span<const double> pos, std::size_t dim,
+                                    std::span<double> third, std::size_t w_begin,
+                                    std::size_t w_end) const override {
+        const std::size_t n  = is_sin_.size();
+        const std::size_t nw = dim == 0 ? 0 : pos.size() / dim;
+        for (std::size_t i = 0; i < n; ++i) {
+            const double* ki = k_.data() + i * dim;
+            const bool sine = is_sin_[i] != 0;
+            for (std::size_t w = w_begin; w < w_end; ++w) {
+                double phase = 0.0;
+                for (std::size_t d = 0; d < dim; ++d) phase += ki[d] * pos[d * nw + w];
+                const double dv = sine ? std::cos(phase) : -std::sin(phase);   // ∂φ/∂phase
+                for (std::size_t a = 0; a < dim; ++a)
+                    for (std::size_t b = 0; b < dim; ++b)
+                        for (std::size_t c = 0; c < dim; ++c)
+                            third[(((i * dim + a) * dim + b) * dim + c) * nw + w] =
+                                -ki[a] * ki[b] * ki[c] * dv;
             }
         }
     }

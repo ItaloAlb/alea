@@ -101,16 +101,28 @@ public:
 
     // v ([n_transformed * dim]) = the Jacobian column of (k, β); returns
     // Σ_t F_t · ∂²x_t/∂r_kβ² for f = F ([n_transformed * dim]).  Reads only the
-    // entries particle_tables(k) writes.
+    // entries particle_tables(k) writes.  with_identity = false drops the e_β
+    // of ∂x_k/∂r_k: the column of a table of parameter derivatives
+    // (parameter_tangent), whose identity part does not depend on p.
     double jacobian_column(const Tables& tab, const double* f, std::size_t k, std::size_t beta,
-                           double* v) const;
-    // ∂_k ln|D| ([dim]) = Σ_t F_t · ∂x_t/∂r_k.
-    void gradient(const Tables& tab, const double* f, std::size_t k, double* out) const;
+                           double* v, bool with_identity = true) const;
+    // ∂_k ln|D| ([dim]) = Σ_t F_t · ∂x_t/∂r_k (with_identity as above).
+    void gradient(const Tables& tab, const double* f, std::size_t k, double* out,
+                  bool with_identity = true) const;
     // Σ_t F_t · ∂x_t/∂p for every channel parameter: out[q] ([n_parameters]),
     // scratch [max channel parameters].
     void parameter_derivatives(const double* pos, const double* f, std::span<double> out,
                                std::span<double> scratch) const;
     [[nodiscard]] std::size_t max_channel_parameters() const noexcept;
+
+    // The transformation differentiated along its parameter q (index into
+    // initial_parameters()), at configuration pos: x_dot ([n_transformed*dim])
+    // = ∂x_t/∂q = Σ_j ∂η(r_tj)/∂q r_tj, and tab_dot the pair tables of ∂B/∂q
+    // and ∂s/∂q (B and s are linear in η, η', η'', so these are B and s with
+    // η → ∂η/∂q and so on).  Only the pairs of q's channel are nonzero.
+    // scratch: [3 * max_channel_parameters()].
+    void parameter_tangent(const double* pos, std::size_t q, double* x_dot, Tables& tab_dot,
+                           std::span<double> scratch) const;
 
 private:
     struct ChannelState {
@@ -121,6 +133,9 @@ private:
     // One pair: sign·η r_tj added to x; B and s filled when B is not null.
     bool pair_terms(const ChannelState& ch, const double* ri, const double* rj, double sign,
                     double* x, double* B, double* S) const;
+    // B and s of one pair (del = r_tj, r = |del|) from η, η', η''.
+    void pair_tensors(double eta, double e1, double e2, const double* del, double r, double* B,
+                      double* S) const;
 
     std::vector<ChannelState> channels_;
     std::vector<std::size_t>  transformed_;

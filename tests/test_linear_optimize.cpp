@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <span>
 #include <vector>
@@ -826,6 +827,25 @@ TEST_CASE("a small step counts only when its reweighting agrees",
     LinearOptimize::Reweighted non_finite = genuine;
     non_finite.finite = false;
     CHECK_FALSE(LinearOptimize::step_is_small(0.0, non_finite, 1e-3, 0.3));
+}
+
+// A nearly singular S̄ near the optimum (the two backflow channels of a bilayer
+// exciton enter only through eta_eh + eta_he) gave an undamped step of 1.8e19;
+// scoring it set a sign-locked cutoff to L e^{Δθ} = inf and the run died with
+// "the cutoff length L must be positive".  Such a step must not be set on ψ.
+TEST_CASE("a step is scored only within max_param_change and when finite",
+          "[linear_optimize][optimize]") {
+    using alea::LinearOptimize;
+    const std::vector<double> params = {0.5, -2.0, 3.0};   // max |p| = 3
+    CHECK(LinearOptimize::step_within_bounds(std::vector<double>{0.1, -0.89, 0.0}, params, 0.3));
+    CHECK_FALSE(LinearOptimize::step_within_bounds(std::vector<double>{0.1, -0.91, 0.0}, params, 0.3));
+    CHECK_FALSE(LinearOptimize::step_within_bounds(std::vector<double>{0.0, 1.8e19, 0.0}, params, 0.3));
+    CHECK_FALSE(LinearOptimize::step_within_bounds(
+        std::vector<double>{0.0, std::numeric_limits<double>::quiet_NaN(), 0.0}, params, 0.3));
+    CHECK_FALSE(LinearOptimize::step_within_bounds(
+        std::vector<double>{std::numeric_limits<double>::infinity()}, params, 0.3));
+    // Small parameters count as size 1: a step of 0.3 is still allowed.
+    CHECK(LinearOptimize::step_within_bounds(std::vector<double>{0.3}, std::vector<double>{1e-4}, 0.3));
 }
 
 // The last steps of two real stages (e–h bilayer, r_s = 5, N − 1 pairs, Ha*;
