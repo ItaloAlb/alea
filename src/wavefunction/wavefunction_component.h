@@ -226,6 +226,16 @@ public:
         (void)batch; (void)w_begin; (void)w_end;
     }
 
+    // A driver that commits with apply_move_batch_deferred and calls
+    // refresh_derivatives before reading any Laplacian (VMC and DMC: the
+    // Hamiltonian, estimators and parameter derivatives all follow a refresh)
+    // passes false: a component may then leave the moved particle's
+    // contribution to new_lap at zero and its own Laplacian stale, like a
+    // partner's, until the refresh.  new_grad and the ratio stay exact.
+    // Default true: ratio_batch writes the exact new_lap, as documented above.
+    // For components whose proposal Laplacian is expensive (backflow, O(N³)).
+    virtual void set_proposal_laplacian(bool needed) { (void)needed; }
+
     // Bytes of committed per-walker state a sweep reads or writes, valid after
     // evaluate_batch.  Drivers size cache-blocked sweeps from it; it never
     // changes results.  Default: the base caches (log ψ_c, ∇ and ∇² log ψ_c);

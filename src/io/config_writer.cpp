@@ -79,18 +79,38 @@ void write_config_snapshot(const std::string& source_yaml_path,
                             jastrow["denominator"] = flow_sequence(num_end, vals.end());
                     }
                 } else if (YAML::Node slater = item["slater"]) {
-                    // The determinant's optimised width.  It sets the NODES, so
-                    // a snapshot that dropped it would replay the STARTING nodal
-                    // surface.  Written into whichever form the document uses,
-                    // `alpha` or a uniform `alphas`.
+                    // [orbital widths.., then each backflow channel's free
+                    // coefficients and its cutoff L].  Both set the NODES, so a
+                    // snapshot that dropped them would replay the STARTING nodal
+                    // surface.
+                    YAML::Node backflow = slater["backflow"];
+                    std::size_t n_backflow = 0;
+                    if (backflow)
+                        for (const YAML::Node& ch : backflow)
+                            n_backflow += (ch["params"] ? ch["params"].size() : 0) + 1;
+                    const std::size_t n_orbital =
+                        vals.size() > n_backflow ? vals.size() - n_backflow : 0;
+                    // The width, into whichever form the document uses, `alpha`
+                    // or a uniform `alphas`.
                     YAML::Node orb = slater["orbitals"];
-                    if (!orb) continue;
-                    const double width = vals.front();
-                    if (orb["alpha"]) {
-                        orb["alpha"] = width;
-                    } else if (orb["alphas"]) {
-                        const std::vector<double> widths(orb["alphas"].size(), width);
-                        orb["alphas"] = flow_sequence(widths.begin(), widths.end());
+                    if (orb && n_orbital > 0) {
+                        const double width = vals.front();
+                        if (orb["alpha"]) {
+                            orb["alpha"] = width;
+                        } else if (orb["alphas"]) {
+                            const std::vector<double> widths(orb["alphas"].size(), width);
+                            orb["alphas"] = flow_sequence(widths.begin(), widths.end());
+                        }
+                    }
+                    if (backflow && vals.size() >= n_backflow) {
+                        auto at = vals.begin() + static_cast<std::ptrdiff_t>(n_orbital);
+                        for (YAML::Node ch : backflow) {
+                            const auto n = static_cast<std::ptrdiff_t>(
+                                ch["params"] ? ch["params"].size() : 0);
+                            ch["params"] = flow_sequence(at, at + n);
+                            ch["cutoff"] = *(at + n);
+                            at += n + 1;
+                        }
                     }
                 } else if (YAML::Node ns = item["nosanow"]) {
                     // [α], the localization width.
@@ -99,14 +119,33 @@ void write_config_snapshot(const std::string& source_yaml_path,
                     // The (a_s, b_s) coefficients, all of them.
                     mj["params"] = flow_sequence(vals.begin(), vals.end());
                 } else if (YAML::Node pr = item["pairing"]) {
-                    // [p.., c_0, c_2..c_M] then L when there is a polynomial;
-                    // these set the NODES, so the snapshot must replay them.
+                    // [p.., c_0, c_2..c_M] then L when there is a polynomial,
+                    // then each backflow channel's coefficients and L; these
+                    // set the NODES, so the snapshot must replay them.
+                    YAML::Node backflow = pr["backflow"];
+                    std::size_t n_backflow = 0;
+                    if (backflow)
+                        for (const YAML::Node& ch : backflow)
+                            n_backflow += (ch["params"] ? ch["params"].size() : 0) + 1;
+                    if (vals.size() < n_backflow) continue;
+                    const auto orbital_end =
+                        vals.end() - static_cast<std::ptrdiff_t>(n_backflow);
                     YAML::Node orb = pr["orbital"];
                     const bool poly =
                         orb["poly_order"] && orb["poly_order"].as<int>() >= 1;
-                    const auto end = poly ? vals.end() - 1 : vals.end();
+                    const auto end = poly ? orbital_end - 1 : orbital_end;
                     orb["params"] = flow_sequence(vals.begin(), end);
-                    if (poly) orb["cutoff"] = vals.back();
+                    if (poly) orb["cutoff"] = *(orbital_end - 1);
+                    if (backflow) {
+                        auto at = orbital_end;
+                        for (YAML::Node ch : backflow) {
+                            const auto n = static_cast<std::ptrdiff_t>(
+                                ch["params"] ? ch["params"].size() : 0);
+                            ch["params"] = flow_sequence(at, at + n);
+                            ch["cutoff"] = *(at + n);
+                            at += n + 1;
+                        }
+                    }
                 } else if (YAML::Node kj = item["kspace_jastrow"]) {
                     // One coefficient per shell (a Gaskell seed becomes explicit).
                     kj["params"] = flow_sequence(vals.begin(), vals.end());

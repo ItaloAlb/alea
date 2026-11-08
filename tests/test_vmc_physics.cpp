@@ -786,6 +786,18 @@ TEST_CASE("DMC with a one-pair pairing determinant gives the exact bilayer excit
           Catch::Approx(-0.5065190623).margin(0.005));
 }
 
+// The same exciton with a backflow pairing determinant (e displaced by h, h
+// by e): psi stays positive, so DMC stays exact.  Over 16 seeds (2026-11-08)
+// this run gives DMC - exact = +1.02(50)e-3 with standard deviation 2.0e-3
+// (printed ±~1.7e-3); the plain determinant of the same run length gives
+// +0.71(42)e-3 and 1.7e-3, so the backflow adds no bias at the 6e-4 level and
+// the common offset is the time step's.  Margin = |mean| + 4 deviations.
+TEST_CASE("DMC with a backflow pairing determinant gives the exact bilayer exciton",
+          "[dmc][physics][pairing][backflow]") {
+    CHECK(dmc_energy_ha("bilayer_exciton_pairing_backflow_dmc.yaml") ==
+          Catch::Approx(-0.5065190623).margin(9e-3));
+}
+
 // ── DMC: monolayer TMD exciton binding energies (Rytova–Keldysh) ─────────────
 //
 // Validates the whole physics chain (Hartree atomic units, the Rytova–Keldysh
@@ -1144,6 +1156,20 @@ TEST_CASE("Two-electron dot in B: fixed-phase DMC gets the exact triplet energy"
 TEST_CASE("Two-electron dot in B: DMC gets the exact singlet energy",
           "[dmc][physics][gauge][literature]") {
     check_two_body_exact("dot2e_singlet.yaml", 3.0, 2.9e-2);
+}
+
+// ── Backflow keeps an exact node: two like-spin electrons, no field ─────────
+// The real triplet f(r) cos φ_rel vanishes on x_1 = x_2, which the two-
+// Gaussian determinant and its same-group backflow both reproduce (see the
+// config), so fixed-node DMC with backflow is exact: E = 1.9139333019
+// (tests/references/dot_two_electron_exact.py --w0 0.5 --B 0 --m 1).  Over 24
+// seeds (2026-11-07) the DMC energy of this run length has mean exact
+// + 0.04(32)e-3 and standard deviation 1.6e-3 (printed ±~1.2e-3; without the
+// backflow block: + 0.03(21)e-3 and 1.05e-3).  Margin = 4 deviations, 6.5e-3,
+// inside the VMC offset +0.0275 of the unoptimized backflow and Jastrow.
+TEST_CASE("Two-electron dot: fixed-node DMC with backflow gets the exact triplet energy",
+          "[dmc][physics][backflow][literature]") {
+    check_two_body_exact("dot2e_triplet_backflow.yaml", 1.9139333019, 6.5e-3);
 }
 
 // ── Two dipoles (1/r³) in a trap at the coupling of the 2-D dipolar crystal ─

@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# The bilayer exciton of bilayer_exciton_pairing_dmc.yaml (one electron, one
+# hole at layer separation d = 0.4) with a BACKFLOW pairing determinant: the
+# electron is displaced by the hole and the hole by the electron, so the pair
+# orbital is evaluated at x_e - y_h = r_eh (1 + eta_eh(r) + eta_he(r)) instead
+# of r_eh.  psi = phi(x_e - y_h) e^u stays positive (phi > 0 inside its cutoff,
+# and 1 + eta_eh + eta_he > 0 here), so DMC is exact whatever the backflow:
+# E = -0.5065190623 Ha* (tests/references/pair_bound_state.py, d = 0.4,
+# mu = 1/2).  The test exercises the backflow pairing moves, drift and
+# branching in a run whose answer is known.
+project: {name: bilayer_exciton_pairing_backflow_dmc, seed: 7, output: false}
+system:
+  lattice: {type: open, dimension: 2, L: 1.0}
+  particles:
+    - {name: e, group: e, type: fermions, mass: 1.0, charge: -1, up: 1, down: 0, initialization: uniform}
+    - {name: h, group: h, type: fermions, mass: 1.0, charge: 1, up: 1, down: 0, z: 0.4, initialization: uniform}
+wavefunction:
+  - pairing:
+      blocks: [{rows: e, columns: h}]
+      orbital: {poly_order: 2, cutoff: 20.0, cutoff_fixed: true}
+      backflow:
+        - {group: e, from: h, cutoff: 6.0, params: [0.1, -0.05, 0.01]}
+        - {group: h, from: e, cutoff: 5.0, params: [-0.05, 0.03]}
+  - jastrow: {type: drummond, pair: [e, h], params: [-0.002], is_fixed: [true], truncation: 3, cutoff: 8.0, cutoff_fixed: true}
+hamiltonian:
+  terms:
+    - {type: coulomb, pair: [e, h], epsilon: 1.0}
+qmc:
+  - {method: dmc, random_walk: drift_diffusion, threads: 1, samples: 512, equilibration_blocks: 128, accumulation_blocks: 256, steps_per_block: 20, sub_steps: 3, time_step: 0.01}

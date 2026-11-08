@@ -13,6 +13,7 @@
 #include <string>
 #include <utility>
 
+#include "wavefunction/backflow_pairing_determinant.h"
 #include "wavefunction/pairing_determinant.h"
 
 namespace alea {
@@ -152,8 +153,45 @@ std::unique_ptr<WavefunctionComponent> build_component(const io::PairingSpec& sp
     }
 
     try {
-        auto c = std::make_unique<PairingDeterminant>(std::move(*orbital), std::move(blocks),
-                                                      std::move(params));
+        if (spec.backflow.empty()) {
+            auto c = std::make_unique<PairingDeterminant>(std::move(*orbital), std::move(blocks),
+                                                          std::move(params));
+            if (periodic && poly) c->bound_cutoff(ctx.cell.ws_radius());
+            return c;
+        }
+        // Backflow: each channel displaces one row or column group; whether
+        // c_1 is derived (a group displacing itself) is the transformation's
+        // rule.  L defaults to the inradius under PBC and is required open.
+        std::vector<BackflowTransformation::Channel> channels;
+        for (const io::BackflowSpec& b : spec.backflow) {
+            const ParticleGroup& target = find_group(ctx.groups, b.group);
+            const ParticleGroup& source = find_group(ctx.groups, b.from);
+            BackflowTransformation::Channel ch;
+            ch.target_first = target.first;
+            ch.target_last = target.last;
+            ch.source_first = source.first;
+            ch.source_last = source.last;
+            ch.truncation = b.truncation;
+            for (std::size_t k = 0; k < b.params.size(); ++k)
+                ch.params.push_back(
+                    Parameter{"", b.params[k], b.is_fixed.empty() ? false : b.is_fixed[k]});
+            double cutoff = 0.0;
+            if (b.cutoff) cutoff = *b.cutoff;
+            else if (periodic) cutoff = ctx.cell.ws_radius();
+            else
+                throw std::runtime_error(label + ": the backflow channel of " + b.group +
+                                         " from " + b.from + " needs a `cutoff` in an open "
+                                         "cell (under periodic boundaries it defaults to the "
+                                         "Wigner-Seitz inradius)");
+            ch.params.push_back(Parameter{"", cutoff, b.cutoff_fixed});
+            channels.push_back(std::move(ch));
+        }
+        std::vector<BackflowPairingDeterminant::Block> bf_blocks;
+        for (PairingDeterminant::Block& b : blocks)
+            bf_blocks.push_back({b.rows, b.columns, std::move(b.unpaired)});
+        auto c = std::make_unique<BackflowPairingDeterminant>(
+            std::move(*orbital), std::move(bf_blocks), std::move(params), std::move(channels),
+            ctx.cell);
         if (periodic && poly) c->bound_cutoff(ctx.cell.ws_radius());
         return c;
     } catch (const std::invalid_argument& e) {

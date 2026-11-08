@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Two like-spin electrons in a 2-D parabolic dot (omega = 0.5, no field), with
+# a BACKFLOW determinant.  The lowest triplet has relative angular momentum
+# m = +-1; its real combination f(r) cos(phi_rel) vanishes exactly on
+# x_1 = x_2.  Two Gaussians of one width at (-a, 0) and (a, 0) give
+#   det = 2 e^{-alpha (r_1^2 + r_2^2) - 2 alpha a^2} sinh(2 alpha a (x_1 - x_2)),
+# the same node, and a same-group backflow keeps it: for two particles
+#   x'_1 - x'_2 = (r_1 - r_2)(1 + 2 eta(r_12)),
+# which vanishes in x where x_1 = x_2 (1 + 2 eta > 0 here).  So fixed-node
+# DMC is exact, E = 1.9139333019 from tests/references/dot_two_electron_exact.py
+# (--w0 0.5 --B 0 --m 1; grid error 3e-10), while the backflow moves every
+# configuration's quasi-coordinates and the Jastrow has the wrong shape, so
+# VMC lies above it.  The test exercises backflow moves, drift, branching and
+# the node gate in a run whose answer is known.
+project: { name: dot2e_triplet_backflow, seed: 20261107, log: false, output: false }
+
+system:
+  lattice: { type: open, dimension: 2, L: 2.0 }
+  particles:
+    - { name: e, group: electrons, type: fermions, mass: 1.0, charge: -1, up: 2, down: 0 }
+
+wavefunction:
+  - slater:
+      group: electrons
+      orbitals: { type: gaussian, centers: [[-1.0, 0.0], [1.0, 0.0]], alphas: [0.25, 0.25] }
+      backflow:
+        - { from: electrons, truncation: 3, cutoff: 6.0, params: [0.15, -0.01] }
+  - jastrow: { type: padé, pair: [electrons, electrons], denominator: [0.8], is_fixed: [true] }
+
+hamiltonian:
+  terms:
+    - { type: harmonic_trap, omega: 0.5 }
+    - { type: coulomb, pair: [electrons, electrons], epsilon: 1.0 }
+
+qmc:
+  - { method: vmc, random_walk: metropolis, device: cpu, threads: 2, samples: 256,
+      equilibration_blocks: 20, accumulation_blocks: 100, steps_per_block: 10,
+      sub_steps: 2, time_step: 2.0 }
+  - { method: dmc, random_walk: drift_diffusion, device: cpu, threads: 2, samples: 512,
+      equilibration_blocks: 40, accumulation_blocks: 100, steps_per_block: 10,
+      sub_steps: 2, time_step: 0.02 }

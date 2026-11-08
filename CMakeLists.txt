@@ -181,8 +181,11 @@ set(SOURCES
     src/wavefunction/periodic_pair_sum.cpp
     src/wavefunction/kspace_pair_sum.cpp
     src/wavefunction/slater_determinant.cpp
+    src/wavefunction/backflow_slater_determinant.cpp
+    src/wavefunction/backflow_transformation.cpp
     src/wavefunction/pair_orbital.cpp
     src/wavefunction/pairing_determinant.cpp
+    src/wavefunction/backflow_pairing_determinant.cpp
     src/wavefunction/trial_wavefunction.cpp
     src/wavefunction/wavefunction_component.cpp
     # src/qmc/optimizer.cpp  # not yet implemented

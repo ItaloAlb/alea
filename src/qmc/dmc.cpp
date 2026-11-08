@@ -552,6 +552,10 @@ void DMC::run() {
         if (e->needs_wavefunction())
             e->bind_wavefunction(psi_, numerics::stream_seed(cfg_.seed, kDmcEstimatorStream, 0),
                                  n_threads_);
+    // Sweeps commit deferred and refresh every derivative before H: no
+    // proposal Laplacian is read (set after binding, so the estimators'
+    // copies keep the exact one).
+    psi_.set_proposal_laplacian(false);
 
     // ── Initial evaluation (full population) ──────────────────────────
     psi_.evaluate_batch(pop_);

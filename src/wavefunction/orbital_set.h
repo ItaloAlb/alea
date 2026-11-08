@@ -84,6 +84,23 @@ public:
     // of the exact lattice-summed orbitals bounds its error with it.
     [[nodiscard]] virtual double periodic_fold_bound() const noexcept { return 0.0; }
 
+    // ── Full Hessian (backflow) ─────────────────────────────────────────────
+    // A backflow determinant evaluates the orbitals at quasi-coordinates whose
+    // Jacobian mixes Cartesian components, so the Laplacian of log ψ needs the
+    // mixed second derivatives ∂_a∂_b φ, not only evaluate()'s ∂²_d φ.  Same
+    // layouts as evaluate(), with
+    //   hess : [n * dim * dim * nw]  hess[((i*dim + a)*dim + b)*nw + w] = ∂_a ∂_b φ_i
+    // Outputs are overwritten.  Orbital sets that do not provide it say so,
+    // and their determinants refuse backflow at build time.
+    [[nodiscard]] virtual bool supports_hessian() const noexcept { return false; }
+    virtual void evaluate_hessian(std::span<const double> pos, std::size_t dim,
+                                  std::span<double> val, std::span<double> grad,
+                                  std::span<double> hess, std::size_t w_begin,
+                                  std::size_t w_end) const {
+        (void)pos; (void)dim; (void)val; (void)grad; (void)hess; (void)w_begin; (void)w_end;
+        throw std::logic_error("orbital set has no Hessian (supports_hessian() is false)");
+    }
+
     [[nodiscard]] virtual std::unique_ptr<OrbitalSet> clone() const = 0;
 };
 
@@ -243,6 +260,38 @@ public:
         }
     }
 
+    // ∂_a∂_b φ_i = φ_i (4α_i² Δ_a Δ_b − 2α_i δ_ab), Δ the same minimum-image
+    // separation evaluate() uses.  Scalar over walkers: backflow calls it for
+    // one configuration at a time.
+    [[nodiscard]] bool supports_hessian() const noexcept override { return true; }
+    void evaluate_hessian(std::span<const double> pos, std::size_t dim,
+                          std::span<double> val, std::span<double> grad,
+                          std::span<double> hess, std::size_t w_begin,
+                          std::size_t w_end) const override {
+        const std::size_t n  = alphas_.size();
+        const std::size_t nw = dim == 0 ? 0 : pos.size() / dim;
+        for (std::size_t i = 0; i < n; ++i) {
+            const double alpha = alphas_[i];
+            for (std::size_t w = w_begin; w < w_end; ++w) {
+                double del[SimulationCell::kMaxDim] = {};
+                double r2 = 0.0;
+                for (std::size_t d = 0; d < dim; ++d)
+                    del[d] = pos[d * nw + w] - centers_[i * dim + d];
+                cell_.min_image(del);
+                for (std::size_t d = 0; d < dim; ++d) r2 += del[d] * del[d];
+                const double phi = std::exp(-alpha * r2);
+                val[i * nw + w] = phi;
+                for (std::size_t a = 0; a < dim; ++a) {
+                    grad[(i * dim + a) * nw + w] = -2.0 * alpha * del[a] * phi;
+                    for (std::size_t b = 0; b < dim; ++b)
+                        hess[((i * dim + a) * dim + b) * nw + w] =
+                            phi * (4.0 * alpha * alpha * del[a] * del[b] -
+                                   (a == b ? 2.0 * alpha : 0.0));
+                }
+            }
+        }
+    }
+
     // exp(-α_min R_ws²): the minimum-image fold's largest neglected image.
     [[nodiscard]] double periodic_fold_bound() const noexcept override {
         if (!cell_.is_periodic() || alphas_.empty()) return 0.0;
@@ -324,6 +373,34 @@ public:
                         grad[(i * dim + d) * nw + w] = -ki[d] * s;
                         lap[(i * dim + d) * nw + w]  = -ki[d] * ki[d] * c;
                     }
+                }
+            }
+        }
+    }
+
+    // cos: ∂_a∂_b = −k_a k_b cos(k·r);  sin: ∂_a∂_b = −k_a k_b sin(k·r).
+    [[nodiscard]] bool supports_hessian() const noexcept override { return true; }
+    void evaluate_hessian(std::span<const double> pos, std::size_t dim,
+                          std::span<double> val, std::span<double> grad,
+                          std::span<double> hess, std::size_t w_begin,
+                          std::size_t w_end) const override {
+        const std::size_t n  = is_sin_.size();
+        const std::size_t nw = dim == 0 ? 0 : pos.size() / dim;
+        for (std::size_t i = 0; i < n; ++i) {
+            const double* ki = k_.data() + i * dim;
+            const bool sine = is_sin_[i] != 0;
+            for (std::size_t w = w_begin; w < w_end; ++w) {
+                double phase = 0.0;
+                for (std::size_t d = 0; d < dim; ++d) phase += ki[d] * pos[d * nw + w];
+                const double s = std::sin(phase);
+                const double c = std::cos(phase);
+                const double v  = sine ? s : c;     // φ
+                const double dv = sine ? c : -s;    // ∂φ/∂phase
+                val[i * nw + w] = v;
+                for (std::size_t a = 0; a < dim; ++a) {
+                    grad[(i * dim + a) * nw + w] = ki[a] * dv;
+                    for (std::size_t b = 0; b < dim; ++b)
+                        hess[((i * dim + a) * dim + b) * nw + w] = -ki[a] * ki[b] * v;
                 }
             }
         }

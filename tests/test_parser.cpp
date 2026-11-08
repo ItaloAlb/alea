@@ -1244,3 +1244,52 @@ TEST_CASE("forward_walking is refused outside DMC and with malformed lags", "[pa
                           ContainsSubstring("forward_walking"));
     }
 }
+
+TEST_CASE("a slater item reads its backflow channels", "[parser][backflow]") {
+    const std::string head = "wavefunction:\n  - slater:\n      group: e\n"
+                             "      orbitals: { type: plane_wave }\n";
+    auto c = parse_config(head +
+        "      backflow:\n"
+        "        - { from: e, truncation: 4, cutoff: 3.5, cutoff_fixed: true, params: [0.1, 0.2],"
+        " is_fixed: [false, true] }\n"
+        "        - { from: h, params: [0.3, 0.0, 0.01] }\n");
+    const auto& s = std::get<SlaterSpec>(c.wavefunction[0]);
+    REQUIRE(s.backflow.size() == 2);
+    CHECK(s.backflow[0].from == "e");
+    CHECK(s.backflow[0].truncation == 4);
+    CHECK(s.backflow[0].cutoff == 3.5);
+    CHECK(s.backflow[0].cutoff_fixed);
+    CHECK(s.backflow[0].params == std::vector<double>{0.1, 0.2});
+    CHECK(s.backflow[0].is_fixed == std::vector<bool>{false, true});
+    CHECK(s.backflow[1].truncation == 3);
+    CHECK_FALSE(s.backflow[1].cutoff.has_value());
+    CHECK_FALSE(s.backflow[1].cutoff_fixed);
+    CHECK(s.backflow[1].is_fixed.empty());
+
+    using Catch::Matchers::ContainsSubstring;
+    for (const std::string bad : {"[]", "{ from: e, params: [0.1] }", "[{ params: [0.1] }]",
+                                  "[{ from: e }]", "[{ from: e, params: [0.1], is_fixed: [true, false] }]",
+                                  "[{ from: e, params: [0.1], order: 3 }]"}) {
+        INFO(bad);
+        CHECK_THROWS_WITH(parse_config(head + "      backflow: " + bad + "\n"),
+                          ContainsSubstring("backflow"));
+    }
+}
+
+TEST_CASE("a pairing item reads backflow channels that name their group", "[parser][backflow]") {
+    const std::string head = "wavefunction:\n  - pairing:\n      blocks: [{rows: e, columns: h}]\n"
+                             "      orbital: {poly_order: 2, cutoff: 3.0}\n";
+    auto c = parse_config(head + "      backflow: [{group: e, from: h, params: [0.1, 0.0]}]\n");
+    const auto& ps = std::get<alea::io::PairingSpec>(c.wavefunction[0]);
+    REQUIRE(ps.backflow.size() == 1);
+    CHECK(ps.backflow[0].group == "e");
+    CHECK(ps.backflow[0].from == "h");
+    using Catch::Matchers::ContainsSubstring;
+    // A pairing channel must name its group; a slater channel must not.
+    CHECK_THROWS_WITH(parse_config(head + "      backflow: [{from: h, params: [0.1]}]\n"),
+                      ContainsSubstring("group"));
+    CHECK_THROWS_WITH(parse_config("wavefunction:\n  - slater:\n      group: e\n"
+                                   "      orbitals: { type: plane_wave }\n"
+                                   "      backflow: [{group: e, from: e, params: [0.1]}]\n"),
+                      ContainsSubstring("group"));
+}

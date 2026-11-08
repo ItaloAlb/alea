@@ -41,6 +41,52 @@ void require_keys(const YAML::Node& node, const std::string& context,
     }
 }
 
+// The `backflow:` channels of a determinant item.  with_group: each channel
+// names the group it displaces (pairing); without, the key is refused (a
+// slater item displaces its own group).
+std::vector<BackflowSpec> parse_backflow(const YAML::Node& bf, const std::string& where,
+                                         bool with_group) {
+    if (!bf.IsSequence() || bf.size() == 0)
+        throw std::runtime_error(where + ": expected a nonempty list of channels "
+                                 "{" + std::string(with_group ? "group, " : "") +
+                                 "from, params, ...}");
+    std::vector<BackflowSpec> out;
+    for (const YAML::Node& cn : bf) {
+        if (!cn.IsMap()) throw std::runtime_error(where + ": each channel is a map");
+        if (with_group)
+            require_keys(cn, where, {"group", "from", "truncation", "cutoff", "cutoff_fixed",
+                                     "params", "is_fixed"});
+        else
+            require_keys(cn, where, {"from", "truncation", "cutoff", "cutoff_fixed", "params",
+                                     "is_fixed"});
+        BackflowSpec b;
+        if (with_group) {
+            if (!cn["group"])
+                throw std::runtime_error(where + ": a channel needs `group:` (the row or "
+                                         "column group it displaces)");
+            b.group = cn["group"].as<std::string>();
+        }
+        if (!cn["from"])
+            throw std::runtime_error(where + ": a channel needs `from:` (the group whose "
+                                     "particles displace)");
+        b.from = cn["from"].as<std::string>();
+        if (!cn["params"] || !cn["params"].IsSequence() || cn["params"].size() == 0)
+            throw std::runtime_error(where + " from " + b.from + ": needs `params`, the free "
+                                     "coefficients [c_0, ...] (c_1 is derived for a group "
+                                     "displacing itself)");
+        b.params = cn["params"].as<std::vector<double>>();
+        if (cn["is_fixed"]) b.is_fixed = cn["is_fixed"].as<std::vector<bool>>();
+        if (!b.is_fixed.empty() && b.is_fixed.size() != b.params.size())
+            throw std::runtime_error(where + " from " + b.from +
+                                     ": `is_fixed` needs one flag per params entry");
+        if (cn["truncation"]) b.truncation = cn["truncation"].as<int>();
+        if (cn["cutoff"]) b.cutoff = cn["cutoff"].as<double>();
+        if (cn["cutoff_fixed"]) b.cutoff_fixed = cn["cutoff_fixed"].as<bool>();
+        out.push_back(std::move(b));
+    }
+    return out;
+}
+
 // The sampling keys every qmc: stage shares (RunSpec), plus `method`.  A plain
 // array: GCC 11 rejects a constexpr std::initializer_list at namespace scope
 // ("modification of <temporary> is not a constant expression").
@@ -466,9 +512,12 @@ Config parse_config(const std::string& yaml_text) {
             if (jn["cutoff_fixed"]) j.cutoff_fixed = jn["cutoff_fixed"].as<bool>();
             c.wavefunction.emplace_back(std::move(j));
         } else if (const YAML::Node sn = item["slater"]) {
-            require_keys(sn, "slater", {"group", "orbitals"});
+            require_keys(sn, "slater", {"group", "orbitals", "backflow"});
             SlaterSpec s;
             if (sn["group"]) s.group = sn["group"].as<std::string>();
+            if (const YAML::Node bf = sn["backflow"])
+                s.backflow = parse_backflow(bf, "slater backflow of group " + s.group,
+                                            /*with_group=*/false);
             if (const YAML::Node orb = sn["orbitals"]) {
                 require_keys(orb, "slater orbitals of group " + s.group,
                              {"type", "centers", "alphas", "sites", "alpha",
@@ -544,8 +593,10 @@ Config parse_config(const std::string& yaml_text) {
             c.wavefunction.emplace_back(
                 CenterOfMassMomentumSpec{bn["K"].as<std::vector<double>>()});
         } else if (const YAML::Node pn = item["pairing"]) {
-            require_keys(pn, "pairing", {"blocks", "orbital"});
+            require_keys(pn, "pairing", {"blocks", "orbital", "backflow"});
             PairingSpec ps;
+            if (const YAML::Node bf = pn["backflow"])
+                ps.backflow = parse_backflow(bf, "pairing backflow", /*with_group=*/true);
             if (!pn["blocks"] || !pn["blocks"].IsSequence() || pn["blocks"].size() == 0)
                 throw std::runtime_error("pairing needs `blocks:`, a list of "
                                          "{rows: group, columns: group}");
