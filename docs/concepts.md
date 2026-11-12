@@ -435,7 +435,13 @@ $E$, kinetic $K$ and potential $V$. Formulas and the potentials each accepts:
 [Estimators](estimators.md#5-pimc-energy-estimators).
 
 **Winding number `W2`.** The mean squared winding of paths around a periodic
-cell. It is related to the superfluid fraction.
+cell, counted in the lattice basis. It is related to the superfluid fraction
+only in orthogonal cells with equal sides.
+
+**Winding tensor.** The Cartesian winding tensor $T_{ab}$ gives the superfluid
+fraction in any cell shape ($\rho_{s,ab}/\rho = m T_{ab}/\beta$) and its
+anisotropy, so it is the one to use in hexagonal cells. Details:
+[Estimators](estimators.md).
 
 **Finite-τ bias.** PIMC error bars are statistical only. Converge or
 extrapolate in τ with runs at several time steps.

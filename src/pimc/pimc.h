@@ -28,6 +28,7 @@
 
 #include "io/parser.h"
 #include "io/path_io.h"
+#include "pimc/winding.h"
 #include "pimc/action.h"
 #include "pimc/move.h"
 #include "pimc/path_set.h"
@@ -135,6 +136,16 @@ public:
     // physics check that the winding sectors are actually sampled.
     double winding2()      const noexcept { return winding2_; }
     double winding2_error() const noexcept { return winding2_error_; }
+    // Cartesian winding tensor per particle, T_ab = <sum_loops W_a W_b>/N
+    // (bohr^2), components c = 0..winding_tensor_size(dim)-1 ordered xx, xy,
+    // yy, xz, yz, zz (pimc/winding.h).  Valid in any cell shape: rho_s,ab/rho
+    // = m T_ab / beta for one species of mass m.  Zero for open cells.
+    std::size_t winding_tensor_components() const noexcept { return winding_tensor_size(dim_); }
+    double winding_tensor(std::size_t c)       const noexcept { return winding_tensor_[c]; }
+    double winding_tensor_error(std::size_t c) const noexcept { return winding_tensor_error_[c]; }
+    std::span<const double> block_winding_tensor(std::size_t c) const noexcept {
+        return block_winding_tensor_[c];
+    }
     double naive_error()  const noexcept { return naive_error_; }
     double tau_int()      const noexcept { return tau_int_; }
     bool   plateau_found() const noexcept { return plateau_found_; }
@@ -251,6 +262,13 @@ private:
     double potential_error_ = 0.0;
     double winding2_      = 0.0;   // <W^2> per (particle, direction); 0 when open
     double winding2_error_ = 0.0;
+    // Cartesian winding tensor (pimc/winding.h), per component [c]; only the
+    // first winding_tensor_size(dim_) entries are used.
+    std::array<double, kMaxWindingTensor> winding_tensor_{};
+    std::array<double, kMaxWindingTensor> winding_tensor_error_{};
+    std::array<std::vector<double>, kMaxWindingTensor> block_winding_tensor_;  // [c][block]
+    std::array<numerics::ReblockResult, kMaxWindingTensor> winding_tensor_stats_{};
+    std::array<numerics::RatioResult, kMaxWindingTensor> signed_tensor_stats_{};
     double naive_error_   = 0.0;  // SEM assuming independent blocks
     double tau_int_       = 0.0;  // integrated autocorrelation time (blocks)
     bool   plateau_found_ = true;

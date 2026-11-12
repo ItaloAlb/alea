@@ -27,6 +27,7 @@
 #include "pimc/move.h"
 #include "pimc/path_set.h"
 #include "pimc/pimc.h"
+#include "pimc/winding.h"
 #include "population/particle_group.h"
 
 namespace io = alea::io;
@@ -1113,4 +1114,79 @@ TEST_CASE("the pimc parser validates its keys", "[pimc][parser]") {
         "    samples: 4\n    time_step: 0.25\n    beta: 1.0\n"
         "    moves: [ { worm: {} } ]\n",
         "`group`, `max_length` and `swap_length` are required");
+}
+
+// ── Winding tensor (pimc/winding.h) ─────────────────────────────────────────
+// A loop whose links add up to the lattice vector W gives T = W W^T / N in
+// Cartesian components, whatever basis the cell stores after its reduction.
+
+TEST_CASE("winding tensor of a ring that winds once in a hexagonal cell", "[pimc][winding]") {
+    const double L = 4.0, h = L * std::sqrt(3.0) / 2.0;
+    const std::vector<double> vecs = {L, 0.0, L / 2.0, h};
+    SimulationCell cell(2, vecs);
+    const std::size_t M = 8;
+    PathSet path(M, 1, 2, 0.1, cell);
+    const double W[2] = {L - L / 2.0, -h};   // a1 - a2, |W| = L
+    for (std::size_t k = 0; k < M; ++k)
+        for (std::size_t d = 0; d < 2; ++d)
+            path.pos(0, d, k) = 0.3 + W[d] * static_cast<double>(k) / static_cast<double>(M);
+    REQUIRE(alea::winding_tensor_size(2) == 3);
+    double T[alea::kMaxWindingTensor];
+    alea::winding_tensor_of(path, T);
+    CHECK(T[0] == Catch::Approx(W[0] * W[0]));   // xx
+    CHECK(T[1] == Catch::Approx(W[0] * W[1]));   // xy
+    CHECK(T[2] == Catch::Approx(W[1] * W[1]));   // yy
+    CHECK(T[0] + T[2] == Catch::Approx(L * L));
+    // The lattice-basis winding2 counts the integer components of W in the
+    // basis the cell stores after its reduction (one or two unit components
+    // for this shortest vector), so it is not |W|^2 / (L^2 dim) = 1/2.
+    double n[2];
+    cell.fractional(W, n);
+    const double w2_expected = (std::round(n[0]) * std::round(n[0]) +
+                                std::round(n[1]) * std::round(n[1])) / 2.0;
+    CHECK(alea::winding2_of(path) == Catch::Approx(w2_expected));
+    // winding_measure returns the same winding2 and the same tensor in one pass.
+    double T2[alea::kMaxWindingTensor];
+    CHECK(alea::winding_measure(path, T2) == Catch::Approx(w2_expected));
+    for (std::size_t c = 0; c < 3; ++c) CHECK(T2[c] == Catch::Approx(T[c]));
+    CHECK(std::string(alea::winding_tensor_label(0)) == "xx");
+    CHECK(std::string(alea::winding_tensor_label(2)) == "yy");
+}
+
+TEST_CASE("winding tensor of an exchange cycle sums the whole cycle", "[pimc][winding]") {
+    const double L = 4.0, h = L * std::sqrt(3.0) / 2.0;
+    const std::vector<double> vecs = {L, 0.0, L / 2.0, h};
+    SimulationCell cell(2, vecs);
+    const std::size_t M = 6;
+    PathSet path(M, 2, 2, 0.1, cell);
+    path.set_exchange_classes(std::vector<std::size_t>{0, 0}, std::vector<char>{0, 0});
+    path.set_permutation(std::vector<std::size_t>{1, 0});
+    const double W[2] = {L, 0.0};            // the two-particle cycle winds by a1
+    for (std::size_t p = 0; p < 2; ++p)
+        for (std::size_t k = 0; k < M; ++k)
+            for (std::size_t d = 0; d < 2; ++d)
+                path.pos(p, d, k) = 0.1 + W[d] * static_cast<double>(p * M + k) /
+                                              static_cast<double>(2 * M);
+    double T[alea::kMaxWindingTensor];
+    alea::winding_tensor_of(path, T);
+    CHECK(T[0] == Catch::Approx(L * L / 2.0));   // one cycle, two particles
+    CHECK(T[1] == Catch::Approx(0.0).margin(1e-12));
+    CHECK(T[2] == Catch::Approx(0.0).margin(1e-12));
+}
+
+TEST_CASE("winding tensor is zero for straight rings and open cells", "[pimc][winding]") {
+    const std::vector<double> vecs = {4.0, 0.0, 0.0, 5.0};
+    SimulationCell cell(2, vecs);
+    PathSet path(5, 2, 2, 0.1, cell);
+    for (std::size_t p = 0; p < 2; ++p)
+        for (std::size_t k = 0; k < 5; ++k) {
+            path.pos(p, 0, k) = 0.2 * static_cast<double>(p) + 0.05 * static_cast<double>(k % 2);
+            path.pos(p, 1, k) = -0.1 * static_cast<double>(k % 3);
+        }
+    double T[alea::kMaxWindingTensor];
+    alea::winding_tensor_of(path, T);
+    for (std::size_t c = 0; c < 3; ++c) CHECK(T[c] == Catch::Approx(0.0).margin(1e-12));
+    PathSet open(5, 1, 2, 0.1);
+    alea::winding_tensor_of(open, T);
+    for (std::size_t c = 0; c < 3; ++c) CHECK(T[c] == 0.0);
 }

@@ -1,0 +1,50 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# 2-D free particle in a periodic HEXAGONAL cell (a1 = (4, 0), a2 = (2, 2 sqrt 3),
+# side L = 4) at finite temperature via PIMC: the winding-tensor check.
+#
+# One distinguishable particle with V = 0, m = 1, beta = 2, M = 32 slices
+# (tau = 0.0625), the same run parameters as pimc_free_1d_pbc.yaml.
+#
+# Exact winding distribution: P(W) ~ exp(-m |W|^2 / (2 beta)) over the cell's
+# lattice vectors W, so
+#   T_xx = T_yy = <W_x^2> = 0.79289320151651,  T_xy = 0        (bohr^2)
+# and the lattice-basis winding2 = <n1^2 + n2^2> / 2 = 0.06607443345970919,
+# which is 4/3 of the Cartesian value <|W|^2> / (2 L^2) = 0.04955582509478188.
+project:
+  name: pimc_free_2d_hex_pbc
+  seed: 24680
+
+system:
+  lattice:
+    type: periodic
+    dimension: 2
+    vectors: [[4.0, 0.0], [2.0, 3.4641016151377544]]
+  particles:
+    - name: p
+      group: particle
+      type: boltzmannon
+      mass: 1.0
+      charge: 0
+      up: 1
+      down: 0
+
+hamiltonian:
+  terms: []
+
+qmc:
+  - method: pimc
+    threads: 2
+    samples: 24
+    time_step: 0.0625
+    beta: 2.0
+    equilibration_blocks: 50
+    accumulation_blocks: 400
+    steps_per_block: 20
+    sub_steps: 5
+    moves:
+      - bisection: { levels: 5, weight: 1.0 }
+      - centroid:  { step: 0.3, weight: 1.0 }
+    energy: thermodynamic
