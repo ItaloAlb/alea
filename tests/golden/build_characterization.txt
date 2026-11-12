@@ -661,6 +661,12 @@ components 0
   w1 0 0 0
   w2 0 0 0
   w3 0 0 0
+config tests/configs/pimc_free_2d_hex_pbc.yaml
+components 0
+  w0 0 0 0
+  w1 0 0 0
+  w2 0 0 0
+  w3 0 0 0
 config tests/configs/pimc_ho_1d.yaml
 components 0
   w0 0 0.72665046286415225 0

@@ -216,3 +216,44 @@ TEST_CASE("the same config and seed reproduce bit-identical PIMC results",
     REQUIRE(a.v == b.v);
     REQUIRE(a.acceptance == b.acceptance);
 }
+
+TEST_CASE("PIMC free particle in a hexagonal cell: Cartesian winding tensor",
+          "[pimc][physics][winding]") {
+    // Exact: P(W) ~ exp(-|W|^2 / (2 beta)) over the lattice vectors of the
+    // hexagonal cell a1 = (4, 0), a2 = (2, 2 sqrt 3), beta = 2, m = 1:
+    //   T_xx = T_yy = 0.79289320151651, T_xy = 0, and the lattice-basis
+    //   winding2 = 0.06607443345970919 = (4/3) <|W|^2>/(2 L^2).
+    const double t_exact = 0.79289320151651;
+    const double w2_exact = 0.06607443345970919;
+    const std::string path = std::string(ALEA_CONFIG_DIR) + "/pimc_free_2d_hex_pbc.yaml";
+    alea::App app(alea::io::parse_config_file(path));
+    alea::DriverPack pack = app.build_drivers();
+    REQUIRE(pack.drivers.size() == 1);
+    auto* pimc = dynamic_cast<alea::Pimc*>(pack.drivers[0].get());
+    REQUIRE(pimc != nullptr);
+    pimc->run();
+    REQUIRE(pimc->winding_tensor_components() == 3);
+    const double txx = pimc->winding_tensor(0), exx = pimc->winding_tensor_error(0);
+    const double txy = pimc->winding_tensor(1), exy = pimc->winding_tensor_error(1);
+    const double tyy = pimc->winding_tensor(2), eyy = pimc->winding_tensor_error(2);
+    INFO("summary: " << pimc->summary());
+    INFO("T_xx=" << txx << "+/-" << exx << " T_xy=" << txy << "+/-" << exy
+         << " T_yy=" << tyy << "+/-" << eyy << "  exact " << t_exact);
+    INFO("W2=" << pimc->winding2() << "+/-" << pimc->winding2_error() << " exact " << w2_exact);
+    CHECK(std::abs(txx - t_exact) <= tolerance(exx));
+    CHECK(std::abs(tyy - t_exact) <= tolerance(eyy));
+    CHECK(std::abs(txy) <= tolerance(exy));
+    CHECK(exx < t_exact / 10.0);
+    CHECK(eyy < t_exact / 10.0);
+    // The lattice-basis W2 keeps its own exact target (4/3 of the Cartesian one).
+    CHECK(std::abs(pimc->winding2() - w2_exact) <= tolerance(pimc->winding2_error()));
+    // The result file carries every component, its error and its block series.
+    const alea::RunResult r = pimc->run_result();
+    const auto has = [](const auto& entries, const std::string& key) {
+        return std::count_if(entries.begin(), entries.end(),
+                             [&](const auto& e) { return e.first == key; }) == 1;
+    };
+    CHECK(has(r.scalars, "winding_tensor_xx"));
+    CHECK(has(r.scalars, "winding_tensor_xy_error"));
+    CHECK(has(r.series, "acc_block_winding_tensor_yy"));
+}

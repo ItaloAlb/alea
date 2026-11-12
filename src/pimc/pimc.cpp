@@ -17,6 +17,7 @@
 #include <stdexcept>
 
 #include "io/logger.h"
+#include "pimc/winding.h"
 
 namespace alea {
 
@@ -51,57 +52,7 @@ std::string statistics_label(std::span<const ExchangeClass> classes) {
     return fermions && bosons ? "fermions+bosons" : fermions ? "fermions" : "bosons";
 }
 
-// Squared winding number, summed over closed loops and divided by the number
-// of particles and lattice directions: W_c = fractional( sum of min-image
-// link vectors around loop c ), an integer vector.  A loop is a ring when
-// pi = identity and a whole permutation cycle otherwise (its L*M links); the
-// superfluid estimator of Pollock & Ceperley, PRB 36, 8343 (1987) uses the
-// same sum, <W^2> = sum_c <W_c^2>, since cross terms average to zero.  Zero
-// for open cells (winding is not defined there).
-double winding2_of(const PathSet& path) {
-    if (!path.cell().is_periodic()) return 0.0;
-    const std::size_t M   = path.num_slices();
-    const std::size_t np  = path.n_particles();
-    const std::size_t dim = path.dim();
-    double w2 = 0.0;
-    double sum[SimulationCell::kMaxDim];
-    double del[SimulationCell::kMaxDim];
-    if (!path.identity_permutation()) {
-        for (const std::size_t leader : path.cycle_leaders()) {
-            for (std::size_t i = 0; i < dim; ++i) sum[i] = 0.0;
-            std::size_t p = leader;
-            do {
-                for (std::size_t k = 0; k < M; ++k) {
-                    const auto after = path.bead_after(p, k);
-                    for (std::size_t i = 0; i < dim; ++i)
-                        del[i] = path.pos(after.particle, i, after.slice) -
-                                 path.pos(p, i, k);
-                    path.cell().min_image(del);
-                    for (std::size_t i = 0; i < dim; ++i) sum[i] += del[i];
-                }
-                p = path.next_particle(p);
-            } while (p != leader);
-            double f[SimulationCell::kMaxDim];
-            path.cell().fractional(sum, f);
-            for (std::size_t i = 0; i < dim; ++i) w2 += f[i] * f[i];
-        }
-        return w2 / static_cast<double>(np * dim);
-    }
-    for (std::size_t p = 0; p < np; ++p) {
-        for (std::size_t i = 0; i < dim; ++i) sum[i] = 0.0;
-        for (std::size_t k = 0; k < M; ++k) {
-            const std::size_t kn = (k + 1) % M;
-            for (std::size_t i = 0; i < dim; ++i)
-                del[i] = path.pos(p, i, kn) - path.pos(p, i, k);
-            path.cell().min_image(del);
-            for (std::size_t i = 0; i < dim; ++i) sum[i] += del[i];
-        }
-        double f[SimulationCell::kMaxDim];
-        path.cell().fractional(sum, f);
-        for (std::size_t i = 0; i < dim; ++i) w2 += f[i] * f[i];
-    }
-    return w2 / static_cast<double>(np * dim);
-}
+// The winding estimators (winding_measure) live in pimc/winding.h.
 
 }  // namespace
 
@@ -780,7 +731,10 @@ void Pimc::run() {
     // sign of a signed run and exactly 1.0 otherwise, so unsigned sums are
     // bit-identical to unweighted ones (x * 1.0 == x).
     // Index 6: the fraction of measurements on closed paths (worm runs).
-    using Block = std::array<double, 7>;
+    // Indices 7..: s times the Cartesian winding tensor components
+    // (pimc/winding.h), winding_tensor_size(dim) of them.
+    using Block = std::array<double, 7 + kMaxWindingTensor>;
+    const std::size_t n_tensor = winding_tensor_size(dim_);
     const auto n_blocks = static_cast<std::size_t>(n_acc);
     std::vector<Block> sample_blocks(n_replicas * n_blocks, Block{});
 
@@ -849,10 +803,12 @@ void Pimc::run() {
                         sum[0] += m.energy;
                         sum[1] += m.kinetic;
                         sum[2] += m.potential;
-                        sum[3] += winding2_of(path);
+                        double wt[kMaxWindingTensor];   // tensor components [c]
+                        sum[3] += winding_measure(path, wt);
                         if (cfg_.compare_thermodynamic)
                             sum[4] += m.energy - action.measure_thermo(path).energy;
                         sum[5] += 1.0;
+                        for (std::size_t c = 0; c < n_tensor; ++c) sum[7 + c] += wt[c];
                     } else if (closed) {
                         // Ratio estimator <O s [closed]>/<s [closed]>: the
                         // chain samples |weight|; s = sign(pi) restricted to
@@ -862,11 +818,13 @@ void Pimc::run() {
                         sum[0] += s * m.energy;
                         sum[1] += s * m.kinetic;
                         sum[2] += s * m.potential;
-                        sum[3] += s * winding2_of(path);
+                        double wt[kMaxWindingTensor];   // tensor components [c]
+                        sum[3] += s * winding_measure(path, wt);
                         if (cfg_.compare_thermodynamic)
                             sum[4] += s * (m.energy - action.measure_thermo(path).energy);
                         sum[5] += s;
                         sum[6] += 1.0;
+                        for (std::size_t c = 0; c < n_tensor; ++c) sum[7 + c] += s * wt[c];
                     }
                     if (quantum_ && closed) {
                         auto& counts = replica_cycles[r];
@@ -1009,6 +967,8 @@ void Pimc::run() {
     block_sign_.resize(grand.size());
     block_closed_.resize(worm_ ? grand.size() : 0);
     if (cfg_.compare_thermodynamic) block_energy_difference_.resize(grand.size());
+    for (std::size_t c = 0; c < kMaxWindingTensor; ++c)
+        block_winding_tensor_[c].assign(c < n_tensor ? grand.size() : 0, 0.0);
     for (std::size_t b = 0; b < grand.size(); ++b) {
         block_energies_[b]  = grand[b][0];
         block_kinetic_[b]   = grand[b][1];
@@ -1017,6 +977,7 @@ void Pimc::run() {
         block_sign_[b]      = grand[b][5];
         if (worm_) block_closed_[b] = grand[b][6];
         if (cfg_.compare_thermodynamic) block_energy_difference_[b]=grand[b][4];
+        for (std::size_t c = 0; c < n_tensor; ++c) block_winding_tensor_[c][b] = grand[b][7 + c];
     }
     if (cfg_.compare_thermodynamic)
         energy_difference_stats_=numerics::reblock(block_energy_difference_);
@@ -1070,6 +1031,12 @@ void Pimc::finalize_signed() {
     potential_error_ = signed_stats_[2].error;
     winding2_        = signed_stats_[3].mean;
     winding2_error_  = signed_stats_[3].error;
+    for (std::size_t c = 0; c < winding_tensor_size(dim_); ++c) {
+        signed_tensor_stats_[c] = numerics::ratio_of_means(block_winding_tensor_[c], block_sign_);
+        winding_tensor_stats_[c] = signed_tensor_stats_[c].numerator;
+        winding_tensor_[c]       = signed_tensor_stats_[c].mean;
+        winding_tensor_error_[c] = signed_tensor_stats_[c].error;
+    }
     if (cfg_.compare_thermodynamic) {
         // The paired virial-minus-thermodynamic difference is a signed ratio too.
         signed_stats_[4] = numerics::ratio_of_means(block_energy_difference_, block_sign_);
@@ -1124,6 +1091,11 @@ void Pimc::finalize_unsigned() {
     winding_stats_ = rw;
     winding2_        = rw.mean;
     winding2_error_  = rw.error;
+    for (std::size_t c = 0; c < winding_tensor_size(dim_); ++c) {
+        winding_tensor_stats_[c] = numerics::reblock(block_winding_tensor_[c]);
+        winding_tensor_[c]       = winding_tensor_stats_[c].mean;
+        winding_tensor_error_[c] = winding_tensor_stats_[c].error;
+    }
 }
 
 void Pimc::finalize_moves() {
@@ -1285,11 +1257,17 @@ RunResult Pimc::run_result() const {
         add_ratio_diagnostics("kinetic", signed_stats_[1]);
         add_ratio_diagnostics("potential", signed_stats_[2]);
         add_ratio_diagnostics("winding2", signed_stats_[3]);
+        for (std::size_t c = 0; c < winding_tensor_size(dim_); ++c)
+            add_ratio_diagnostics(std::string("winding_tensor_") + winding_tensor_label(c),
+                                  signed_tensor_stats_[c]);
     } else {
         add_diagnostics("energy", energy_stats_);
         add_diagnostics("kinetic", kinetic_stats_);
         add_diagnostics("potential", potential_stats_);
         add_diagnostics("winding2", winding_stats_);
+        for (std::size_t c = 0; c < winding_tensor_size(dim_); ++c)
+            add_diagnostics(std::string("winding_tensor_") + winding_tensor_label(c),
+                            winding_tensor_stats_[c]);
     }
     r.add_metadata("energy_estimator",cfg_.energy);
     r.add_metadata("energy_comparison",cfg_.compare_thermodynamic ? "paired "+cfg_.energy+"-minus-thermodynamic" : "disabled");
@@ -1369,6 +1347,11 @@ RunResult Pimc::run_result() const {
     r.add_scalar("potential_error", potential_error_);
     r.add_scalar("winding2", winding2_);
     r.add_scalar("winding2_error", winding2_error_);
+    for (std::size_t c = 0; c < winding_tensor_size(dim_); ++c) {
+        const std::string name = std::string("winding_tensor_") + winding_tensor_label(c);
+        r.add_scalar(name, winding_tensor_[c]);
+        r.add_scalar(name + "_error", winding_tensor_error_[c]);
+    }
     r.add_scalar("tau_int", tau_int_);
     r.add_scalar("reblock_plateau", plateau_found_ ? 1.0 : 0.0);
     r.add_scalar("acceptance_ratio", acceptance_);
@@ -1427,6 +1410,9 @@ RunResult Pimc::run_result() const {
     r.add_series("acc_block_kinetic", block_kinetic_);
     r.add_series("acc_block_potential", block_potential_);
     r.add_series("acc_block_winding2", block_winding2_);
+    for (std::size_t c = 0; c < winding_tensor_size(dim_); ++c)
+        r.add_series(std::string("acc_block_winding_tensor_") + winding_tensor_label(c),
+                     block_winding_tensor_[c]);
     for (const auto& e : ests_) e->write_results(r);
     r.check_unique_keys();
     return r;
