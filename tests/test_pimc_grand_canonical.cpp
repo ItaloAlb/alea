@@ -763,3 +763,120 @@ TEST_CASE("A one-sector window samples the canonical ensemble with gaps",
     CHECK(extra(worm, "advance_accepts") > 0);
     CHECK(extra(worm, "insert_accepts") == 0);
 }
+
+// ── Interacting bosons: exact F(2) - F(1) at finite M (validation) ───────────
+//
+// Two bosons of mass 1 in a 2-D trap (omega = 1) with C / r^3, C = 1, at
+// beta = 2 and M = 16.  In the primitive approximation the centre of mass
+// separates at every slice and a discretized harmonic ring does not depend on
+// the mass, so Z_2 / Z_1 = Z_rel, the relative path integral (mass 1/2) over
+// even partial waves; tests/references/inverse_power_trap_primitive.py
+// evaluates it by a radial transfer matrix on 300 Gauss-Legendre nodes
+// (changes of 5e-13 in ln Z_rel on doubling them; 1.6e-13 against the closed
+// forms at C = 0):
+//
+//   py -3 tests/references/inverse_power_trap_primitive.py --beta 2 --slices 16
+//         --omega 1 --strength 1 --exponent 3
+//
+// It is exact at this M, like the ideal references above, so the chain must
+// reproduce it within its statistical error: this is the first test in which
+// the interaction enters P(N + 1)/P(N), the quantity that gives mu.
+namespace {
+
+constexpr double kDipoleDeltaF = 1.847461147235;          // F(2) - F(1)
+constexpr double kDipoleNoExchangeDeltaF = 1.899507970692; // identity cycles only
+constexpr double kDipoleEnergy2 = 3.442269884856;          // E(N = 2), thermodynamic
+
+// Jackknife over blocks of f(sum_b a_b, sum_b c_b): {value, error}.
+template <class F>
+std::pair<double, double> jackknife(const std::vector<double>& a, const std::vector<double>& c, F f) {
+    const std::size_t blocks = a.size();
+    double total_a = 0.0, total_c = 0.0;
+    for (std::size_t b = 0; b < blocks; ++b) {
+        total_a += a[b];
+        total_c += c[b];
+    }
+    const double value = f(total_a, total_c);
+    double var = 0.0;
+    for (std::size_t b = 0; b < blocks; ++b) {
+        const double jack = f(total_a - a[b], total_c - c[b]);
+        var += (jack - value) * (jack - value);
+    }
+    return {value, std::sqrt(var * static_cast<double>(blocks - 1) / static_cast<double>(blocks))};
+}
+
+std::vector<double> column(const std::vector<std::vector<double>>& blocks, std::size_t n) {
+    std::vector<double> out;
+    out.reserve(blocks.size());
+    for (const auto& row : blocks) out.push_back(row[n]);
+    return out;
+}
+
+// harmonic_trap (omega^2 = 1) + intra-group C / r^3 on rows [0, n), open cell.
+Hamiltonian trapped_dipoles(std::size_t n) {
+    Hamiltonian ham;
+    ham.add_component(std::make_unique<HarmonicTrap>(one_group(n, 2), 1.0));
+    if (n > 1)
+        ham.add_component(std::make_unique<InversePowerTerm>(group(0, n, 2), group(0, n, 2), 1.0, 3.0,
+                                                             SimulationCell{}));
+    return ham;
+}
+
+}  // namespace
+
+TEST_CASE("Two dipolar bosons in a trap: a window of one and two particles measures the exact F(2) - F(1)",
+          "[pimc][grand_canonical][physics]") {
+    const double beta = 2.0, omega = 1.0;
+    const std::size_t M = 16, dim = 2, n_max = 2;
+    const double tau = beta / static_cast<double>(M);
+    // mu near F(2) - F(1): both sectors carry about half of the weight.
+    const double mu = 1.85;
+    PathSet path(M, n_max, dim, tau);
+    start_path(path, 1);
+    std::vector<Action> actions;
+    actions.emplace_back(one_group(n_max, dim), trapped_dipoles(n_max), dim);  // [0] unused
+    for (std::size_t n = 1; n <= n_max; ++n)
+        actions.emplace_back(one_group(n, dim), trapped_dipoles(n), dim);
+    Action worm_action(one_group(n_max, dim), trapped_dipoles(n_max), dim);
+    GrandCanonicalSpec spec;
+    spec.chemical_potential = mu;
+    spec.n_min = 1;
+    spec.n_max = n_max;
+    spec.insertion_width = 0.8;
+    GrandCanonicalWormMove worm(6, 4, std::nan(""), spec);
+    const SectorBlocks run = run_grand_canonical(path, actions, worm_action, worm, 3, 20261119,
+                                                 20, 200, 20000, 10);
+    INFO("sector transitions " << run.transitions << "; longest run in G " << run.longest_open);
+    CHECK(run.transitions > 200);
+
+    // F(2) - F(1) = mu - T ln[P(2)/P(1)] (closed-path counts of each sector).
+    const auto [delta_f, delta_f_error] =
+        jackknife(column(run.weight, 2), column(run.weight, 1),
+                  [&](double w2, double w1) { return mu - std::log(w2 / w1) / beta; });
+    const auto ring = [&](std::size_t K) { return pimc_reference::harmonic_ring(K, tau, omega, dim); };
+    const double ideal_delta_f =
+        -std::log(pimc_reference::recursion(2, M, +1, ring).partition /
+                  pimc_reference::recursion(1, M, +1, ring).partition) / beta;
+    INFO("F(2) - F(1) = " << delta_f << " +/- " << delta_f_error << " exact " << kDipoleDeltaF
+         << " (ideal " << ideal_delta_f << ", identity cycles only " << kDipoleNoExchangeDeltaF << ")");
+    CHECK(std::abs(delta_f - kDipoleDeltaF) <= 4.0 * delta_f_error);
+    // Power: dropping the interaction, or the exchange cycles, moves the
+    // reference by more than 5 sigma.
+    CHECK(std::abs(kDipoleDeltaF - ideal_delta_f) > 5.0 * delta_f_error);
+    CHECK(std::abs(kDipoleDeltaF - kDipoleNoExchangeDeltaF) > 5.0 * delta_f_error);
+
+    // Each sector is canonical: E(1) is the ideal ring, E(2) the interacting pair.
+    const auto ratio = [](double e, double w) { return e / w; };
+    const auto [energy_1, energy_1_error] = jackknife(column(run.energy, 1), column(run.weight, 1), ratio);
+    const auto [energy_2, energy_2_error] = jackknife(column(run.energy, 2), column(run.weight, 2), ratio);
+    const double exact_1 = pimc_reference::recursion(1, M, +1, ring).energy;
+    INFO("E(1) = " << energy_1 << " +/- " << energy_1_error << " exact " << exact_1);
+    INFO("E(2) = " << energy_2 << " +/- " << energy_2_error << " exact " << kDipoleEnergy2
+         << " (ideal " << pimc_reference::recursion(2, M, +1, ring).energy << ")");
+    CHECK(std::abs(energy_1 - exact_1) <= 4.0 * energy_1_error);
+    CHECK(std::abs(energy_2 - kDipoleEnergy2) <= 4.0 * energy_2_error);
+    for (const char* kind : {"insert", "remove", "swap"}) {
+        CAPTURE(kind);
+        CHECK(extra(worm, std::string(kind) + "_accepts") > 0);
+    }
+}

@@ -13,9 +13,11 @@ Alea has two test suites:
   golden test of the config-to-object path.
 - **Python checks** of the exact references in `tests/references/`:
   `tests/test_pair_bound_state.py` checks the isolated-pair solver against 2-D
-  hydrogen, the 2-D harmonic oscillator and the published bilayer exciton, and
+  hydrogen, the 2-D harmonic oscillator and the published bilayer exciton,
   `tests/test_inverse_power_trap_exact.py` checks the two-body reference of the
-  `inverse_power` term against closed forms.
+  `inverse_power` term against closed forms, and
+  `tests/test_inverse_power_trap_primitive.py` checks its finite-M path-integral
+  counterpart against the discretized harmonic rings.
 
 `tests/references/` holds the independent exact references whose energies the
 physics tests use: `dot_two_electron_exact.py` (two electrons in a 2-D
@@ -24,12 +26,19 @@ parabolic dot in a magnetic field, for the fixed-phase tests),
 interaction, for the `inverse_power` term) and `pair_bound_state.py` (the
 isolated pair of a bilayer, for the pairing-determinant test). Each solves a finite-volume
 radial eigenproblem, extrapolated by Richardson over spacings h and h/2;
-`--check` reports the remaining grid and box errors:
+`--check` reports the remaining grid and box errors.
+`inverse_power_trap_primitive.py` is the PIMC counterpart of the trap
+reference: the partition function of two bosons with C/r^p at a finite number
+of slices in the primitive approximation, by a radial transfer matrix over
+partial waves. It is exact at the M the simulation uses, so the
+grand-canonical test compares F(2) − F(1) and the two-particle energy with no
+time-step extrapolation:
 
 ```bash
 python tests/references/dot_two_electron_exact.py --w0 0.25 --B 0 0.2 0.4 --m 0 -1
 python tests/references/inverse_power_trap_exact.py --omega 1 5 20 --strength 1 --exponent 3
 python tests/references/pair_bound_state.py --d 0.4 --check
+python tests/references/inverse_power_trap_primitive.py --beta 2 --slices 16 --strength 1 --exponent 3
 ```
 
 Full simulations compared with exact references and with the literature (the
