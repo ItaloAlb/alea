@@ -94,6 +94,18 @@ public:
     virtual std::vector<std::pair<std::size_t, std::size_t>> restricted_blocks() const {
         return {};
     }
+    // Grand canonical (opt-in): this component's action change when bead
+    // (p, k) at `position` joins slice k, whose other beads are the rows
+    // [0, n_rows) except p and `skip` (npos: none) -- see
+    // HamiltonianComponent::bead_energy.  Kinetic springs are the worm's own
+    // (free walks, normalized free propagators), so a free kinetic component
+    // returns 0.  Read-only.
+    [[nodiscard]] virtual bool supports_bead_action() const noexcept { return false; }
+    virtual double bead_action(const PathSet&, std::size_t /*k*/, std::size_t /*p*/,
+                               std::span<const double> /*position*/, std::size_t /*n_rows*/,
+                               std::size_t /*skip*/) const {
+        throw std::logic_error("action component has no grand-canonical bead action");
+    }
     virtual double mass(std::size_t, std::size_t) const {
         throw std::logic_error("action component has no free kinetic mass");
     }

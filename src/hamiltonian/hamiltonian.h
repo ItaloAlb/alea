@@ -61,6 +61,13 @@ public:
         std::span<double> scratch) const;
     [[nodiscard]] bool translation_invariant() const noexcept;
 
+    // Every potential term offers HamiltonianComponent::bead_energy.
+    [[nodiscard]] bool supports_bead_energy() const noexcept;
+    // Sum of the potential terms' bead energies (see HamiltonianComponent).
+    double bead_energy(const ParticleBatch& configs, std::size_t w, std::size_t p,
+                       std::span<const double> position, std::size_t n_rows,
+                       std::size_t skip) const;
+
     // Accumulate ∂E_L/∂p_k into `out` [n_opt * nw]; zeros it first.
     void local_energy_parameter_derivatives(const WalkerSet& batch,
                                             std::span<const double> dgrad,

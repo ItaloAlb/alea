@@ -63,6 +63,11 @@ public:
     double delta_potential_particle(ParticleBatch&, std::size_t, std::size_t,
         std::span<const double>, std::span<double>) const override;
 
+    // V(r) of the bead when row p is in a listed range, else 0.
+    bool supports_bead_energy() const noexcept override { return true; }
+    double bead_energy(const ParticleBatch&, std::size_t, std::size_t,
+        std::span<const double>, std::size_t, std::size_t) const override;
+
     void evaluate_potential(const ParticleBatch& batch, std::span<double> v_out,
                             std::size_t w_begin = 0,
                             std::size_t w_end = npos) const override;

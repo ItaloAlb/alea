@@ -47,6 +47,34 @@ double radial_particle_delta(const ParticleBatch& configs, std::size_t p,
     return delta;
 }
 
+// Pair part of a grand-canonical bead energy (HamiltonianComponent::bead_energy)
+// for an intra-group radial pair V(r): sum of radial(r) between `position`
+// (wrapped into the cell) and the rows j of `group` in [0, n_rows), j != p and
+// j != skip, at configuration w.  Distances are minimum image, computed as
+// min_image_dist2 computes them for the distance tables.  `counted` returns
+// the number of partners.  O(N).
+template<class Radial>
+double radial_bead_energy(const ParticleBatch& configs, std::size_t w, std::size_t p,
+    std::span<const double> position, std::size_t n_rows, std::size_t skip,
+    const ParticleGroup& group, Radial radial, std::size_t& counted) {
+    const auto dim = configs.dim(), nw = configs.num_walkers();
+    double candidate[SimulationCell::kMaxDim];
+    for (std::size_t d = 0; d < dim; ++d) candidate[d] = position[d];
+    configs.cell().wrap(candidate);
+    double energy = 0.0;
+    counted = 0;
+    const std::size_t end = group.last < n_rows ? group.last : n_rows;
+    for (std::size_t j = group.first; j < end; ++j) {
+        if (j == p || j == skip) continue;
+        double displacement[SimulationCell::kMaxDim];
+        for (std::size_t d = 0; d < dim; ++d)
+            displacement[d] = candidate[d] - configs.positions()[j * dim * nw + d * nw + w];
+        energy += radial(std::sqrt(configs.cell().min_image_dist2(displacement)));
+        ++counted;
+    }
+    return energy;
+}
+
 // Leading short-range singularity V_ab(r) ≈ C / r^p of a pair potential that is
 // stronger than the 1/r pole coulomb_cusp_residue reports (p > 1).
 // coefficient == 0 means the pair has no such core.
@@ -149,6 +177,22 @@ public:
         (void)b;
         (void)k;
         return 0.0;
+    }
+
+    // ── Grand-canonical bead energy (opt-in) ──
+    // e = V(R ∪ {r}) − V(R): the change of this term when one particle of row
+    // p at `position` ([dim]) joins configuration w, where R is the rows
+    // [0, n_rows) other than p and `skip` (npos: none).  A grand-canonical PIMC
+    // slice misses at most one bead, so this is every potential change its
+    // moves need.  e includes the term's N-dependent constants (a continuum
+    // tail adds V_tail(n + 1) − V_tail(n) for the n particles of R): at a fixed
+    // particle count those are constants, here they weight the sectors.  p may
+    // be >= n_rows (a particle not yet in the configuration).  Read-only.
+    [[nodiscard]] virtual bool supports_bead_energy() const noexcept { return false; }
+    virtual double bead_energy(const ParticleBatch& /*configs*/, std::size_t /*w*/,
+                               std::size_t /*p*/, std::span<const double> /*position*/,
+                               std::size_t /*n_rows*/, std::size_t /*skip*/) const {
+        throw std::logic_error(name() + ": no grand-canonical bead energy");
     }
 
     // True when this term is a potential V(R): a function of the particle

@@ -104,8 +104,31 @@ InversePowerTerm::InversePowerTerm(ParticleGroup group_a, ParticleGroup group_b,
     const auto n_a = static_cast<double>(group_a_.size());
     const auto n_b = static_cast<double>(group_b_.size());
     const double pairs = is_intragroup_ ? 0.5 * n_a * n_a : n_a * n_b;
-    tail_ = pairs / cell.volume() * strength_ *
-            outside_wigner_seitz_integral(cell, exponent_);
+    const double outside = outside_wigner_seitz_integral(cell, exponent_);
+    tail_ = pairs / cell.volume() * strength_ * outside;  // evaluation order kept
+    tail_pair_density_ = strength_ * outside / cell.volume();
+}
+
+double InversePowerTerm::bead_energy(const ParticleBatch& configs, std::size_t w,
+    std::size_t p, std::span<const double> position, std::size_t n_rows,
+    std::size_t skip) const {
+    if (!is_intragroup_)
+        throw std::logic_error("inverse_power: a bead energy needs an intra-group term");
+    if (!group_a_.contains(p)) return 0.0;
+    const double c = strength_, power = exponent_;
+    const int p_int = integer_exponent_;
+    std::size_t counted = 0;
+    const double pairs = radial_bead_energy(configs, w, p, position, n_rows, skip, group_a_,
+        [&](double r) {
+            if (p_int > 0) {  // the same repeated product evaluate_potential uses
+                const double inv_r = 1.0 / r;
+                double inv_rp = inv_r;
+                for (int k = 1; k < p_int; ++k) inv_rp *= inv_r;
+                return c * inv_rp;
+            }
+            return c * std::pow(r, -power);
+        }, counted);
+    return pairs + tail_pair_density_ * (static_cast<double>(counted) + 0.5);
 }
 
 void InversePowerTerm::evaluate_potential(const ParticleBatch& batch,

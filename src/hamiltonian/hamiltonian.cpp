@@ -116,6 +116,25 @@ double Hamiltonian::delta_potential_particle(ParticleBatch& configs,
     return delta;
 }
 
+bool Hamiltonian::supports_bead_energy() const noexcept {
+    for (const auto& component : components_)
+        if (component->is_potential() && !component->supports_bead_energy()) return false;
+    return true;
+}
+
+double Hamiltonian::bead_energy(const ParticleBatch& configs, std::size_t w,
+    std::size_t p, std::span<const double> position, std::size_t n_rows,
+    std::size_t skip) const {
+    if (w >= configs.num_walkers() || position.size() != configs.dim() ||
+        n_rows > configs.n_particles())
+        throw std::invalid_argument("bead energy: invalid configuration, position or row count");
+    double energy = 0.0;
+    for (const auto& component : components_)
+        if (component->is_potential())
+            energy += component->bead_energy(configs, w, p, position, n_rows, skip);
+    return energy;
+}
+
 bool Hamiltonian::translation_invariant() const noexcept {
     for (const auto& component : components_)
         if (component->is_potential() && !component->is_translation_invariant()) return false;

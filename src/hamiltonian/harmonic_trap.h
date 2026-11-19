@@ -27,6 +27,11 @@ public:
     HarmonicTrap(const std::vector<ParticleGroup>& groups, double omega2,
                  std::vector<double> center = {});
 
+    // ½ m ω² |r − c|² for row p (0 outside the trapped groups).
+    bool supports_bead_energy() const noexcept override { return true; }
+    double bead_energy(const ParticleBatch&, std::size_t, std::size_t,
+        std::span<const double>, std::size_t, std::size_t) const override;
+
     std::string name() const override { return "harmonic_trap"; }
     PairActionRole pair_action_role() const noexcept override { return PairActionRole::one_body; }
 

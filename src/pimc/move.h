@@ -385,7 +385,22 @@ private:
 // proposal whose reverse needs a non-minimum-image frame, or whose new links
 // are not their own minimum image, is rejected.  The chain samples |weight|;
 // the fermion sign is that of the virtually closed path.
-class WormMove final : public Move {
+// Driver hooks shared by the canonical worm and the grand-canonical worm
+// (pimc/grand_canonical_worm.h): the selection probability that enters their
+// open/close acceptances, and the tuning of the worm constant C.
+class WormBase : public Move {
+public:
+    // p_sel in (0, 1]: the probability that the driver picks this move in Z.
+    virtual void set_selection_probability(double p) = 0;
+    [[nodiscard]] virtual double worm_constant() const noexcept = 0;
+    [[nodiscard]] virtual bool tunes_constant() const noexcept = 0;
+    // After an equilibration block: closed / own-open fractions of the
+    // attempts; scales C towards open/closed = target_ratio.
+    virtual void tune_constant(double closed_fraction, double open_fraction,
+                               double target_ratio) = 0;
+};
+
+class WormMove final : public WormBase {
 public:
     static constexpr double kSwap = 0.4, kHead = 0.2, kTail = 0.2, kClose = 0.2;
 
@@ -408,15 +423,16 @@ public:
 
     // ── Driver hooks ──
     // p_sel in (0, 1]: the probability that the driver picks this move in Z.
-    void set_selection_probability(double p);
+    void set_selection_probability(double p) override;
     // The path is open in one of this worm's classes.
     [[nodiscard]] bool owns(const PathSet& path) const noexcept;
-    [[nodiscard]] double worm_constant() const noexcept { return constant_; }
-    [[nodiscard]] bool tunes_constant() const noexcept { return tune_; }
+    [[nodiscard]] double worm_constant() const noexcept override { return constant_; }
+    [[nodiscard]] bool tunes_constant() const noexcept override { return tune_; }
     // After an equilibration block: closed / own-open fractions of the
     // attempts; scales C by the square root of the ratio that would give
     // open/closed = target_ratio (clamped to [1/4, 4]).  No-op when C was given.
-    void tune_constant(double closed_fraction, double open_fraction, double target_ratio);
+    void tune_constant(double closed_fraction, double open_fraction,
+                       double target_ratio) override;
     [[nodiscard]] std::size_t worm_particles() const noexcept { return particles_.size(); }
     // One-body density matrix at an open path (design doc): per sample draw
     // x ~ rho0(h, .; tau), write the minimum-image x - t to displacement[i*d..]

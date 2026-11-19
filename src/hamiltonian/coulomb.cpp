@@ -109,6 +109,18 @@ void CoulombTerm::evaluate_potential_gradient(const ParticleBatch& batch,
             }
 }
 
+double CoulombTerm::bead_energy(const ParticleBatch& configs, std::size_t w,
+    std::size_t p, std::span<const double> position, std::size_t n_rows,
+    std::size_t skip) const {
+    if (!is_intragroup_)
+        throw std::logic_error("coulomb: a bead energy needs an intra-group term");
+    if (!group_a_.contains(p)) return 0.0;
+    const double coefficient = group_a_.charge * group_a_.charge * inv_epsilon_;
+    std::size_t counted = 0;
+    return radial_bead_energy(configs, w, p, position, n_rows, skip, group_a_,
+        [&](double r) { return coefficient / std::sqrt(r * r + d2_); }, counted);
+}
+
 // Changed pairs only: O(N) radial evaluations, committed batch untouched.
 double CoulombTerm::delta_potential_particle(ParticleBatch& configs,
     std::size_t p, std::size_t k, std::span<const double> proposed,
