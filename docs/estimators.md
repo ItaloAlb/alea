@@ -708,7 +708,11 @@ order 10⁶ % near ρ_min despite sub-percent value errors.
   observable, refusal of unsupported or oversized histories.
 - `test_pimc_worm.cpp`: the worm and the momentum distribution.
 - `test_pimc_grand_canonical.cpp`, `test_pimc_grand_canonical_driver.cpp`: the
-  grand-canonical worm against exact finite-M populations and $F(2) - F(1)$ of
+  grand-canonical worm's detailed balance (the Metropolis ratio of every
+  accepted sub-move against its weights and proposal densities written out,
+  and the frequency of every discrete outcome from fixed configurations
+  against its enumerated probability, window boundaries included), the worm
+  against exact finite-M populations and $F(2) - F(1)$ of
   two trapped dipoles, sector observables against canonical runs, the
   independence of $F(N+1) - F(N)$ from $\mu_\text{in}$, and path checkpoints
   that carry each replica's N through a file.

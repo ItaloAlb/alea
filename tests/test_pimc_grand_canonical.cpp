@@ -880,3 +880,748 @@ TEST_CASE("Two dipolar bosons in a trap: a window of one and two particles measu
         CHECK(extra(worm, std::string(kind) + "_accepts") > 0);
     }
 }
+
+// ── Detailed balance, every proposal probability written out (request test 4) ─
+//
+// W(x) K(x -> y) = W(y) K(y -> x) with K = T min(1, r) holds when (a) the
+// ratio r of every proposal is W(y) T(y -> x) / (W(x) T(x -> y)) and (b) the
+// code proposes with the T that ratio assumes.  The two tests below check
+// both without the acceptance formulas of grand_canonical_worm.cpp:
+//  (a) along chains with interactions, ln r of every accepted sub-move
+//      (last_log_acceptance) against ln W(y) T(y -> x) - ln W(x) T(x -> y),
+//      W the full weight (rho0 of every present link, the oracle S_V,
+//      e^{beta mu N} or C e^{tau mu n_b}) and T the explicit proposal density
+//      (selection, uniform draws, insertion density, and the free walk or
+//      bridge density written link by link), so the cancellations the move
+//      relies on happen here numerically;
+//  (b) from fixed configurations of free particles, whose acceptances do not
+//      depend on the drawn coordinates, the frequency of every discrete
+//      outcome against its enumerated probability (chi^2), the moments of the
+//      drawn walks, bridges and tails, and the rejections at the window.
+// W is the weight of unlabeled configurations: the 1/N! of Z_N cancels the
+// N! labelings of the rows, and every sub-move acts alike on every labeling
+// (insert appends the last row, remove refills the slot with the last row, a
+// swap may relabel one side of a slice), so the tests compare configurations
+// by their beads, not by their row labels.
+
+#include <algorithm>
+#include <array>
+#include <limits>
+#include <map>
+#include <numeric>
+#include <tuple>
+
+namespace {
+
+using Bead = PathSet::Bead;
+using Worm = GrandCanonicalWormMove;
+constexpr double kNoWay = -std::numeric_limits<double>::infinity();
+
+// What the weights and proposal densities of one grand-canonical chain need
+// (mass 1, d = 2 throughout).
+struct Rules {
+    double constant = 0.0;  // C
+    double mu = 0.0;        // mu_in
+    std::size_t n_min = 0, n_max = 0;
+    std::size_t max_length = 0;   // L
+    std::size_t swap_length = 0;  // m_s
+    double p_select = 1.0;        // the driver's probability of the worm in Z
+    double area = 0.0;            // periodic cell: uniform tail density 1 / area
+    double width = 0.0;           // open cell: Gaussian tail density
+    std::array<double, 2> center{};
+};
+
+double log_insertion(const Rules& rules, const double* r) {
+    if (rules.area > 0.0) return -std::log(rules.area);
+    double log_q = 0.0;
+    for (std::size_t d = 0; d < 2; ++d) {
+        const double x = (r[d] - rules.center[d]) / rules.width;
+        log_q += -0.5 * std::log(2.0 * std::numbers::pi * rules.width * rules.width) - 0.5 * x * x;
+    }
+    return log_q;
+}
+
+bool same_bead(Bead a, Bead b) { return a.particle == b.particle && a.slice == b.slice; }
+
+Bead walk_forward(const PathSet& path, Bead from, std::size_t n) {
+    for (std::size_t i = 0; i < n; ++i) from = path.bead_after(from.particle, from.slice);
+    return from;
+}
+
+// [p * M + k]: every bead of the active rows except, in an open path, the g
+// beads that follow the head along its worldline.
+std::vector<char> present_beads(const PathSet& path) {
+    const std::size_t M = path.num_slices();
+    std::vector<char> mask(path.capacity() * M, 0);
+    std::fill(mask.begin(), mask.begin() + static_cast<std::ptrdiff_t>(path.active_particles() * M), 1);
+    if (path.is_open()) {
+        Bead b = path.head();
+        for (std::size_t i = 0; i < path.gap(); ++i) {
+            b = path.bead_after(b.particle, b.slice);
+            mask[b.particle * M + b.slice] = 0;
+        }
+    }
+    return mask;
+}
+
+bool present(const PathSet& path, const std::vector<char>& mask, Bead b) {
+    return mask[b.particle * path.num_slices() + b.slice] != 0;
+}
+
+void coordinates(const PathSet& path, Bead b, double* r) {
+    for (std::size_t d = 0; d < path.dim(); ++d) r[d] = path.pos(b.particle, d, b.slice);
+}
+
+// Minimum-image separation of bead b from bead a.
+void separation(const PathSet& path, Bead a, Bead b, double* sep) {
+    for (std::size_t d = 0; d < path.dim(); ++d)
+        sep[d] = path.pos(b.particle, d, b.slice) - path.pos(a.particle, d, a.slice);
+    if (path.cell().is_periodic()) path.cell().min_image(sep);
+}
+
+// ln rho0(b - a; n tau), the normalized free propagator of mass 1.
+double log_rho0(const PathSet& path, Bead a, Bead b, std::size_t n) {
+    double sep[SimulationCell::kMaxDim];
+    separation(path, a, b, sep);
+    const double t = static_cast<double>(n) * path.tau();
+    double value = 0.0;
+    for (std::size_t d = 0; d < path.dim(); ++d)
+        value += -0.5 * std::log(2.0 * std::numbers::pi * t) - sep[d] * sep[d] / (2.0 * t);
+    return value;
+}
+
+// Density of the n beads of a free walk of n links from `from`: the product
+// of the links' rho0.
+double log_walk(const PathSet& path, Bead from, std::size_t n) {
+    double value = 0.0;
+    for (std::size_t i = 0; i < n; ++i) {
+        const Bead next = path.bead_after(from.particle, from.slice);
+        value += log_rho0(path, from, next, 1);
+        from = next;
+    }
+    return value;
+}
+
+// Density of the n - 1 interior beads of a free bridge over n links from
+// `from` to the bead n links after it: prod rho0(link) / rho0(end - from; n).
+double log_bridge(const PathSet& path, Bead from, std::size_t n) {
+    return log_walk(path, from, n) - log_rho0(path, from, walk_forward(path, from, n), n);
+}
+
+// ln W (BPS Sec. III at discrete tau, unlabeled configurations):
+//   Z: e^{beta mu N} prod_links rho0 e^{-S_V},
+//   G: C e^{tau mu n_b} prod_{present links} rho0 e^{-S_V},
+// a link being present when both its beads are and it does not leave the
+// head (the cut link of a gap-free worm).
+double log_weight(const PathSet& path, const Rules& rules, const SimulationCell& cell,
+                  const std::vector<Hamiltonian>& hams) {
+    const std::vector<char> mask = present_beads(path);
+    const std::size_t M = path.num_slices(), R = path.active_particles();
+    double value = -oracle_potential_action(path, cell, hams);
+    std::size_t beads = 0;
+    for (std::size_t p = 0; p < R; ++p)
+        for (std::size_t k = 0; k < M; ++k) {
+            const Bead a{p, k};
+            if (!present(path, mask, a)) continue;
+            ++beads;
+            const Bead b = path.bead_after(p, k);
+            if ((path.is_open() && same_bead(a, path.head())) || !present(path, mask, b)) continue;
+            value += log_rho0(path, a, b, 1);
+        }
+    if (!path.is_open()) return value + path.beta() * rules.mu * static_cast<double>(R);
+    return value + std::log(rules.constant) + path.tau() * rules.mu * static_cast<double>(beads);
+}
+
+// The swap's heat-bath weight of target bead `to` from `from`: rho0 over m_s
+// links up to its normalization, pruned beyond e^{-kMinusLogEpsilon}.
+double heat_weight(const PathSet& path, Bead from, Bead to, std::size_t ms) {
+    double sep[SimulationCell::kMaxDim];
+    separation(path, from, to, sep);
+    double exponent = 0.0;
+    for (std::size_t d = 0; d < path.dim(); ++d) exponent += sep[d] * sep[d];
+    exponent /= 2.0 * static_cast<double>(ms) * path.tau();
+    return exponent > CycleTable::kMinusLogEpsilon ? 0.0 : std::exp(-exponent);
+}
+
+// Sum of the heat-bath weights over the present beads of `slice`.
+double heat_sum(const PathSet& path, const std::vector<char>& mask, Bead from, std::size_t slice,
+                std::size_t ms) {
+    double sum = 0.0;
+    for (std::size_t j = 0; j < path.active_particles(); ++j)
+        if (present(path, mask, {j, slice})) sum += heat_weight(path, from, {j, slice}, ms);
+    return sum;
+}
+
+// A swap from `head` to target `alpha` exists when the m_s - 1 beads before
+// alpha and the bead zeta before them are present, zeta is not the head, and
+// both heat baths (from the head and, for the reverse, from zeta) can pick
+// alpha.  Returns zeta through `zeta`.
+bool swap_exists(const PathSet& path, const std::vector<char>& mask, Bead head, Bead alpha,
+                 std::size_t ms, Bead& zeta) {
+    Bead b = alpha;
+    for (std::size_t i = 0; i < ms; ++i) {
+        b = path.bead_before(b.particle, b.slice);
+        if (!present(path, mask, b)) return false;
+    }
+    if (same_bead(b, head)) return false;
+    if (!(heat_weight(path, head, alpha, ms) > 0.0 && heat_weight(path, b, alpha, ms) > 0.0))
+        return false;
+    zeta = b;
+    return true;
+}
+
+// ln T of the swap from head h to alpha in `from`: kSwap, the heat-bath
+// probability of alpha, and the free bridge that `to` holds from the bead
+// `h_in_to` (h's coordinates in the labels of `to`) over m_s links.
+double log_swap(const PathSet& from, Bead h, Bead alpha, const PathSet& to, Bead h_in_to,
+                std::size_t ms) {
+    const std::vector<char> mask = present_beads(from);
+    Bead zeta{};
+    if (!swap_exists(from, mask, h, alpha, ms, zeta)) return kNoWay;
+    return std::log(Worm::kSwap) + std::log(heat_weight(from, h, alpha, ms)) -
+           std::log(heat_sum(from, mask, h, alpha.slice, ms)) + log_bridge(to, h_in_to, ms);
+}
+
+enum Kind { kOpenKind, kCloseKind, kInsertKind, kRemoveKind, kAdvanceKind, kRecedeKind,
+            kSwapKind, kKinds };
+constexpr const char* kKindNames[kKinds] = {"open", "close", "insert", "remove",
+                                            "advance", "recede", "swap"};
+
+// An accepted step x -> y: its sub-move, told apart by the sector, the row
+// count and the gap, and the discrete choices it made, in x's labels.
+struct Step {
+    int kind = kKinds;
+    std::size_t m = 0;            // advance / recede length, insert / remove links
+    Bead head{}, zeta{}, alpha{}; // swap, in x: the old head, the new head, the target
+    Bead head_in_y{};             // swap: the old head's bead in y's labels
+    std::string key;              // the discrete outcome
+};
+
+// The present bead of `slice` with exactly the coordinates r.
+Bead find_bead(const PathSet& path, const std::vector<char>& mask, std::size_t slice,
+               const double* r) {
+    std::size_t found = path.capacity(), matches = 0;
+    for (std::size_t p = 0; p < path.active_particles(); ++p) {
+        if (!present(path, mask, {p, slice})) continue;
+        bool equal = true;
+        for (std::size_t d = 0; d < path.dim(); ++d) equal = equal && path.pos(p, d, slice) == r[d];
+        if (equal) {
+            found = p;
+            ++matches;
+        }
+    }
+    REQUIRE(matches == 1);
+    return {found, slice};
+}
+
+std::string bead_key(Bead b) {
+    return std::to_string(b.particle) + " " + std::to_string(b.slice);
+}
+
+Step classify(const PathSet& x, const PathSet& y, std::size_t ms) {
+    const std::size_t M = x.num_slices(), rows_x = x.active_particles(), rows_y = y.active_particles();
+    Step s;
+    if (!x.is_open()) {
+        REQUIRE(y.is_open());
+        if (rows_y == rows_x) {
+            s.kind = kOpenKind;
+            s.key = "open " + bead_key(y.head()) + " g " + std::to_string(y.gap());
+        } else {
+            REQUIRE(rows_y == rows_x + 1);
+            s.kind = kInsertKind;
+            s.m = M - 1 - y.gap();
+            s.key = "insert " + std::to_string(y.tail().slice) + " m " + std::to_string(s.m);
+        }
+    } else if (!y.is_open()) {
+        if (rows_y == rows_x) {
+            s.kind = kCloseKind;
+            s.key = "close";
+        } else {
+            REQUIRE(rows_y + 1 == rows_x);
+            s.kind = kRemoveKind;
+            s.m = M - 1 - x.gap();
+            s.key = "remove";
+        }
+    } else {
+        REQUIRE(rows_y == rows_x);
+        if (y.gap() != x.gap()) {
+            s.kind = y.gap() < x.gap() ? kAdvanceKind : kRecedeKind;
+            s.m = y.gap() < x.gap() ? x.gap() - y.gap() : y.gap() - x.gap();
+            s.key = std::string(kKindNames[s.kind]) + " " + std::to_string(s.m);
+        } else {
+            s.kind = kSwapKind;
+            const std::vector<char> mask_x = present_beads(x), mask_y = present_beads(y);
+            double r[SimulationCell::kMaxDim], r_alpha[SimulationCell::kMaxDim];
+            s.head = x.head();
+            coordinates(y, y.head(), r);
+            s.zeta = find_bead(x, mask_x, s.head.slice, r);
+            s.alpha = walk_forward(x, s.zeta, ms);
+            coordinates(x, s.head, r);
+            s.head_in_y = find_bead(y, mask_y, s.head.slice, r);
+            // y's new segment leaves the old head and ends at alpha.
+            coordinates(x, s.alpha, r_alpha);
+            coordinates(y, walk_forward(y, s.head_in_y, ms), r);
+            for (std::size_t d = 0; d < x.dim(); ++d) REQUIRE(r[d] == r_alpha[d]);
+            s.key = "swap " + bead_key(s.alpha);
+        }
+    }
+    return s;
+}
+
+// ln W(y) T(y -> x) - ln W(x) T(x -> y) of the step x -> y, every T written
+// out from the proposal of its sub-move (header of grand_canonical_worm.h);
+// kNoWay when the step or its reverse cannot be proposed.
+double explicit_log_ratio(const PathSet& x, const PathSet& y, const Step& s, const Rules& rules,
+                          const SimulationCell& cell, const std::vector<Hamiltonian>& hams) {
+    const std::size_t M = x.num_slices(), L = rules.max_length;
+    const double log_l = std::log(static_cast<double>(L));
+    // Z -> G by open (the worm selected, then open: a uniform bead of the R M
+    // and a uniform gap in [0, L]); G -> Z by close (kClose, then a free
+    // bridge over the g + 1 links).  {T(open), T(close)}.
+    const auto open_close = [&](const PathSet& closed, const PathSet& open) {
+        const std::size_t g = open.gap(), R = closed.active_particles();
+        if (g > L || R != open.active_particles()) return std::pair{kNoWay, kNoWay};
+        return std::pair{std::log(rules.p_select * Worm::kOpenZ) -
+                             std::log(static_cast<double>(R * M)) - std::log(static_cast<double>(L + 1)),
+                         std::log(Worm::kClose) + log_bridge(closed, open.head(), g + 1)};
+    };
+    // Z(N) -> G(N + 1) by insert (the worm selected, then insert: a uniform
+    // slice, a uniform length m in [1, L], the tail from the insertion
+    // density, a free walk of m links); back by remove (kRemove; the worm is
+    // a row of its own).  {T(insert), T(remove)}.
+    const auto insert_remove = [&](const PathSet& closed, const PathSet& open) {
+        const std::size_t N = closed.active_particles(), m = M - 1 - open.gap();
+        const bool own_row = open.next_particle(open.head().particle) == open.head().particle;
+        if (N + 1 != open.active_particles() || N >= rules.n_max || N < rules.n_min || m < 1 ||
+            m > L || !own_row)
+            return std::pair{kNoWay, kNoWay};
+        double r_tail[SimulationCell::kMaxDim];
+        coordinates(open, open.tail(), r_tail);
+        return std::pair{std::log(rules.p_select * (1.0 - Worm::kOpenZ)) -
+                             std::log(static_cast<double>(M)) - log_l + log_insertion(rules, r_tail) +
+                             log_walk(open, open.tail(), m),
+                         std::log(Worm::kRemove)};
+    };
+    // G(g) -> G(g - m) by advance (kAdvance, a uniform m in [1, L] with
+    // m <= g, a free walk of m links from the head); back by recede (kRecede,
+    // a uniform m with g - m + m <= M - 1).  {T(advance), T(recede)}.
+    const auto advance_recede = [&](const PathSet& long_gap, const PathSet& short_gap) {
+        const std::size_t m = long_gap.gap() - short_gap.gap();
+        if (m < 1 || m > L || long_gap.gap() > M - 1) return std::pair{kNoWay, kNoWay};
+        return std::pair{std::log(Worm::kAdvance) - log_l + log_walk(short_gap, long_gap.head(), m),
+                         std::log(Worm::kRecede) - log_l};
+    };
+    double forward = kNoWay, reverse = kNoWay;
+    switch (s.kind) {
+    case kOpenKind: std::tie(forward, reverse) = open_close(x, y); break;
+    case kCloseKind: std::tie(reverse, forward) = open_close(y, x); break;
+    case kInsertKind: std::tie(forward, reverse) = insert_remove(x, y); break;
+    case kRemoveKind: std::tie(reverse, forward) = insert_remove(y, x); break;
+    case kAdvanceKind: std::tie(forward, reverse) = advance_recede(x, y); break;
+    case kRecedeKind: std::tie(reverse, forward) = advance_recede(y, x); break;
+    case kSwapKind: {
+        const std::size_t ms = rules.swap_length;
+        forward = log_swap(x, s.head, s.alpha, y, s.head_in_y, ms);
+        reverse = log_swap(y, y.head(), walk_forward(y, s.head_in_y, ms), x, s.zeta, ms);
+        break;
+    }
+    default: FAIL("unclassified step");
+    }
+    if (!(forward > kNoWay && reverse > kNoWay)) return kNoWay;
+    return log_weight(y, rules, cell, hams) + reverse - log_weight(x, rules, cell, hams) - forward;
+}
+
+// A copy of a path's state (PathSet itself is not copyable).
+struct Snapshot {
+    std::vector<double> positions;
+    std::vector<std::size_t> permutation;
+    std::size_t active = 0, gap = 0;
+    bool open = false;
+    Bead head{};
+};
+
+Snapshot snapshot(const PathSet& path) {
+    const auto pi = path.permutation();
+    return {path.all_positions(), {pi.begin(), pi.end()}, path.active_particles(),
+            path.gap(), path.is_open(), path.head()};
+}
+
+void restore(PathSet& path, const Snapshot& s) {
+    path.close();
+    std::vector<std::size_t> identity(path.capacity());
+    std::iota(identity.begin(), identity.end(), std::size_t{0});
+    path.set_permutation(identity);
+    path.set_active_particles(s.active);
+    path.set_permutation(s.permutation);
+    std::copy(s.positions.begin(), s.positions.end(), path.positions().begin());
+    path.rebuild_tables();
+    if (s.open) path.open_with_gap(s.head, s.gap);
+}
+
+}  // namespace
+
+TEST_CASE("Every accepted grand-canonical sub-move has the Metropolis ratio of its weights "
+          "and proposal densities written out",
+          "[pimc][grand_canonical][worm][balance]") {
+    struct Case {
+        std::string name;
+        SimulationCell cell;
+        HamiltonianFactory build;
+        GrandCanonicalSpec spec;
+        double charge;
+        double area;  // the cell's, from its lattice vectors: 3 x (3 sqrt(3) / 2)
+    };
+    GrandCanonicalSpec periodic_spec;
+    periodic_spec.chemical_potential = 8.0;
+    periodic_spec.n_min = 1;
+    periodic_spec.n_max = 4;
+    GrandCanonicalSpec open_spec;
+    open_spec.chemical_potential = 2.0;
+    open_spec.n_min = 0;
+    open_spec.n_max = 3;
+    open_spec.insertion_width = 0.8;
+    const auto trap = [](std::size_t n, const SimulationCell&) { return trapped_coulomb(n); };
+    const std::vector<Case> cases{
+        {"moire + inverse_power, hexagonal L = 3", hexagonal_cell(), dipolar_moire, periodic_spec,
+         0.0, 4.5 * std::numbers::sqrt3},
+        {"harmonic_trap + coulomb, open", SimulationCell{}, +trap, open_spec, 1.0, 0.0}};
+    for (const auto& c : cases) {
+        SECTION(c.name) {
+            const std::size_t M = 12, dim = 2, capacity = c.spec.n_max, L = 4, ms = 3;
+            const double tau = 0.05, constant = 0.03, p_select = 0.5;
+            PathSet path(M, capacity, dim, tau, c.cell), before(M, capacity, dim, tau, c.cell);
+            fill_distinct(path);
+            path.wrap_positions();
+            path.rebuild_tables();
+            one_class(path);
+            one_class(before);
+            path.set_active_particles(2);
+            Action worm_action(one_group(capacity, dim, c.charge), c.build(capacity, c.cell), dim);
+            std::vector<Action> sector;
+            for (std::size_t n = 1; n <= capacity; ++n)
+                sector.emplace_back(one_group(n, dim, c.charge), c.build(n, c.cell), dim);
+            GrandCanonicalWormMove worm(static_cast<int>(L), static_cast<int>(ms), constant, c.spec);
+            worm.set_selection_probability(p_select);
+            BisectionMove bisection(2);
+            numerics::Random rng(20261120);
+            const std::vector<Hamiltonian> hams = by_count(c.build, capacity, c.cell);
+            Rules rules;
+            rules.constant = constant;
+            rules.mu = c.spec.chemical_potential;
+            rules.n_min = c.spec.n_min;
+            rules.n_max = c.spec.n_max;
+            rules.max_length = L;
+            rules.swap_length = ms;
+            rules.p_select = p_select;
+            rules.area = c.area;
+            rules.width = c.spec.insertion_width;
+
+            std::array<std::size_t, kKinds> checked{};
+            double worst = 0.0;
+            for (int attempt = 0; attempt < 20000; ++attempt) {
+                if (!path.is_open() && attempt % 2 == 1 && path.active_particles() > 0) {
+                    bisection.attempt(path, sector[path.active_particles() - 1], rng);
+                    continue;
+                }
+                const Snapshot x = snapshot(path);
+                if (!worm.attempt(path, worm_action, rng)) continue;
+                restore(before, x);
+                const Step step = classify(before, path, ms);
+                const double expected = explicit_log_ratio(before, path, step, rules, c.cell, hams);
+                CAPTURE(attempt, kKindNames[step.kind], step.key);
+                REQUIRE(std::isfinite(expected));
+                REQUIRE(worm.last_log_acceptance() ==
+                        Catch::Approx(expected).epsilon(1e-10).margin(1e-9));
+                worst = std::max(worst, std::abs(worm.last_log_acceptance() - expected));
+                ++checked[step.kind];
+            }
+            for (const auto& [key, value] : worm.extra_diagnostics()) UNSCOPED_INFO(key << " = " << value);
+            UNSCOPED_INFO("largest |ln r - explicit| = " << worst);
+            for (int k = 0; k < kKinds; ++k) {
+                CAPTURE(kKindNames[k], checked[k]);
+                CHECK(checked[k] >= 20);
+            }
+        }
+    }
+}
+
+namespace {
+
+// Rows of three particles near distinct centres on small distinct circles:
+// compact rows (every link far inside the minimum image of a box of side 4)
+// a heat-bath distance apart, and no two beads of a slice alike.
+void fixed_rings(PathSet& path) {
+    const double centre[3][2] = {{0.5, 0.5}, {1.3, 0.8}, {0.9, 1.6}};
+    const double M = static_cast<double>(path.num_slices());
+    for (std::size_t p = 0; p < path.capacity(); ++p)
+        for (std::size_t k = 0; k < path.num_slices(); ++k) {
+            const double phase = 2.0 * std::numbers::pi * static_cast<double>(k) / M + 0.7 * static_cast<double>(p);
+            const double radius = 0.12 + 0.03 * static_cast<double>(p);
+            path.pos(p, 0, k) = centre[p][0] + radius * std::cos(phase) + 0.01 * static_cast<double>(k);
+            path.pos(p, 1, k) = centre[p][1] + radius * std::sin(phase) - 0.007 * static_cast<double>(k);
+        }
+    path.wrap_positions();
+    path.rebuild_tables();
+}
+
+// Every discrete outcome of one attempt from x with its probability, for free
+// particles and mu = 0: from Z (C large) every open and insert proposed is
+// accepted; from G (C small) every close, remove, advance and recede, and a
+// swap to alpha with min(1, Sigma_h / Sigma_zeta) (the heat-bath sums from the
+// head and from zeta).  The rest is the probability that nothing changes.
+std::map<std::string, double> enumerate_outcomes(const PathSet& x, const Rules& rules) {
+    std::map<std::string, double> p;
+    const std::size_t M = x.num_slices(), R = x.active_particles(), L = rules.max_length,
+                      ms = rules.swap_length;
+    const double l = static_cast<double>(L);
+    if (!x.is_open()) {
+        for (std::size_t q = 0; q < R; ++q)
+            for (std::size_t k = 0; k < M; ++k)
+                for (std::size_t g = 0; g <= L; ++g)
+                    p["open " + bead_key({q, k}) + " g " + std::to_string(g)] =
+                        Worm::kOpenZ / (static_cast<double>(R * M) * (l + 1.0));
+        if (R < rules.n_max)
+            for (std::size_t k = 0; k < M; ++k)
+                for (std::size_t m = 1; m <= L; ++m)
+                    p["insert " + std::to_string(k) + " m " + std::to_string(m)] =
+                        (1.0 - Worm::kOpenZ) / (static_cast<double>(M) * l);
+        return p;
+    }
+    const std::size_t g = x.gap();
+    for (std::size_t m = 1; m <= L; ++m) {
+        if (m <= g) p["advance " + std::to_string(m)] = Worm::kAdvance / l;  // not past the tail
+        if (g + m <= M - 1) p["recede " + std::to_string(m)] = Worm::kRecede / l;  // not a full row
+    }
+    if (g <= L) p["close"] = Worm::kClose;
+    const Bead h = x.head();
+    const std::size_t worm_links = M - 1 - g;
+    if (x.next_particle(h.particle) == h.particle && worm_links >= 1 && worm_links <= L &&
+        R - 1 >= rules.n_min)
+        p["remove"] = Worm::kRemove;
+    const std::vector<char> mask = present_beads(x);
+    const std::size_t target = (h.slice + ms) % M;
+    const double sigma_head = heat_sum(x, mask, h, target, ms);
+    for (std::size_t j = 0; j < R; ++j) {
+        const Bead alpha{j, target};
+        Bead zeta{};
+        if (!present(x, mask, alpha) || !swap_exists(x, mask, h, alpha, ms, zeta)) continue;
+        const double sigma_zeta = heat_sum(x, mask, zeta, target, ms);
+        p["swap " + bead_key(alpha)] = Worm::kSwap * heat_weight(x, h, alpha, ms) / sigma_head *
+                                       std::min(1.0, sigma_head / sigma_zeta);
+    }
+    return p;
+}
+
+// Running moments of standardized samples.
+struct Moments {
+    double n = 0.0, sum = 0.0, sum2 = 0.0;
+    void add(double z) {
+        n += 1.0;
+        sum += z;
+        sum2 += z * z;
+    }
+};
+
+// A standardized Gaussian sample: mean 0 and variance 1 within 5 sigma.
+void check_standard(const Moments& m, const std::string& what) {
+    INFO(what << ": " << m.n << " samples, mean " << m.sum / m.n << ", variance "
+              << m.sum2 / m.n - (m.sum / m.n) * (m.sum / m.n));
+    REQUIRE(m.n > 1000.0);
+    const double mean = m.sum / m.n, variance = m.sum2 / m.n - mean * mean;
+    CHECK(std::abs(mean) < 5.0 / std::sqrt(m.n));
+    CHECK(std::abs(variance - 1.0) < 5.0 * std::sqrt(2.0 / m.n));
+}
+
+// The n links of the walk from `from`, each axis over sqrt(tau): N(0, 1).
+void add_walk(const PathSet& path, Bead from, std::size_t n, Moments& m) {
+    for (std::size_t i = 0; i < n; ++i) {
+        const Bead next = path.bead_after(from.particle, from.slice);
+        double sep[SimulationCell::kMaxDim];
+        separation(path, from, next, sep);
+        for (std::size_t d = 0; d < path.dim(); ++d) m.add(sep[d] / std::sqrt(path.tau()));
+        from = next;
+    }
+}
+
+// The interior beads of the bridge of n links from `from`, off the straight
+// line over their standard deviation: N(0, 1) per axis (Levy bridge: bead i
+// has variance tau i (n - i) / n per axis).
+void add_bridge(const PathSet& path, Bead from, std::size_t n, std::map<std::string, Moments>& m,
+                const std::string& label) {
+    double end[SimulationCell::kMaxDim];
+    separation(path, from, walk_forward(path, from, n), end);
+    Bead b = from;
+    for (std::size_t i = 1; i < n; ++i) {
+        b = path.bead_after(b.particle, b.slice);
+        double sep[SimulationCell::kMaxDim];
+        separation(path, from, b, sep);
+        const double fraction = static_cast<double>(i) / static_cast<double>(n);
+        const double sd = std::sqrt(path.tau() * static_cast<double>(i) * (1.0 - fraction));
+        for (std::size_t d = 0; d < path.dim(); ++d)
+            m[label + " bead " + std::to_string(i)].add((sep[d] - fraction * end[d]) / sd);
+    }
+}
+
+}  // namespace
+
+TEST_CASE("Grand-canonical sub-moves draw every discrete outcome with its enumerated "
+          "probability",
+          "[pimc][grand_canonical][worm][balance]") {
+    const std::size_t M = 8, capacity = 3, dim = 2, L = 3, ms = 3;
+    const double tau = 0.1, side = 4.0, width = 0.7;
+    enum class Window { none, insert, remove };
+    struct State {
+        std::string name;
+        bool periodic;
+        std::size_t active;
+        std::vector<std::size_t> permutation;
+        bool open;
+        Bead head;
+        std::size_t gap, n_min;
+        Window window;
+        int attempts;
+    };
+    const std::vector<State> states{
+        {"closed, N < n_max: open and insert", true, 2, {0, 1, 2}, false, {0, 0}, 0, 1,
+         Window::none, 200000},
+        {"closed at N = n_max: the window rejects every insert", true, 3, {0, 1, 2}, false,
+         {0, 0}, 0, 1, Window::insert, 60000},
+        {"worm across two rows, gap 2: swap, advance up to the tail, recede, close; no remove",
+         true, 2, {1, 0, 2}, true, {0, 5}, 2, 1, Window::none, 120000},
+        {"worm alone in its row, gap 5: remove; no close; recede short of a full row", true, 2,
+         {0, 1, 2}, true, {1, 2}, 5, 1, Window::none, 120000},
+        {"the same worm at R = n_min: the window rejects remove", true, 2, {0, 1, 2}, true,
+         {1, 2}, 5, 2, Window::remove, 60000},
+        {"worm alone in its row, gap 2: too long to remove", true, 2, {0, 1, 2}, true, {1, 5}, 2,
+         1, Window::none, 60000},
+        {"closed, open cell: tails from the Gaussian insertion density", false, 2, {0, 1, 2},
+         false, {0, 0}, 0, 1, Window::none, 60000},
+    };
+    for (const State& st : states) {
+        SECTION(st.name) {
+            const SimulationCell cell =
+                st.periodic ? SimulationCell(2, std::vector<double>{side, 0.0, 0.0, side}) : SimulationCell{};
+            PathSet x(M, capacity, dim, tau, cell), path(M, capacity, dim, tau, cell);
+            fixed_rings(x);
+            one_class(x);
+            one_class(path);
+            x.set_active_particles(st.active);
+            x.set_permutation(st.permutation);
+            if (st.open) x.open_with_gap(st.head, st.gap);
+            const Snapshot start = snapshot(x);
+            restore(path, start);
+
+            Rules rules;
+            rules.constant = st.open ? 1e-60 : 1e60;  // every close/remove, open/insert accepted
+            rules.n_min = st.n_min;
+            rules.n_max = capacity;
+            rules.max_length = L;
+            rules.swap_length = ms;
+            rules.area = st.periodic ? side * side : 0.0;
+            rules.width = st.periodic ? 0.0 : width;
+            rules.center = {0.3, -0.2};
+            GrandCanonicalSpec spec;
+            spec.chemical_potential = 0.0;
+            spec.n_min = st.n_min;
+            spec.n_max = capacity;
+            if (!st.periodic) {
+                spec.insertion_width = width;
+                spec.insertion_center = {rules.center[0], rules.center[1]};
+            }
+            GrandCanonicalWormMove worm(static_cast<int>(L), static_cast<int>(ms), rules.constant, spec);
+            worm.set_selection_probability(0.5);
+            const Hamiltonian free;
+            Action action(one_group(capacity, dim), free, dim);
+            numerics::Random rng(7 + static_cast<std::uint64_t>(st.attempts) + st.gap);
+
+            const std::map<std::string, double> expected = enumerate_outcomes(x, rules);
+            std::map<std::string, std::size_t> observed;
+            Moments walk_links, tail_offsets;
+            std::map<std::string, Moments> bridges;
+            std::vector<double> tail_cells(16, 0.0);
+            for (int a = 0; a < st.attempts; ++a) {
+                if (!worm.attempt(path, action, rng)) continue;
+                const Step s = classify(x, path, ms);
+                ++observed[s.key];
+                if (s.kind == kInsertKind) {
+                    add_walk(path, path.tail(), s.m, walk_links);
+                    double r[SimulationCell::kMaxDim];
+                    coordinates(path, path.tail(), r);
+                    if (st.periodic) {
+                        std::size_t cell_index = 0;
+                        for (std::size_t d = 0; d < dim; ++d) {
+                            const double f = r[d] / side - std::floor(r[d] / side);
+                            cell_index = 4 * cell_index + std::min<std::size_t>(3, static_cast<std::size_t>(4.0 * f));
+                        }
+                        tail_cells[cell_index] += 1.0;
+                    } else {
+                        for (std::size_t d = 0; d < dim; ++d) tail_offsets.add((r[d] - rules.center[d]) / width);
+                    }
+                } else if (s.kind == kAdvanceKind) {
+                    add_walk(path, x.head(), s.m, walk_links);
+                } else if (s.kind == kCloseKind) {
+                    add_bridge(path, x.head(), x.gap() + 1, bridges, "close");
+                } else if (s.kind == kSwapKind) {
+                    add_bridge(path, s.head_in_y, ms, bridges, "swap");
+                }
+                restore(path, start);
+            }
+
+            // chi^2 of the outcome counts over the outcomes of nonzero
+            // probability and the attempts that changed nothing.
+            const double n = st.attempts;
+            double chi2 = 0.0, p_total = 0.0, observed_total = 0.0;
+            std::size_t classes = 0;
+            for (const auto& [key, p] : expected) {
+                const auto it = observed.find(key);
+                const double count = it == observed.end() ? 0.0 : static_cast<double>(it->second);
+                UNSCOPED_INFO(key << ": " << count << " expected " << n * p);
+                chi2 += (count - n * p) * (count - n * p) / (n * p);
+                p_total += p;
+                observed_total += count;
+                ++classes;
+            }
+            for (const auto& [key, count] : observed) {
+                CAPTURE(key, count);
+                CHECK(expected.count(key) == 1);  // an outcome of probability 0
+            }
+            const double rest = n - observed_total, p_rest = 1.0 - p_total;
+            UNSCOPED_INFO("unchanged: " << rest << " expected " << n * p_rest);
+            if (p_rest > 1e-9) {
+                chi2 += (rest - n * p_rest) * (rest - n * p_rest) / (n * p_rest);
+                ++classes;
+            } else {
+                CHECK(rest == 0.0);
+            }
+            const double dof = static_cast<double>(classes - 1);
+            INFO("chi2 = " << chi2 << " for " << dof << " dof");
+            CHECK(chi2 < dof + 5.0 * std::sqrt(2.0 * dof));
+
+            // The window rejects exactly the proposals that would leave it.
+            const double window = extra(worm, "window_rejections");
+            if (st.window == Window::insert) {
+                CHECK(window == extra(worm, "insert_proposals"));
+                CHECK(window > 0.0);
+            } else if (st.window == Window::remove) {
+                CHECK(window == extra(worm, "remove_proposals"));
+                CHECK(window > 0.0);
+            } else {
+                CHECK(window == 0.0);
+            }
+            CHECK(extra(worm, "frame_rejections") == 0.0);
+
+            // The drawn coordinates: free walks, Levy bridges, the tails.
+            if (walk_links.n > 0.0) check_standard(walk_links, "walk links");
+            for (const auto& [label, m] : bridges) check_standard(m, label);
+            if (tail_offsets.n > 0.0) check_standard(tail_offsets, "tail offsets / width");
+            const double tails = std::accumulate(tail_cells.begin(), tail_cells.end(), 0.0);
+            if (tails > 0.0) {
+                double tail_chi2 = 0.0;
+                for (const double count : tail_cells)
+                    tail_chi2 += (count - tails / 16.0) * (count - tails / 16.0) / (tails / 16.0);
+                INFO("uniform tails: chi2 = " << tail_chi2 << " for 15 dof");
+                CHECK(tail_chi2 < 15.0 + 5.0 * std::sqrt(30.0));
+            }
+        }
+    }
+}

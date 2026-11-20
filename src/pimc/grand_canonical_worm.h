@@ -65,6 +65,7 @@
 // non-minimum-image frame, is rejected, as in WormMove.
 #include <array>
 #include <cstddef>
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -118,6 +119,12 @@ public:
     // dS_V of the last accepted proposal (tests compare it with an
     // independent evaluation of the potential action before and after).
     [[nodiscard]] double last_delta_action() const noexcept { return last_delta_s_; }
+    // ln r of the last attempt, r the Metropolis ratio W(y) T(y -> x) /
+    // (W(x) T(x -> y)) of its proposal, or NaN when the attempt was rejected
+    // before the Metropolis test (window, gap length, frame, no candidate).
+    // Tests compare it with the weights and proposal densities written out
+    // independently.
+    [[nodiscard]] double last_log_acceptance() const noexcept { return last_log_a_; }
 
     // ln of the tail's insertion density at r ([dim]): -ln A in a periodic
     // cell, the Gaussian log-density in an open one.
@@ -158,6 +165,7 @@ private:
     std::array<std::size_t, kKinds> proposed_{}, accepted_{};
     std::size_t window_rejections_ = 0, frame_rejections_ = 0, no_candidate_ = 0;
     double last_delta_s_ = 0.0;
+    double last_log_a_ = std::numeric_limits<double>::quiet_NaN();
 };
 
 }  // namespace alea
