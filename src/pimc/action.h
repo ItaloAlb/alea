@@ -54,6 +54,14 @@ public:
     // a worm's cut link then changes no potential term.
     [[nodiscard]] bool slice_local_deltas() const noexcept;
     [[nodiscard]] std::string potential_approximation_notes() const;
+    // Every component offers a grand-canonical bead action.
+    [[nodiscard]] bool supports_bead_action() const noexcept;
+    // Sum of the components' bead actions: the change of S when bead (p, k)
+    // at `position` joins slice k, whose other beads are rows [0, n_rows)
+    // except p and `skip` (ActionComponent::bead_action).
+    double bead_action(const PathSet& path, std::size_t k, std::size_t p,
+                       std::span<const double> position, std::size_t n_rows,
+                       std::size_t skip) const;
     // Every component's nodal-pocket particle ranges, in component order.
     [[nodiscard]] std::vector<std::pair<std::size_t, std::size_t>> restricted_blocks() const;
     // Same-particle spring between slices k1 and k2 of particle p (ignores

@@ -57,7 +57,7 @@ namespace detail {
 template <class Fn>
 void for_each_loop_winding(const PathSet& path, Fn&& fn) {
     const std::size_t M   = path.num_slices();
-    const std::size_t np  = path.n_particles();
+    const std::size_t np  = path.active_particles();
     const std::size_t dim = path.dim();
     double sum[SimulationCell::kMaxDim];
     double del[SimulationCell::kMaxDim];
@@ -125,9 +125,12 @@ inline double winding_measure(const PathSet& path, double* tensor) {
             tensor[c] += W[p] * W[q];
         }
     });
-    const double inv = 1.0 / static_cast<double>(path.n_particles());
+    // Per particle of the measured (closed) path; an empty path winds 0.
+    const std::size_t np = path.active_particles();
+    if (np == 0) return 0.0;
+    const double inv = 1.0 / static_cast<double>(np);
     for (std::size_t c = 0; c < nc; ++c) tensor[c] *= inv;
-    return w2 / static_cast<double>(path.n_particles() * dim);
+    return w2 / static_cast<double>(np * dim);
 }
 
 // The two halves of winding_measure, for callers that need only one.

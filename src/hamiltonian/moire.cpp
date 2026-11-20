@@ -130,6 +130,25 @@ void MoireTerm::evaluate_potential_gradient(const ParticleBatch& batch,
             }
 }
 
+// V(r) = V0 + 2 Ṽ Σ_i cos(g_i · r + φ) at the wrapped position, as
+// evaluate_potential reads it from the wrapped coordinates.
+double MoireTerm::bead_energy(const ParticleBatch& configs, std::size_t,
+    std::size_t p, std::span<const double> position, std::size_t, std::size_t) const {
+    bool acts = false;
+    for (const auto& [first, last] : ranges_) acts = acts || (p >= first && p < last);
+    if (!acts) return 0.0;
+    double candidate[SimulationCell::kMaxDim];
+    for (std::size_t d = 0; d < dim_; ++d) candidate[d] = position[d];
+    configs.cell().wrap(candidate);
+    double energy = V0_;
+    for (const auto& g : g_) {
+        double phase = phi_;
+        for (std::size_t d = 0; d < dim_; ++d) phase += g[d] * candidate[d];
+        energy += two_Vtilde_ * std::cos(phase);
+    }
+    return energy;
+}
+
 // O(number of first-shell vectors) independent of particle count.
 double MoireTerm::delta_potential_particle(ParticleBatch& configs,
     std::size_t p, std::size_t k, std::span<const double> proposed,

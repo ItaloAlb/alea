@@ -48,6 +48,11 @@ public:
     bool supports_free_bridge() const noexcept override { return true; }
     bool slice_local_deltas() const noexcept override { return true; }
     bool provides_free_kinetic() const noexcept override { return true; }
+    // The springs of a grand-canonical bead are drawn from the free
+    // propagator by the move itself: nothing to add here.
+    bool supports_bead_action() const noexcept override { return true; }
+    double bead_action(const PathSet&, std::size_t, std::size_t, std::span<const double>,
+                       std::size_t, std::size_t) const override { return 0.0; }
     double mass(std::size_t p, std::size_t d) const override {
         return mass_[p * dim_ + d];
     }
@@ -82,6 +87,11 @@ public:
                                     std::span<const double> proposed) override;
     bool supports_free_bridge() const noexcept override { return true; }
     bool slice_local_deltas() const noexcept override { return true; }
+    // tau e(r), e the Hamiltonian's bead energy (primitive: tau V per slice).
+    bool supports_bead_action() const noexcept override { return ham_.supports_bead_energy(); }
+    double bead_action(const PathSet& path, std::size_t k, std::size_t p,
+                       std::span<const double> position, std::size_t n_rows,
+                       std::size_t skip) const override;
     std::unique_ptr<ActionComponent> clone() const override;
 private:
     Hamiltonian ham_;

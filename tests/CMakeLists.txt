@@ -713,6 +713,7 @@ set(APP_SOURCES
     ${SRC_DIR}/pimc/pair_product_action.cpp
     ${SRC_DIR}/numerics/finite_grid_pair.cpp
     ${SRC_DIR}/pimc/move.cpp
+    ${SRC_DIR}/pimc/grand_canonical_worm.cpp
     ${SRC_DIR}/pimc/pimc.cpp
     ${SRC_DIR}/qmc/linear_method.cpp
     ${SRC_DIR}/qmc/linear_optimize.cpp
@@ -1253,6 +1254,7 @@ add_executable(test_pimc
     ${SRC_DIR}/pimc/pair_product_action.cpp
     ${SRC_DIR}/numerics/finite_grid_pair.cpp
     ${SRC_DIR}/pimc/move.cpp
+    ${SRC_DIR}/pimc/grand_canonical_worm.cpp
     ${SRC_DIR}/pimc/pimc.cpp
     ${SRC_DIR}/hamiltonian/hamiltonian.cpp
     ${SRC_DIR}/hamiltonian/harmonic_trap.cpp
@@ -1275,7 +1277,7 @@ target_compile_options(test_pimc PRIVATE -Wall -Wextra -Wpedantic -fopenmp-simd)
 # Independent contracts share the unit source set, not the production App.
 get_target_property(PIMC_UNIT_SOURCES test_pimc SOURCES)
 list(REMOVE_ITEM PIMC_UNIT_SOURCES test_pimc.cpp)
-foreach(contract action contract incremental_moves exchange permutation joint worm validation_fast)
+foreach(contract action contract incremental_moves exchange permutation joint worm grand_canonical validation_fast)
     if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test_pimc_${contract}.cpp")
         continue()
     endif()
@@ -1287,6 +1289,11 @@ endforeach()
 # The exchange estimator tests measure a signed one-body density.
 if(TARGET test_pimc_worm)
     target_sources(test_pimc_worm PRIVATE ${SRC_DIR}/estimators/momentum_distribution.cpp)
+endif()
+# Grand-canonical bead energies are checked on moire and inverse_power terms.
+if(TARGET test_pimc_grand_canonical)
+    target_sources(test_pimc_grand_canonical PRIVATE
+        ${SRC_DIR}/hamiltonian/moire.cpp ${SRC_DIR}/hamiltonian/inverse_power.cpp)
 endif()
 if(TARGET test_pimc_permutation)
     target_sources(test_pimc_permutation PRIVATE ${SRC_DIR}/estimators/density.cpp)
@@ -1438,6 +1445,7 @@ catch_discover_tests(test_pimc_exchange)
 catch_discover_tests(test_pimc_permutation)
 catch_discover_tests(test_pimc_joint)
 catch_discover_tests(test_pimc_worm)
+catch_discover_tests(test_pimc_grand_canonical)
 catch_discover_tests(test_pimc_validation_fast)
 catch_discover_tests(test_pimc_checkpoint)
 if(TARGET test_electron_hole_proximity)

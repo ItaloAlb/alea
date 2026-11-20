@@ -59,6 +59,11 @@ public:
     double delta_potential_particle(ParticleBatch&, std::size_t, std::size_t,
         std::span<const double>, std::span<double>) const override;
 
+    // Grand canonical, intra-group terms only: sum_j q^2 / (eps r).
+    bool supports_bead_energy() const noexcept override { return is_intragroup_; }
+    double bead_energy(const ParticleBatch&, std::size_t, std::size_t,
+        std::span<const double>, std::size_t, std::size_t) const override;
+
     void evaluate_potential(const ParticleBatch& batch, std::span<double> v_out,
                             std::size_t w_begin = 0,
                             std::size_t w_end = npos) const override;

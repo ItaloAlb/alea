@@ -17,6 +17,12 @@
 // pi may only connect particles of one exchange class.  By default every
 // particle is its own class, so only the identity is admissible and the
 // boltzmannon stage cannot acquire exchange by accident.
+//
+// Active rows (grand-canonical runs): the storage holds capacity() =
+// n_particles() rows, of which rows [0, active_particles()) are particles.
+// Unused rows are fixed points of pi with finite placeholder coordinates that
+// no action term reads; cycles, classes and moves see the active rows only.
+// A canonical path has active_particles() == capacity().
 #include <cstddef>
 #include <span>
 #include <vector>
@@ -60,26 +66,50 @@ public:
         return k > 0 ? Bead{p, k - 1} : Bead{inverse_[p], num_slices() - 1};
     }
 
-    // Exchange classes: class_id[p] labels the class of particle p and
-    // fermionic[p] != 0 marks fermions (uniform within a class).  The current
-    // permutation must already respect the classes.  Throws invalid_argument.
+    // Exchange classes: class_id[p] labels the class of row p and
+    // fermionic[p] != 0 marks fermions (uniform within a class), for every
+    // row of the capacity.  The current permutation must already respect the
+    // classes.  Throws invalid_argument.
     void set_exchange_classes(std::span<const std::size_t> class_id,
                               std::span<const char> fermionic);
-    // Replace pi after validating it is a class-preserving bijection; the
-    // path is unchanged on failure.  Coordinates and tables are not touched.
+    // Replace pi ([capacity], unused rows fixed points) after validating it is
+    // a class-preserving bijection; the path is unchanged on failure.
+    // Coordinates and tables are not touched.
     void set_permutation(std::span<const std::size_t> pi);
     // Product over fermionic cycles of (-1)^(length-1); +1 for bosons/identity.
     double permutation_sign() const noexcept { return sign_; }
-    // The smallest particle index of every cycle of pi, increasing.
+    // The smallest particle index of every cycle of pi over the active rows,
+    // increasing.
     std::span<const std::size_t> cycle_leaders() const noexcept { return cycle_leaders_; }
     std::size_t exchange_class(std::size_t p) const noexcept { return class_id_[p]; }
-    // Particles in the largest exchange class (1 when nothing can exchange).
+    // Rows in the largest exchange class at full capacity (1 when nothing can
+    // exchange): the bound that sizes cycle scratch, never exceeded later.
     std::size_t largest_exchange_class() const noexcept { return largest_class_; }
-    // Members (increasing) of every class with more than one particle, in
-    // order of first member: the sets a permutation move may reconnect.
+    // Active members (increasing) of every class that has more than one row
+    // at full capacity, in order of first member: the sets a permutation move
+    // may reconnect.  The list itself does not change with the active count,
+    // so a move drawing a class uniformly draws it state-independently; a
+    // class may hold fewer than two active members in a grand-canonical run.
     std::span<const std::vector<std::size_t>> exchangeable_classes() const noexcept {
         return exchangeable_;
     }
+
+    // ── Active rows ──
+    std::size_t capacity() const noexcept { return n_particles(); }
+    std::size_t active_particles() const noexcept { return active_; }
+    // Setup only: make rows [0, n) the particles of a closed path whose
+    // permutation leaves rows >= n fixed.  Throws invalid_argument.
+    void set_active_particles(std::size_t n);
+    // Activate row active_particles() as a new particle, a fixed point of pi
+    // in the class set_exchange_classes gave that row, and return its index.
+    // Coordinates are the caller's: it writes them and refreshes the tables.
+    // Closed paths only; throws logic_error at capacity.  O(N).
+    std::size_t append_row();
+    // Delete particle p, a fixed point of pi, from a closed path: the last
+    // active row moves into row p (coordinates, tables, pi and its class), so
+    // the active rows stay contiguous.  Throws logic_error otherwise.
+    // O(capacity * M) for the moved row's tables.
+    void remove_row(std::size_t p);
 
     // Refresh all pairs, or only a selected contiguous slice range [begin,end).
     // Particle-only refresh is O(np * (end-begin)) and reuses batch scratch.
@@ -100,19 +130,41 @@ public:
     void wrap_particle(std::size_t p, std::size_t begin = 0, std::size_t end = npos);
 
     // ── Worm ──
-    // An open path lacks one link, the one leaving the head bead; the tail is
-    // the head's successor bead_after(head).  pi stays a bijection, so
+    // An open path lacks the g >= 0 beads that follow the head bead along its
+    // worldline (in-array links, then pi), and the g + 1 links between head and
+    // tail; the tail is the bead after that gap.  The canonical worm has g = 0:
+    // one cut link, tail = bead_after(head).  A gap of g <= M - 1 beads visits
+    // each slice at most once, so at most one bead is missing per slice: in the
+    // head's row after the head slice, then (when the gap crosses the closing
+    // link) in row pi(head) before the tail slice.  Missing beads keep their
+    // last coordinates as placeholders.  pi stays a bijection, so
     // permutation_sign() is the sign of the virtually closed path.  Only the
     // worm moves and the driver read or change this state.
     bool is_open() const noexcept { return open_; }
     Bead head() const noexcept { return head_; }
-    Bead tail() const noexcept { return bead_after(head_.particle, head_.slice); }
+    std::size_t gap() const noexcept { return gap_; }
+    Bead tail() const noexcept {
+        const std::size_t s = head_.slice + gap_ + 1, M = num_slices();
+        return s < M ? Bead{head_.particle, s} : Bead{permutation_[head_.particle], s - M};
+    }
+    // The row whose bead at slice k is missing, or npos.  O(1).
+    std::size_t missing_row(std::size_t k) const noexcept {
+        if (!open_ || gap_ == 0) return npos;
+        const std::size_t M = num_slices();
+        const std::size_t offset = (k + M - head_.slice - 1) % M;  // gap index of slice k
+        if (offset >= gap_) return npos;
+        return head_.slice + 1 + offset < M ? head_.particle : permutation_[head_.particle];
+    }
     // Cut the link leaving `head`; throws invalid_argument if the path is
     // already open or the bead is outside the path.
     void open_at(Bead head);
+    // Open with a gap: the g beads after `head` go missing (g <= M - 1).
+    void open_with_gap(Bead head, std::size_t g);
     // Move the cut of an open path to the link leaving `head`.
     void set_head(Bead head);
-    void close() noexcept { open_ = false; }
+    // Change the gap of an open path (g <= M - 1), keeping the head.
+    void set_gap(std::size_t g);
+    void close() noexcept { open_ = false; gap_ = 0; }
     // Exchange the successors of beads (p, k) and (s, k) of one exchange class
     // (p != s): the bead at (p, k) then continues into the old successor of
     // (s, k) and vice versa (the reconnection of a worm swap).  Every in-array
@@ -129,15 +181,19 @@ private:
     double tau_;
     std::vector<std::size_t> next_slice_, prev_slice_;
     std::vector<std::size_t> permutation_, inverse_; // [np]
-    std::vector<std::size_t> class_id_;              // [np]
-    std::vector<char> fermionic_;                    // [np]
-    std::vector<std::size_t> cycle_leaders_;         // [n_cycles]
-    std::vector<std::vector<std::size_t>> exchangeable_; // [class][member]
-    std::vector<char> visited_;                      // [np], cycle scratch
+    std::vector<std::size_t> class_id_;              // [capacity]
+    std::vector<char> fermionic_;                    // [capacity]
+    std::vector<std::size_t> cycle_leaders_;         // [n_cycles], reserved to capacity
+    // [class][active member], each reserved to its capacity members.
+    std::vector<std::vector<std::size_t>> exchangeable_;
+    std::vector<std::size_t> exchangeable_of_;       // [capacity], entry or npos
+    std::vector<char> visited_;                      // [capacity], cycle scratch
     double sign_ = 1.0;
     bool identity_ = true;
     std::size_t largest_class_ = 1;
-    bool open_ = false;          // worm: the link leaving head_ is cut
+    std::size_t active_ = 0;     // rows [0, active_) are particles
+    bool open_ = false;          // worm: the links after head_ are cut
+    std::size_t gap_ = 0;        // worm: missing beads after head_
     Bead head_{0, 0};
 };
 } // namespace alea

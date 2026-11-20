@@ -85,6 +85,13 @@ public:
     // The continuum tail E_tail added to every configuration's V (0 when open).
     [[nodiscard]] double tail_energy() const noexcept { return tail_; }
 
+    // Grand canonical, intra-group terms only: sum_j C / r^p over the counted
+    // partners plus E_tail(n + 1) - E_tail(n) = c (n + 1/2), with
+    // E_tail(n) = c n^2 / 2 and c = T / A (the header's T and A).
+    bool supports_bead_energy() const noexcept override { return is_intragroup_; }
+    double bead_energy(const ParticleBatch&, std::size_t, std::size_t,
+        std::span<const double>, std::size_t, std::size_t) const override;
+
 private:
     [[nodiscard]] bool is_own_pair(const ParticleGroup& a,
                                    const ParticleGroup& b) const noexcept {
@@ -99,6 +106,7 @@ private:
     // in the walker loop instead of std::pow.  0 otherwise.
     int           integer_exponent_ = 0;
     double        tail_ = 0.0;
+    double        tail_pair_density_ = 0.0;  // c = C T_p / A: E_tail = c x pairs
     bool          is_intragroup_;
 };
 

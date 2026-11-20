@@ -86,7 +86,7 @@ void CentroidMove::prepare(const PathSet& path) {
 bool SingleSliceMove::attempt(PathSet& path, Action& action,
                               numerics::Random& rng) {
     const std::size_t M  = path.num_slices();
-    const std::size_t np = path.n_particles();
+    const std::size_t np = path.active_particles();
     const std::size_t d  = path.dim();
     if (np == 0 || M == 0) return false;
 
@@ -163,7 +163,7 @@ bool SingleSliceMove::attempt(PathSet& path, Action& action,
 bool BisectionMove::attempt(PathSet& path, Action& action,
                             numerics::Random& rng) {
     const std::size_t M  = path.num_slices();
-    const std::size_t np = path.n_particles();
+    const std::size_t np = path.active_particles();
     const std::size_t d  = path.dim();
     if (np == 0 || M == 0) return false;
 
@@ -460,7 +460,7 @@ bool BisectionMove::attempt(PathSet& path, Action& action,
 bool CentroidMove::attempt(PathSet& path, Action& action,
                             numerics::Random& rng) {
     const std::size_t M  = path.num_slices();
-    const std::size_t np = path.n_particles();
+    const std::size_t np = path.active_particles();
     const std::size_t d  = path.dim();
     if (np == 0 || M == 0) return false;
 
@@ -815,6 +815,9 @@ bool PermutationMove::attempt(PathSet& path, Action& action,
     // contains the closing link M-1 -> 0 and ends at slice k1 of the target.
     const auto& members = classes[uniform_index(rng, classes.size())];
     const std::size_t nc = members.size();
+    // A grand-canonical class can hold fewer than two active particles: no
+    // exchange to propose (never the case at a fixed particle count).
+    if (nc < 2) return false;
     const std::size_t k0 = M - n + uniform_index(rng, n);
     const std::size_t k1 = k0 + n - M;
     // One mass tensor per class (the driver checks it when building classes).

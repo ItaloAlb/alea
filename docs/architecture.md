@@ -52,7 +52,7 @@ Three rules hold the layers apart:
 | `src/io/` | YAML parsing, logging, results and checkpoint files | `Config` and the `*Spec` structs (`parser.h`), `Logger`, `write_run_result`, `write_config_snapshot`, `read_walkers`/`write_walkers`, `read_paths`/`write_paths` |
 | `src/builders/` | Translate specs into objects; one file per family | `build_component(spec, ctx)` overloads, `build_ewald`, `build_action`, `build_exchange_classes`, `build_estimator(spec, ctx)` overloads and `build_estimators` |
 | `src/qmc/` | Ground-state drivers and stage orchestration | `App`, `Driver`, `VMC`, `DMC` with `PopulationControl` and `ForwardWalking`, `LinearOptimize` with `CostFunction` and `LinearMethod`, `RunResult` |
-| `src/pimc/` | Path-integral driver | `Pimc`, `PathSet`, `Action` and its `ActionComponent`s (`PrimitiveKineticAction`, `PrimitivePotentialAction`, `PairProductAction`, `FixedNodeRestriction`), `Move` (`BisectionMove`, `CentroidMove`, `SingleSliceMove`, `PermutationMove`, `JointPermutationMove`, `WormMove`) |
+| `src/pimc/` | Path-integral driver | `Pimc`, `PathSet`, `Action` and its `ActionComponent`s (`PrimitiveKineticAction`, `PrimitivePotentialAction`, `PairProductAction`, `FixedNodeRestriction`), `Move` (`BisectionMove`, `CentroidMove`, `SingleSliceMove`, `PermutationMove`, `JointPermutationMove`, `WormMove`, `GrandCanonicalWormMove`) |
 | `src/wavefunction/` | Trial-wavefunction factors | `TrialWavefunction`, `WavefunctionComponent`, `PadeJastrow`, `RadialPairJastrow` (`DrummondJastrow`, `ZeroEnergyJastrow`), `KSpaceJastrow`, `NosanowJastrow`, `MoireJastrow`, `SlaterDeterminant`, `BackflowSlaterDeterminant`, `BackflowPairingDeterminant`, `ComplexBackflowSlaterDeterminant` (all on `BackflowTransformation` and `BackflowFunction`), `ComplexSlaterDeterminant`, `PairingDeterminant`, `CenterOfMassMomentum`, orbital sets |
 | `src/hamiltonian/` | Kinetic energy and potentials | `Hamiltonian`, `HamiltonianComponent`, `Kinetic`, `CoulombTerm`, `KeldyshTerm`, `ScreenedCoulombTerm`, `InversePowerTerm`, `EwaldTerm`, `HarmonicTrap`, `MoireTerm` |
 | `src/estimators/` | Optional observables | `Estimator`, `PairCorrelation`, `Density`, `CollectiveDensity`, `StructureFactor`, `ElectronHoleProximity`, `BraggOrder`, `BondOrder`, `DensityMatrix`, `MomentumDistribution`; block statistics `BlockMoments` and `EstimatorReblocking` |
@@ -234,6 +234,17 @@ $(p, k+1)$, except the closing link, which carries the permutation:
 $(p, M-1) \to (\pi(p), 0)$. Exchange therefore never reorders the particles
 inside a slice, and the per-slice distance tables stay valid. A worm opens one
 path; the head and tail are tracked by the `PathSet`.
+
+The storage holds a fixed number of rows (the capacity); the particles are
+rows $[0, N)$, and the spare rows are fixed points of $\pi$ that no cycle,
+class or move sees. A canonical path has $N$ equal to the capacity. An open
+path may lack $g < M$ beads after its head (the gap), at most one per slice;
+the canonical worm has $g = 0$, one cut link. The grand-canonical worm
+(`GrandCanonicalWormMove`, not yet selectable from the YAML) changes $N$ by
+appending and removing rows and computes its potential changes from
+`HamiltonianComponent::bead_energy`, the energy of one bead against the beads
+present at its slice, which includes the $N$-dependent constants of a term
+(the continuum tail of `inverse_power`).
 
 A `Move` proposes a change, asks the `Action` for $\Delta S$, and accepts or
 rejects. The action's components are the primitive kinetic springs, the

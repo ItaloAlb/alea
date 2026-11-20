@@ -362,6 +362,11 @@ double PrimitivePotentialAction::delta_potential_particle(
     return path.tau() *
            ham_.delta_potential_particle(path, p, k, proposed, scratch_);
 }
+double PrimitivePotentialAction::bead_action(const PathSet& path, std::size_t k,
+    std::size_t p, std::span<const double> position, std::size_t n_rows,
+    std::size_t skip) const {
+    return path.tau() * ham_.bead_energy(path, k, p, position, n_rows, skip);
+}
 std::unique_ptr<ActionComponent> PrimitivePotentialAction::clone() const {
     return std::make_unique<PrimitivePotentialAction>(*this);
 }
@@ -443,6 +448,19 @@ std::vector<std::pair<std::size_t, std::size_t>> Action::restricted_blocks() con
             blocks.push_back(block);
     return blocks;
 }
+bool Action::supports_bead_action() const noexcept {
+    return !components_.empty() &&
+           std::all_of(components_.begin(), components_.end(),
+                       [](const auto& c) { return c->supports_bead_action(); });
+}
+double Action::bead_action(const PathSet& path, std::size_t k, std::size_t p,
+                           std::span<const double> position, std::size_t n_rows,
+                           std::size_t skip) const {
+    double action = 0.0;
+    for (const auto& component : components_)
+        action += component->bead_action(path, k, p, position, n_rows, skip);
+    return action;
+}
 bool Action::slice_local_deltas() const noexcept {
     return std::all_of(components_.begin(), components_.end(),
                        [](const auto& c) { return c->slice_local_deltas(); });
@@ -472,7 +490,7 @@ double Action::spring_action(const PathSet& path, std::size_t p1, std::size_t k1
 double Action::spring_action_all(const PathSet& path, std::size_t k1,
                                  std::size_t k2) const {
     double result = 0.0;
-    for (std::size_t p = 0; p < path.n_particles(); ++p)
+    for (std::size_t p = 0; p < path.active_particles(); ++p)
         result += spring_action(path, p, k1, k2);
     return result;
 }
