@@ -17,11 +17,12 @@
 #include <stdexcept>
 
 #include "io/logger.h"
+#include "pimc/grand_canonical_worm.h"
 #include "pimc/winding.h"
 
 namespace alea {
 
-namespace {
+namespace detail {
 
 // Rethrow the lowest-index replica failure captured inside a parallel region,
 // naming the replica and phase (the original message is kept).
@@ -40,6 +41,12 @@ void rethrow_replica_error(std::span<const std::exception_ptr> errors,
         }
     }
 }
+
+}  // namespace detail
+
+namespace {
+
+using detail::rethrow_replica_error;
 
 // "fermions", "bosons" or "fermions+bosons" for the classes that can exchange.
 std::string statistics_label(std::span<const ExchangeClass> classes) {
@@ -63,9 +70,17 @@ Pimc::Pimc(const PimcConfig& cfg,
            std::size_t dim,
            std::size_t np,
            WalkerEnsemble* ensemble,
-           const Action* built_action)
+           const Action* built_action,
+           const PimcGrandCanonicalSectors* sectors)
     : cfg_(cfg), dim_(dim), np_(np), cell_(cell),
       groups_(groups.begin(), groups.end()), ensemble_(ensemble) {
+
+    // A grand-canonical stage samples one bosonic species;
+    // setup_grand_canonical() checks the rest once the action is built.
+    gc_ = sectors != nullptr;
+    if (gc_ && !cfg_.statistics.empty())
+        throw std::runtime_error("pimc: a grand-canonical worm samples bosons; remove "
+                                 "`statistics: " + cfg_.statistics + "`");
 
     // Statistics: an
     // exchange class of more than one particle keeps quantum statistics
@@ -80,7 +95,7 @@ Pimc::Pimc(const PimcConfig& cfg,
     // classes are not kept, and the action's restriction supplies the
     // antisymmetry (checked against the classes below).
     fixed_node_ = cfg_.statistics == "fixed_node";
-    quantum_ = largest_class > 1 && cfg_.statistics != "boltzmannon" && !fixed_node_;
+    quantum_ = gc_ || (largest_class > 1 && cfg_.statistics != "boltzmannon" && !fixed_node_);
 
     if (!std::isfinite(cfg_.beta) || cfg_.beta <= 0 ||
         !std::isfinite(cfg_.time_step) || cfg_.time_step <= 0)
@@ -103,6 +118,9 @@ Pimc::Pimc(const PimcConfig& cfg,
         throw std::runtime_error("pimc: unknown energy estimator '"+cfg_.energy+"'");
     if (cfg_.compare_thermodynamic && energy_estimator_ == EnergyEstimator::thermodynamic)
         throw std::runtime_error("pimc: compare_thermodynamic requires energy: centroid_virial or periodic_virial");
+    if (gc_ && (energy_estimator_ != EnergyEstimator::thermodynamic || cfg_.compare_thermodynamic))
+        throw std::runtime_error("pimc: a grand-canonical run measures the thermodynamic energy "
+                                 "only; the virial estimators are not derived for a varying N");
     // The open centroid virial uses cycle centroids under exchange; the
     // periodic torus field is not derived for permuted paths yet.
     if (quantum_ && energy_estimator_ == EnergyEstimator::periodic_virial)
@@ -294,6 +312,8 @@ Pimc::Pimc(const PimcConfig& cfg,
                     std::erfc(cell.ws_radius() / (std::sqrt(2.0) * widest_sigma)));
     }
 
+    if (gc_) setup_grand_canonical(*sectors, base_action);
+
     // One PathSet/Action/RNG per replica; OpenMP distributes replicas in
     // run(), so the result depends only on (config, seed) — never on the
     // thread count. Expected strong scaling saturates near min(threads,
@@ -346,6 +366,9 @@ Pimc::Pimc(const PimcConfig& cfg,
             }
         }
         paths_.back().collapse_to(init);  // wraps and rebuilds the tables
+        // Grand canonical: rows [initial, n_max) are spare rows (fixed points
+        // of pi) whose finite coordinates no action term reads.
+        if (gc_) paths_.back().set_active_particles(gc_initial_);
     }
 
     // Clone the already validated move set for independent replicas.
@@ -427,6 +450,12 @@ std::vector<std::unique_ptr<Move>> Pimc::build_moves() {
             m = std::make_unique<JointPermutationMove>(ms.levels, ms.max_cycle,
                                                        ms.pair_radius, std::move(pairs));
         } else if (ms.type == "worm") {
+            if (ms.grand_canonical && !gc_)
+                throw std::runtime_error("pimc: a grand_canonical worm needs the per-sector "
+                                         "actions of its window (PimcGrandCanonicalSectors)");
+            if (!ms.grand_canonical && gc_)
+                throw std::runtime_error("pimc: a grand-canonical stage samples exchange with "
+                                         "its grand_canonical worm only; remove the canonical worm");
             if (ms.max_length < 1 || static_cast<std::size_t>(ms.max_length) + 2 > M_)
                 throw std::runtime_error("pimc: worm max_length must be in [1, M - 2], M = " +
                                          std::to_string(M_));
@@ -436,6 +465,21 @@ std::vector<std::unique_ptr<Move>> Pimc::build_moves() {
             if (!std::isnan(ms.worm_constant) &&
                 !(std::isfinite(ms.worm_constant) && ms.worm_constant > 0.0))
                 throw std::runtime_error("pimc: worm C must be finite and > 0");
+            if (ms.grand_canonical) {
+                // Every row of the capacity belongs to this worm; the window
+                // and the insertion density are checked in setup_grand_canonical.
+                GrandCanonicalSpec spec;
+                spec.chemical_potential = ms.grand_canonical->chemical_potential;
+                spec.n_min = static_cast<std::size_t>(ms.grand_canonical->n_min);
+                spec.n_max = static_cast<std::size_t>(ms.grand_canonical->n_max);
+                spec.insertion_width = ms.grand_canonical->insertion_width;
+                spec.insertion_center = ms.grand_canonical->insertion_center;
+                m = std::make_unique<GrandCanonicalWormMove>(ms.max_length, ms.swap_length,
+                                                             ms.worm_constant, std::move(spec));
+                m->set_weight(ms.weight);
+                moves.push_back(std::move(m));
+                continue;
+            }
             // Every exchangeable class (flavour) of the group.
             std::vector<std::vector<std::size_t>> classes;
             for (const ExchangeClass& ec : cfg_.exchange_classes)
@@ -458,8 +502,14 @@ std::vector<std::unique_ptr<Move>> Pimc::build_moves() {
     worm_of_particle_.assign(np_, std::numeric_limits<std::size_t>::max());
     for (std::size_t i = 0; i < moves.size(); ++i) {
         if (move_specs_[i].type != "worm") continue;
-        auto& worm = static_cast<WormMove&>(*moves[i]);
+        auto& worm = static_cast<WormBase&>(*moves[i]);
         worm.set_selection_probability(move_specs_[i].weight / total_weight);
+        if (gc_) {
+            // One species: the grand-canonical worm owns every row.
+            std::fill(worm_of_particle_.begin(), worm_of_particle_.end(), i);
+            worm_moves_.push_back(i);
+            continue;
+        }
         for (const ExchangeClass& ec : cfg_.exchange_classes) {
             if (ec.group != move_specs_[i].group || ec.particles.size() < 2) continue;
             for (const std::size_t p : ec.particles) {
@@ -488,6 +538,9 @@ std::vector<std::unique_ptr<Move>> Pimc::build_moves() {
 }
 
 void Pimc::import_paths(const io::PathCheckpoint& checkpoint) {
+    if (gc_)
+        throw std::runtime_error("pimc: path checkpoints of a grand-canonical run need "
+                                 "checkpoint version 2, not implemented yet");
     io::require_path_compatibility(checkpoint, paths_.size(), M_, np_, dim_,
                                    cfg_.beta, cfg_.time_step, cell_);
     // Validation completed before any replica changes; preserve full binary64
@@ -531,6 +584,9 @@ void Pimc::check_permutation(std::span<const std::size_t> pi) const {
 }
 
 io::PathCheckpoint Pimc::export_paths() const {
+    if (gc_)
+        throw std::runtime_error("pimc: path checkpoints of a grand-canonical run need "
+                                 "checkpoint version 2, not implemented yet");
     io::PathCheckpoint checkpoint;
     checkpoint.replicas = paths_.size();
     checkpoint.m = M_;
@@ -556,6 +612,9 @@ io::PathCheckpoint Pimc::export_paths() const {
 }
 
 void Pimc::set_estimators(std::vector<std::unique_ptr<Estimator>> ests) {
+    if (gc_)
+        throw std::logic_error("pimc: a grand-canonical run takes one estimator set per "
+                               "sector (set_sector_estimators)");
     constexpr std::size_t kMaxAllReplicaHistoryBytes = 256 * 1024 * 1024;
     const auto blocks = static_cast<std::size_t>(cfg_.accumulation_blocks);
     std::size_t per_replica = 0;
@@ -591,6 +650,10 @@ void Pimc::set_estimators(std::vector<std::unique_ptr<Estimator>> ests) {
 }
 
 void Pimc::run() {
+    if (gc_) {
+        run_grand_canonical();
+        return;
+    }
     const int n_threads = cfg_.threads > 0
                               ? cfg_.threads
                               : omp_get_max_threads();
@@ -1211,6 +1274,7 @@ std::string Pimc::summary() const {
                   "truncates the sampled distribution; enlarge the domain or "
                   "check the potential";
     }
+    if (gc_) summarize_grand_canonical(ss);
     ss << "\npimc: error diagnostics do not establish equilibration; compare independent starts and longer equilibration";
     if (!ests_.empty()) {
         RunResult observables;
@@ -1414,6 +1478,7 @@ RunResult Pimc::run_result() const {
         r.add_series(std::string("acc_block_winding_tensor_") + winding_tensor_label(c),
                      block_winding_tensor_[c]);
     for (const auto& e : ests_) e->write_results(r);
+    if (gc_) write_grand_canonical(r);
     r.check_unique_keys();
     return r;
 }

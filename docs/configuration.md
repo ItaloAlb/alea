@@ -525,7 +525,7 @@ step 0.5.
 | `single_slice` | `step` (0.5); `weight` (1) |
 | `permutation` | `levels`, `max_cycle` (both required); `weight` (1) |
 | `joint_permutation` | `pair: [A, B]`, `levels`, `max_cycle`, `pair_radius` (all required); `weight` (1) |
-| `worm` | `group`, `max_length`, `swap_length` (required), `C` (tuned during equilibration if absent); `weight` (1) |
+| `worm` | `group`, `max_length`, `swap_length` (required), `C` (tuned during equilibration if absent); `weight` (1); `grand_canonical` (absent: a canonical worm) |
 
 `weight` sets the relative frequency of a move.
 
@@ -534,6 +534,42 @@ moves:
   - bisection: { levels: 2, weight: 1.0 }
   - centroid:  { step: 0.5, weight: 1.0 }
 ```
+
+**Grand-canonical worm.** A `grand_canonical` block in the worm makes the
+stage sample the particle number N at a fixed chemical potential μ_in, with
+weight $e^{\beta\mu_\text{in}N}Z_N$ over a window of N (Boninsegni,
+Prokof'ev and Svistunov, Phys. Rev. E 74, 036701 (2006)). From the
+populations of two neighbouring sectors the run reports the canonical chemical
+potential $F(N+1) - F(N) = \mu_\text{in} - T\ln[P(N+1)/P(N)]$, and it reports
+every observable per sector (see [Estimators](estimators.md#grand-canonical-pimc)).
+
+```yaml
+moves:
+  - bisection: { levels: 4, weight: 3 }
+  - worm: { group: bosons, max_length: 77, swap_length: 51, weight: 1,
+            grand_canonical: { chemical_potential: 21.5, n_min: 12, n_max: 13 } }
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `chemical_potential` | — (required) | μ_in, in the run's energy unit |
+| `n_min`, `n_max` | — (required) | The window of closed-path particle counts, $0 \le n_\text{min} \le n_\text{max}$, $n_\text{max} \ge 1$. The group's `up:` count is the initial N and must lie in it |
+| `insertion_width` | — | Open cells (required there): an inserted worm starts at a point drawn from a Gaussian of this width. Periodic cells draw it uniformly and refuse the key |
+| `insertion_center` | origin | Open cells: the centre of that Gaussian, one coordinate per axis |
+
+Both sectors of a pair are visited only if μ_in lies within a few $T$ of
+$F(N+1) - F(N)$: an offset of $\delta\mu$ scales $P(N+1)/P(N)$ by
+$e^{\beta\,\delta\mu}$. A short run over a wide window locates it.
+
+A grand-canonical stage samples one species of bosons: the system holds one
+particle group, the worm's, with `type: bosons` and every particle in `up`. It
+needs the primitive action, the thermodynamic energy estimator, a cell that
+does not depend on N (give `L` or `vectors`, not `rs`) and potential terms that
+can price a single bead: `moire`, `inverse_power`, `harmonic_trap` and the pair
+`coulomb` term (open cells, or `truncation: minimum_image`). It refuses
+`statistics`, `permutation` and `joint_permutation` moves, a second worm, the
+virial estimators, the off-diagonal estimators (`momentum_distribution`) and
+`paths_in`/`paths_out`. It also takes no configurations from an earlier stage.
 
 ### Estimators
 

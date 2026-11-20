@@ -602,6 +602,19 @@ struct PimcMoveSpec {
     int         max_length = 0;
     int         swap_length = 0;
     double      worm_constant = std::numeric_limits<double>::quiet_NaN();
+    // worm only: the grand-canonical block (absent for a canonical worm).
+    // chemical_potential is mu_in in the run's energy units; the closed
+    // particle count stays in [n_min, n_max].  Open cells draw the tail of an
+    // inserted worm from a Gaussian of insertion_width (required there, absent
+    // in periodic cells) around insertion_center (empty: the origin).
+    struct GrandCanonical {
+        double chemical_potential = 0.0;
+        int    n_min = 0;
+        int    n_max = 0;
+        double insertion_width = 0.0;          // 0: absent
+        std::vector<double> insertion_center;  // empty: the origin
+    };
+    std::optional<GrandCanonical> grand_canonical = std::nullopt;
 };
 
 // The move set of a pimc run whose YAML omits `moves:`, for an M-slice ring:

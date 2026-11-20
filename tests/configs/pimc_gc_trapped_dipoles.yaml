@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Grand-canonical worm, window {1, 2}: bosons of mass 1 in a 2-D trap
+# (omega = 1) with C / r^3, C = 1, at beta = 2 and M = 16.  The exact
+# F(2) - F(1) = 1.847461147235 and the sector energies at this M come from
+#   python tests/references/inverse_power_trap_primitive.py --beta 2 --slices 16
+#          --omega 1 --strength 1 --exponent 3
+# (test_pimc_grand_canonical_driver.cpp).  The initial count `up: 1` lies in
+# the window; open cells draw inserted worms from a Gaussian of
+# insertion_width around the origin.
+project: { name: pimc_gc_trapped_dipoles, seed: 20261119, output: false, log: false }
+system:
+  lattice: { type: open, dimension: 2 }
+  particles:
+    - { name: x, group: bosons, type: bosons, mass: 1.0, charge: 0, up: 1, down: 0 }
+hamiltonian:
+  terms:
+    - { type: harmonic_trap, omega: 1.0 }
+    - { type: inverse_power, pair: [bosons, bosons], strength: 1.0, exponent: 3 }
+qmc:
+  - method: pimc
+    threads: 4
+    samples: 4
+    beta: 2.0
+    time_step: 0.125
+    equilibration_blocks: 20
+    accumulation_blocks: 400
+    steps_per_block: 100
+    sub_steps: 50
+    moves:
+      - bisection: { levels: 3, weight: 2 }
+      - centroid: { step: 0.5, weight: 1 }
+      - worm: { group: bosons, max_length: 6, swap_length: 4, weight: 2,
+                grand_canonical: { chemical_potential: 1.85, n_min: 1, n_max: 2,
+                                   insertion_width: 0.8 } }
+    energy: thermodynamic

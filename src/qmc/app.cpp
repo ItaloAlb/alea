@@ -530,6 +530,133 @@ OptimizeConfig build_optimize_config(const io::OptimizerSpec& spec,
     return oc;
 }
 
+namespace {
+
+// The grand-canonical worm of a PIMC stage, or null for a canonical stage.
+const io::PimcMoveSpec* grand_canonical_worm(const io::PimcSpec& spec) {
+    const io::PimcMoveSpec* worm = nullptr;
+    for (const io::PimcMoveSpec& ms : spec.moves) {
+        if (!ms.grand_canonical) continue;
+        if (worm)
+            throw std::runtime_error("pimc: a stage takes one grand_canonical worm");
+        worm = &ms;
+    }
+    return worm;
+}
+
+struct GrandCanonicalStage {
+    std::unique_ptr<Pimc> driver;
+    std::shared_ptr<WalkerEnsemble> ensemble;
+};
+
+// A grand-canonical PIMC stage (Boninsegni, Prokof'ev & Svistunov, Phys. Rev.
+// E 74, 036701 (2006)).  The driver is built for the capacity n_max: groups,
+// Hamiltonian, the worm's action (whose bead energies take every N-dependent
+// constant at the beads present on a slice) and the replica rows.  Every
+// sector N of the window gets the closed-path action and estimators of N
+// particles, built from the same config with the group's count set to N, so
+// that the inverse_power tail, d N/(2 tau) and every estimator normalization
+// are those of N.  Scope: one bosonic species, a cell that
+// does not depend on N, and potential terms with a bead energy.
+GrandCanonicalStage build_grand_canonical_stage(const io::Config& cfg, const io::PimcSpec& spec,
+                                                const io::PimcMoveSpec& worm, PimcConfig pc,
+                                                const SimulationCell& cell, std::size_t dim,
+                                                std::uint64_t stage_seed) {
+    const io::PimcMoveSpec::GrandCanonical& window = *worm.grand_canonical;
+    if (cfg.particles.size() != 1)
+        throw std::runtime_error("pimc: grand_canonical: the system must hold one particle "
+                                 "group, the worm's; it has " +
+                                 std::to_string(cfg.particles.size()));
+    const io::ParticleSpec& species = cfg.particles.front();
+    if (species.group != worm.group)
+        throw std::runtime_error("pimc: grand_canonical: the worm's group '" + worm.group +
+                                 "' is not the system's group '" + species.group + "'");
+    if (species.type != "bosons")
+        throw std::runtime_error("pimc: grand_canonical: group '" + species.group +
+                                 "' must be `type: bosons`");
+    if (!species.flavours.empty() || species.down != 0)
+        throw std::runtime_error("pimc: grand_canonical: the species must be one exchange "
+                                 "class; put every particle in `up` (no `down` or `flavours`)");
+    if (species.initialization == "fixed")
+        throw std::runtime_error("pimc: grand_canonical: `initialization: fixed` has no meaning "
+                                 "for a varying particle count");
+    const bool periodic = cfg.lattice.type == "periodic";
+    if (periodic && cfg.lattice.vectors.empty() && cfg.lattice.lengths.empty() &&
+        cfg.lattice.rs > 0.0)
+        throw std::runtime_error("pimc: grand_canonical: `lattice.rs` makes the cell depend on "
+                                 "N; give the cell by `L` or `vectors`");
+    if (periodic && (window.insertion_width != 0.0 || !window.insertion_center.empty()))
+        throw std::runtime_error("pimc: grand_canonical: a periodic cell draws inserted worms "
+                                 "uniformly; remove `insertion_width` and `insertion_center`");
+    if (!periodic && window.insertion_width == 0.0)
+        throw std::runtime_error("pimc: grand_canonical: an open cell needs `insertion_width`, "
+                                 "the width of the Gaussian that inserted worms start from");
+    if (!periodic && !window.insertion_center.empty() && window.insertion_center.size() != dim)
+        throw std::runtime_error("pimc: grand_canonical: `insertion_center` needs " +
+                                 std::to_string(dim) + " coordinates");
+    if (!spec.paths_in.empty() || !spec.paths_out.empty())
+        throw std::runtime_error("pimc: grand_canonical: path checkpoints (paths_in, "
+                                 "paths_out) need checkpoint version 2, not implemented yet");
+    const auto n_min = static_cast<std::size_t>(window.n_min);
+    const auto n_max = static_cast<std::size_t>(window.n_max);
+    const auto initial = static_cast<std::size_t>(species.count());
+    if (initial < n_min || initial > n_max)
+        throw std::runtime_error("pimc: grand_canonical: the initial count `up: " +
+                                 std::to_string(initial) + "` lies outside the window [" +
+                                 std::to_string(n_min) + ", " + std::to_string(n_max) + "]");
+
+    const auto config_with = [&](std::size_t n) {
+        io::Config c = cfg;
+        c.particles.front().up = static_cast<int>(n);
+        return c;
+    };
+    const io::Config capacity = config_with(n_max);
+    const std::vector<ParticleGroup> groups = build_groups(capacity);
+    const Hamiltonian ham = build_hamiltonian(capacity, groups, cell);
+    std::string missing;
+    for (const auto& component : ham.components())
+        if (component->is_potential() && !component->supports_bead_energy())
+            missing += (missing.empty() ? "" : ", ") + component->name();
+    if (!missing.empty())
+        throw std::runtime_error("pimc: grand_canonical: no bead energy for " + missing +
+                                 " (implemented: moire, inverse_power, harmonic_trap and the "
+                                 "pair coulomb term; the periodic Ewald term carries an "
+                                 "N-dependent background)");
+    const Action worm_action = build_action(capacity, groups, ham, dim);
+
+    PimcGrandCanonicalSectors sectors;
+    sectors.initial_particles = initial;
+    std::vector<std::vector<std::unique_ptr<Estimator>>> estimators;
+    for (std::size_t n = n_min; n <= n_max; ++n) {
+        if (n == 0) {  // no particle to move or measure
+            sectors.actions.emplace_back();
+            estimators.emplace_back();
+            continue;
+        }
+        const io::Config sector = config_with(n);
+        const std::vector<ParticleGroup> sector_groups = build_groups(sector);
+        const Hamiltonian sector_ham = build_hamiltonian(sector, sector_groups, cell);
+        sectors.actions.push_back(build_action(sector, sector_groups, sector_ham, dim));
+        estimators.push_back(build_estimators(
+            spec.estimators, EstimatorContext{sector_groups, cell, dim, Sampler::pimc}));
+    }
+
+    // Random starting points for every row of the capacity; rows past the
+    // initial N are spare rows that no action term reads.
+    auto ensemble = std::make_shared<WalkerEnsemble>(static_cast<std::size_t>(spec.samples),
+                                                     groups, dim, cell);
+    initialize_positions(*ensemble, cfg.lattice.L,
+                         numerics::stream_seed(stage_seed, kPimcEnsembleInitStream, 0), {}, cell);
+    pc.exchange_classes = build_exchange_classes(capacity.particles);
+    pc.exchange_class_max = static_cast<int>(largest_exchange_class(pc.exchange_classes));
+    auto driver = std::make_unique<Pimc>(pc, groups, ham, cell, dim, n_max, ensemble.get(),
+                                         &worm_action, &sectors);
+    driver->set_sector_estimators(std::move(estimators));
+    return {std::move(driver), std::move(ensemble)};
+}
+
+}  // namespace
+
 // ── App ──────────────────────────────────────────────────────────────────────
 
 App::App(io::Config config) : cfg_(std::move(config)) {}
@@ -802,15 +929,27 @@ DriverPack App::build_drivers(const std::filesystem::path& checkpoint_dir) {
             "kinetic term, which the primitive action cannot carry (it would "
             "need a phase action).  Not supported.");
 
+    std::vector<char> grand_canonical_stage(cfg_.pimc.size(), 0);
     for (std::size_t pi = 0; pi < cfg_.pimc.size(); ++pi) {
         const io::PimcSpec& spec = cfg_.pimc[pi];
         const std::size_t nw = static_cast<std::size_t>(spec.samples);
-
-        auto ensemble = std::make_shared<WalkerEnsemble>(nw, groups, dim, cell);
         // Own hashed stream: the stage seed itself also keys the replica
         // streams, and base + offset seeds would coincide with VMC/DMC's
         // base + thread streams.
         const std::uint64_t stage_seed = sampling_seed(pimc_ordinals[pi]);
+
+        if (const io::PimcMoveSpec* worm = grand_canonical_worm(spec)) {
+            GrandCanonicalStage stage = build_grand_canonical_stage(
+                cfg_, spec, *worm, build_pimc_config(spec, stage_seed), cell, dim, stage_seed);
+            pack.drivers.push_back(std::move(stage.driver));
+            pack.ensembles.push_back(std::move(stage.ensemble));
+            pack.walkers_out.emplace_back();
+            pack.walkers_in_set.push_back(0);
+            grand_canonical_stage[pi] = 1;
+            continue;
+        }
+
+        auto ensemble = std::make_shared<WalkerEnsemble>(nw, groups, dim, cell);
         initialize_positions(*ensemble, cfg_.lattice.L,
                              numerics::stream_seed(stage_seed,
                                                    kPimcEnsembleInitStream, 0),
@@ -844,8 +983,11 @@ DriverPack App::build_drivers(const std::filesystem::path& checkpoint_dir) {
             pack.paths_out[index] =
                 (checkpoint_dir / pack.paths_out[index]).string();
         // Explicit full paths win over incoming VMC configurations just as an
-        // explicit walkers_in checkpoint does for VMC/DMC.
-        pack.walkers_in_set[index] = !cfg_.pimc[pi].paths_in.empty();
+        // explicit walkers_in checkpoint does for VMC/DMC.  A grand-canonical
+        // stage receives none: its rows are the capacity n_max, not the
+        // previous stage's particle count.
+        pack.walkers_in_set[index] =
+            !cfg_.pimc[pi].paths_in.empty() || grand_canonical_stage[pi] != 0;
     }
 
     // Reorder all parallel metadata with the drivers. main's adjacent carry-over

@@ -240,11 +240,19 @@ rows $[0, N)$, and the spare rows are fixed points of $\pi$ that no cycle,
 class or move sees. A canonical path has $N$ equal to the capacity. An open
 path may lack $g < M$ beads after its head (the gap), at most one per slice;
 the canonical worm has $g = 0$, one cut link. The grand-canonical worm
-(`GrandCanonicalWormMove`, not yet selectable from the YAML) changes $N$ by
-appending and removing rows and computes its potential changes from
-`HamiltonianComponent::bead_energy`, the energy of one bead against the beads
-present at its slice, which includes the $N$-dependent constants of a term
-(the continuum tail of `inverse_power`).
+(`GrandCanonicalWormMove`, a `worm` move with a `grand_canonical` block)
+changes $N$ by appending and removing rows and computes its potential changes
+from `HamiltonianComponent::bead_energy`, the energy of one bead against the
+beads present at its slice, which includes the $N$-dependent constants of a
+term (the continuum tail of `inverse_power`).
+
+For a grand-canonical stage the `App` builds the driver for the capacity
+$n_	ext{max}$ of the window (groups, `Hamiltonian`, the worm's `Action`, the
+replica rows), and, for every sector $N$ of the window, a closed-path `Action`
+and estimator set built from the same config with the group's count set to
+$N$. `Pimc` runs every move but the worm with the action of the current $N$,
+so a closed path is moved and measured by exactly the canonical code of that
+$N$ (`pimc_grand_canonical.cpp`); the worm alone uses the capacity action.
 
 A `Move` proposes a change, asks the `Action` for $\Delta S$, and accepts or
 rejects. The action's components are the primitive kinetic springs, the

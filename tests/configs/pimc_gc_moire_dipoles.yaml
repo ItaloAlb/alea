@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Grand-canonical worm, window {3, 4}: dipolar bosons (C / r^3, C = 5.4393)
+# on a moire lattice, in a hexagonal cell of 3 x 3 moire cells (moire units:
+# a_M = 1, mass 1).  beta = 1, M = 50.  chemical_potential is close to
+# F(4) - F(3) at this beta and tau, so both sectors are populated.
+# test_pimc_grand_canonical_driver.cpp compares the sector observables with
+# canonical runs at N = 3 and 4 and checks that F(4) - F(3) does not depend
+# on the chemical potential.
+project: { name: pimc_gc_moire_dipoles, seed: 31415, output: false, log: false }
+system:
+  lattice: { type: periodic, dimension: 2, vectors: [[3.0, 0.0], [1.5, 2.598076211353316]] }
+  particles:
+    - { name: x, group: bosons, type: bosons, mass: 1.0, charge: 0, up: 3, down: 0 }
+hamiltonian:
+  terms:
+    - { type: moire, group: [bosons], V0: 0.0, Vtilde: 4.296264364086565, phi: 0.2617993877991494, a_M: 1.0, theta0: 1.5707963267948966 }
+    - { type: inverse_power, pair: [bosons, bosons], strength: 5.439295845011993, exponent: 3 }
+qmc:
+  - method: pimc
+    threads: 4
+    samples: 8
+    beta: 1.0
+    time_step: 0.02
+    equilibration_blocks: 20
+    accumulation_blocks: 200
+    steps_per_block: 20
+    sub_steps: 100
+    moves:
+      - bisection: { levels: 4, weight: 3 }
+      - centroid: { step: 0.3, weight: 1 }
+      - worm: { group: bosons, max_length: 8, swap_length: 6, weight: 2,
+                grand_canonical: { chemical_potential: 23.6, n_min: 3, n_max: 4 } }
+    energy: thermodynamic
+    estimators:
+      - { type: bragg, group: bosons, wavevectors: [[2.0943951023931957, 3.6275987284684352], [-4.1887902047863905, 0.0], [2.0943951023931957, -3.6275987284684352]] }

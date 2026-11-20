@@ -492,6 +492,47 @@ qmc:
     CHECK(b.seed == 7u);
 }
 
+TEST_CASE("a pimc snapshot round-trips the grand_canonical block of a worm",
+          "[config_writer][pimc][grand_canonical]") {
+    TempDir tmp("pimc_gc_rt");
+    const fs::path src = tmp.path / "pimc.yaml";
+    std::ofstream(src) << R"(project: { name: rt, seed: 7 }
+system:
+  lattice: { type: open, dimension: 2 }
+  particles:
+    - { name: p, group: g, type: bosons, mass: 1.0, up: 2, down: 0 }
+hamiltonian:
+  terms: []
+qmc:
+  - method: pimc
+    time_step: 0.125
+    beta: 2.0
+    moves:
+      - bisection: { levels: 3, weight: 2.0 }
+      - worm: { group: g, max_length: 6, swap_length: 4, weight: 2.0,
+                grand_canonical: { chemical_potential: 1.25, n_min: 1, n_max: 3,
+                                   insertion_width: 0.8, insertion_center: [0.5, -0.25] } }
+)";
+    const fs::path run_dir = tmp.path / "run";
+    fs::create_directories(run_dir);
+    alea::io::write_config_snapshot(src.string(), {}, run_dir, 7);
+    const alea::io::Config a = alea::io::parse_config_file(src.string());
+    const alea::io::Config b = alea::io::parse_config_file((run_dir / "pimc.yaml").string());
+    REQUIRE(b.pimc.size() == 1);
+    REQUIRE(b.pimc[0].moves.size() == 2);
+    const auto& ga = a.pimc[0].moves[1].grand_canonical;
+    const auto& gb = b.pimc[0].moves[1].grand_canonical;
+    REQUIRE(ga.has_value());
+    REQUIRE(gb.has_value());
+    CHECK(gb->chemical_potential == ga->chemical_potential);
+    CHECK(gb->n_min == ga->n_min);
+    CHECK(gb->n_max == ga->n_max);
+    CHECK(gb->insertion_width == ga->insertion_width);
+    CHECK(gb->insertion_center == ga->insertion_center);
+    CHECK(b.pimc[0].moves[1].max_length == 6);
+    CHECK(b.pimc[0].moves[1].weight == 2.0);
+}
+
 TEST_CASE("a pimc snapshot round-trips per-flavour particle counts",
           "[config_writer][pimc][flavours]") {
     TempDir tmp("pimc_flavours_rt");

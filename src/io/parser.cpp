@@ -945,7 +945,8 @@ Config parse_config(const std::string& yaml_text) {
                                      {"pair", "levels", "max_cycle", "pair_radius", "weight"});
                     else if (mn["worm"])
                         require_keys(payload, "pimc worm move",
-                                     {"group", "max_length", "swap_length", "C", "weight"});
+                                     {"group", "max_length", "swap_length", "C", "weight",
+                                      "grand_canonical"});
                     else
                         require_keys(payload, "pimc move", {"step", "weight"});
                     PimcMoveSpec ms;
@@ -961,6 +962,49 @@ Config parse_config(const std::string& yaml_text) {
                         ms.swap_length = payload["swap_length"].as<int>();
                         if (payload["C"]) ms.worm_constant = payload["C"].as<double>();
                         if (payload["weight"]) ms.weight = payload["weight"].as<double>();
+                        if (const YAML::Node gc = payload["grand_canonical"]) {
+                            // The window and mu_in are required; the insertion
+                            // density is checked against the cell by the App.
+                            require_keys(gc, "pimc worm grand_canonical",
+                                         {"chemical_potential", "n_min", "n_max",
+                                          "insertion_width", "insertion_center"});
+                            if (!gc["chemical_potential"] || !gc["n_min"] || !gc["n_max"])
+                                throw std::runtime_error(
+                                    "pimc worm grand_canonical: `chemical_potential`, `n_min` "
+                                    "and `n_max` are required");
+                            PimcMoveSpec::GrandCanonical g;
+                            g.chemical_potential = gc["chemical_potential"].as<double>();
+                            g.n_min = gc["n_min"].as<int>();
+                            g.n_max = gc["n_max"].as<int>();
+                            if (!std::isfinite(g.chemical_potential))
+                                throw std::runtime_error(
+                                    "pimc worm grand_canonical: `chemical_potential` must be finite");
+                            if (g.n_min < 0 || g.n_max < 1 || g.n_min > g.n_max)
+                                throw std::runtime_error(
+                                    "pimc worm grand_canonical: needs 0 <= n_min <= n_max "
+                                    "and n_max >= 1");
+                            if (gc["insertion_width"]) {
+                                g.insertion_width = gc["insertion_width"].as<double>();
+                                if (!(std::isfinite(g.insertion_width) && g.insertion_width > 0.0))
+                                    throw std::runtime_error(
+                                        "pimc worm grand_canonical: `insertion_width` must be "
+                                        "finite and > 0");
+                            }
+                            if (const YAML::Node center = gc["insertion_center"]) {
+                                if (!center.IsSequence() || center.size() == 0)
+                                    throw std::runtime_error(
+                                        "pimc worm grand_canonical: `insertion_center` must "
+                                        "list one coordinate per axis");
+                                for (const YAML::Node& x : center) {
+                                    g.insertion_center.push_back(x.as<double>());
+                                    if (!std::isfinite(g.insertion_center.back()))
+                                        throw std::runtime_error(
+                                            "pimc worm grand_canonical: `insertion_center` "
+                                            "must be finite");
+                                }
+                            }
+                            ms.grand_canonical = std::move(g);
+                        }
                     } else if (mn["joint_permutation"]) {
                         ms.type = "joint_permutation";
                         if (!payload["pair"] || !payload["levels"] || !payload["max_cycle"] ||

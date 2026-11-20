@@ -667,6 +667,18 @@ components 0
   w1 0 0 0
   w2 0 0 0
   w3 0 0 0
+config tests/configs/pimc_gc_moire_dipoles.yaml
+components 0
+  w0 0 38.749258497322586 0
+  w1 0 42.933401076614963 0
+  w2 0 71.064271662509157 0
+  w3 0 9.7707393552267607 0
+config tests/configs/pimc_gc_trapped_dipoles.yaml
+components 0
+  w0 0 0 0
+  w1 0 0 0
+  w2 0 0 0
+  w3 0 0 0
 config tests/configs/pimc_ho_1d.yaml
 components 0
   w0 0 0.72665046286415225 0
