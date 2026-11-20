@@ -619,6 +619,12 @@ void GrandCanonicalWormMove::tune_constant(double closed_fraction, double open_f
     constant_ *= std::sqrt(ratio);
 }
 
+void GrandCanonicalWormMove::set_worm_constant(double c) {
+    if (!(std::isfinite(c) && c > 0.0))
+        throw std::invalid_argument("GrandCanonicalWormMove: the worm constant C must be finite and > 0");
+    constant_ = c;
+}
+
 std::vector<std::pair<std::string, double>> GrandCanonicalWormMove::extra_diagnostics() const {
     static constexpr const char* kNames[kKinds] = {"open", "close", "insert", "remove",
                                                    "advance", "recede", "swap"};

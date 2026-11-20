@@ -561,6 +561,13 @@ Both sectors of a pair are visited only if μ_in lies within a few $T$ of
 $F(N+1) - F(N)$: an offset of $\delta\mu$ scales $P(N+1)/P(N)$ by
 $e^{\beta\,\delta\mu}$. A short run over a wide window locates it.
 
+All replicas of a grand-canonical stage share one worm constant `C`. When the
+YAML does not fix it, it is tuned during equilibration towards a 50 % closed
+fraction pooled over the replicas, and every replica takes the tuned value
+after each block. `C` does not enter the weights of the closed paths, so it
+changes how often a replica opens a worm, and with it how often N changes,
+not $P(N)$.
+
 A grand-canonical stage samples one species of bosons: the system holds one
 particle group, the worm's, with `type: bosons` and every particle in `up`. It
 needs the primitive action, the thermodynamic energy estimator, a cell that

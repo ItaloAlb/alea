@@ -115,6 +115,9 @@ public:
     [[nodiscard]] bool tunes_constant() const noexcept override { return tune_; }
     void tune_constant(double closed_fraction, double open_fraction,
                        double target_ratio) override;
+    // Use C = c (finite, > 0) from now on: the driver hands every replica the
+    // one C it tunes from their pooled closed fraction.  Throws invalid_argument.
+    void set_worm_constant(double c);
     [[nodiscard]] const GrandCanonicalSpec& spec() const noexcept { return spec_; }
     // dS_V of the last accepted proposal (tests compare it with an
     // independent evaluation of the potential action before and after).

@@ -11,6 +11,7 @@
 // test_pimc_grand_canonical.cpp; these check what only the driver does: the
 // per-sector physics, the bookkeeping of the sector weights and the outputs.
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
@@ -439,4 +440,34 @@ TEST_CASE("A grand-canonical stage accepts paths_in and paths_out", "[pimc][gran
     REQUIRE(pack.paths_in.size() == 1);
     CHECK(pack.paths_in.front() == "in.h5");
     CHECK(pack.paths_out.front() == "out.h5");
+}
+
+// -- The worm constant of a grand-canonical stage ------------------------------
+// C does not enter the weights of Z, so the driver tunes one C from the closed
+// fraction pooled over the replicas and gives it to all of them: a replica
+// whose own blocks went into long G excursions no longer drives its C down
+// until it stops opening worms and keeps its initial N.
+TEST_CASE("A grand-canonical stage tunes one worm constant for all its replicas",
+          "[pimc][grand_canonical]") {
+    alea::io::Config cfg = short_dipole_stage();  // 4 replicas, 2 equilibration blocks
+    const auto run = [&]() {
+        alea::App app(cfg);
+        alea::DriverPack pack = app.build_drivers();
+        alea::Pimc& pimc = only_pimc(pack);
+        pimc.run();
+        return pimc.run_result();
+    };
+    SECTION("tuned") {
+        const alea::RunResult result = run();
+        const double low = scalar(result, "move_2_constant_min");
+        CHECK(low > 0.0);
+        CHECK(scalar(result, "move_2_constant_max") == low);
+        CHECK(scalar(result, "move_2_constant_mean") == Catch::Approx(low).epsilon(1e-12));
+    }
+    SECTION("given in the YAML: never tuned") {
+        worm_of(cfg).worm_constant = 0.05;
+        const alea::RunResult result = run();
+        CHECK(scalar(result, "move_2_constant_min") == 0.05);
+        CHECK(scalar(result, "move_2_constant_max") == 0.05);
+    }
 }

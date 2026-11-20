@@ -266,34 +266,57 @@ void Pimc::run_grand_canonical() {
                                      std::to_string(s) + "; provide a finite-action initial path");
     }
 
-    // ── Equilibration: tune C towards a 50 % closed fraction ──
+    // ── Equilibration: one C for every replica, tuned towards a 50 % closed
+    // fraction ──
+    // C does not enter the weights of Z (BPS Sec. III), so every C samples the
+    // same P(N); it sets how often a replica opens a worm, and so how often it
+    // can change N.  Tuned per replica from its own blocks, C followed the long
+    // G excursions of that replica (the gap walking back over the slices before
+    // it can close): a block spent mostly in G halves C, and twenty such blocks
+    // left replicas whose C was 10^5 times smaller than the others' and that
+    // never opened again, keeping their initial N.  The closed fraction pooled
+    // over the replicas averages those excursions out; after each block every
+    // replica takes the one tuned C.  The pooled counts are summed in replica
+    // order, so the tuned C does not depend on the thread count.
     io::Logger::milestone("pimc: equilibration " + std::to_string(n_eq) + " blocks");
-    #pragma omp parallel for schedule(dynamic) num_threads(n_threads)
-    for (int s = 0; s < samples; ++s) {
-        const auto r = static_cast<std::size_t>(s);
-        try {
-            auto& worm = static_cast<WormBase&>(*moves_[r][worm_index]);
-            for (int b = 0; b < n_eq && !stopped(); ++b) {
-                std::size_t closed_attempts = 0;
+    auto* lead = dynamic_cast<GrandCanonicalWormMove*>(moves_[0][worm_index].get());
+    if (lead == nullptr)
+        throw std::logic_error("pimc: a grand-canonical stage needs the grand-canonical worm");
+    std::vector<std::size_t> closed_attempts(n_replicas, 0);  // [replica], this block
+    for (int b = 0; b < n_eq && !stopped(); ++b) {
+        #pragma omp parallel for schedule(dynamic) num_threads(n_threads)
+        for (int s = 0; s < samples; ++s) {
+            const auto r = static_cast<std::size_t>(s);
+            try {
+                std::size_t closed = 0;
                 for (int st = 0; st < steps && !stopped(); ++st)
                     for (int ss = 0; ss < sub_steps; ++ss) {
                         if (paths_[r].is_open()) {
                             attempt(r, worm_index);
                             continue;
                         }
-                        ++closed_attempts;
+                        ++closed;
                         attempt(r, select_move(rngs_[r]));
                     }
-                const double total = static_cast<double>(steps) * sub_steps;
-                const double closed = static_cast<double>(closed_attempts) / total;
-                worm.tune_constant(closed, 1.0 - closed, 1.0);
+                closed_attempts[r] = closed;
+            } catch (...) {
+                replica_errors[r] = std::current_exception();
+                stop_replicas.store(true, std::memory_order_relaxed);
             }
-        } catch (...) {
-            replica_errors[r] = std::current_exception();
-            stop_replicas.store(true, std::memory_order_relaxed);
         }
+        detail::rethrow_replica_error(replica_errors, "equilibration");
+        // A fixed C (given in the YAML) is never tuned; a C still unset (no
+        // open or insert attempted yet) cannot be.
+        if (!lead->tunes_constant() || !(lead->worm_constant() > 0.0)) continue;
+        std::size_t pooled = 0;
+        for (const std::size_t c : closed_attempts) pooled += c;
+        const double closed = static_cast<double>(pooled) /
+                              (static_cast<double>(steps) * sub_steps * static_cast<double>(samples));
+        lead->tune_constant(closed, 1.0 - closed, 1.0);
+        for (std::size_t r = 1; r < n_replicas; ++r)
+            static_cast<GrandCanonicalWormMove&>(*moves_[r][worm_index])
+                .set_worm_constant(lead->worm_constant());
     }
-    detail::rethrow_replica_error(replica_errors, "equilibration");
 
     // ── Accumulation ──
     io::Logger::milestone("pimc: accumulation " + std::to_string(n_acc) + " blocks");
