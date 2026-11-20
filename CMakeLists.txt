@@ -201,6 +201,7 @@ set(SOURCES
     src/pimc/move.cpp
     src/pimc/grand_canonical_worm.cpp
     src/pimc/pimc.cpp
+    src/pimc/pimc_grand_canonical.cpp
 )
 
 add_executable(alea ${SOURCES})

@@ -198,11 +198,12 @@ void GrandCanonicalWormMove::commit(PathSet& path, std::size_t count) const {
 
 bool GrandCanonicalWormMove::accept(double log_ratio, double delta_s, numerics::Random& rng,
                                     PathSet::Bead where) {
+    const double log_a = log_ratio - delta_s;
+    last_log_a_ = log_a;
     if (!std::isfinite(delta_s)) {
         reject_nonfinite(delta_s, where.particle, where.slice);  // throws unless +inf
         return false;
     }
-    const double log_a = log_ratio - delta_s;
     if (!(std::isfinite(log_a) && (log_a >= 0.0 || rng.uniform() < std::exp(log_a))))
         return false;
     last_delta_s_ = delta_s;
@@ -214,6 +215,7 @@ bool GrandCanonicalWormMove::attempt(PathSet& path, Action& action, numerics::Ra
         throw std::logic_error("GrandCanonicalWormMove: the driver must set the selection probability");
     if (!action.supports_bead_action())
         throw std::logic_error("GrandCanonicalWormMove: the action has no grand-canonical bead action");
+    last_log_a_ = std::numeric_limits<double>::quiet_NaN();
     prepare(path);
     load_mass(action);
     if (!path.is_open())

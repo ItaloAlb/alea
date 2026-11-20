@@ -715,6 +715,7 @@ set(APP_SOURCES
     ${SRC_DIR}/pimc/move.cpp
     ${SRC_DIR}/pimc/grand_canonical_worm.cpp
     ${SRC_DIR}/pimc/pimc.cpp
+    ${SRC_DIR}/pimc/pimc_grand_canonical.cpp
     ${SRC_DIR}/qmc/linear_method.cpp
     ${SRC_DIR}/qmc/linear_optimize.cpp
     ${SRC_DIR}/qmc/vmc.cpp
@@ -1256,6 +1257,7 @@ add_executable(test_pimc
     ${SRC_DIR}/pimc/move.cpp
     ${SRC_DIR}/pimc/grand_canonical_worm.cpp
     ${SRC_DIR}/pimc/pimc.cpp
+    ${SRC_DIR}/pimc/pimc_grand_canonical.cpp
     ${SRC_DIR}/hamiltonian/hamiltonian.cpp
     ${SRC_DIR}/hamiltonian/harmonic_trap.cpp
     ${SRC_DIR}/hamiltonian/coulomb.cpp
@@ -1325,6 +1327,7 @@ add_executable(test_pimc_physics
     test_pimc_kernel_admission.cpp
     test_pimc_pair_product.cpp
     test_pimc_fixed_node.cpp
+    test_pimc_grand_canonical_driver.cpp
     ${SRC_DIR}/io/config_writer.cpp
     ${APP_SOURCES}
 )

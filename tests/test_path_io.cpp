@@ -3,7 +3,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // PIMC path checkpoints preserve every bead and reject incompatible or corrupt
-// continuations. Scratch files belong exclusively to these tests.
+// continuations; version 2 stores the particle count of every replica (a
+// grand-canonical run), and version-1 files are still read. Scratch files
+// belong exclusively to these tests.
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -22,6 +24,7 @@
 #include "population/simulation_cell.h"
 
 #include "io/path_io.h"
+#include "path_checkpoint_v1.h"
 
 namespace fs = std::filesystem;
 using alea::SimulationCell;
@@ -55,6 +58,7 @@ PathCheckpoint example(bool periodic = false) {
     cp.dim = 2;
     cp.beta = 2.0;
     cp.tau = 0.25;
+    cp.active.assign(cp.replicas, cp.np);
     cp.positions.resize(cp.replicas * cp.m * cp.np * cp.dim);
     cp.permutation.resize(cp.replicas * cp.np);
     for (std::size_t r = 0; r < cp.replicas; ++r) {
@@ -74,10 +78,32 @@ PathCheckpoint example(bool periodic = false) {
     return cp;
 }
 
+// Grand-canonical replicas below a capacity of 4: N = 3 (with an exchange
+// cycle), 0 and 1, packed one after another.
+PathCheckpoint ragged(bool periodic = false) {
+    PathCheckpoint cp;
+    cp.replicas = 3;
+    cp.m = 4;
+    cp.np = 4;
+    cp.dim = 2;
+    cp.beta = 1.0;
+    cp.tau = 0.25;
+    cp.active = {3, 0, 1};
+    cp.permutation = {1, 0, 2, 0};
+    for (std::size_t r = 0; r < cp.replicas; ++r)
+        for (std::size_t p = 0; p < cp.active[r]; ++p)
+            for (std::size_t d = 0; d < cp.dim; ++d)
+                for (std::size_t k = 0; k < cp.m; ++k)
+                    cp.positions.push_back(1000.0 * r + 100.0 * p + 10.0 * d + k + 0.125);
+    if (periodic) cp.lattice = {4.0, 0.0, 1.0, 5.0};
+    return cp;
+}
+
 void check_equal(const PathCheckpoint& actual, const PathCheckpoint& expected) {
     CHECK(actual.replicas == expected.replicas);
     CHECK(actual.m == expected.m);
     CHECK(actual.np == expected.np);
+    CHECK(actual.active == expected.active);
     CHECK(actual.dim == expected.dim);
     CHECK(actual.beta == expected.beta);
     CHECK(actual.tau == expected.tau);
@@ -116,6 +142,8 @@ TEST_CASE("path_io rejects invalid sizes and overflow before any write", "[path_
     SECTION("positions truncated") { cp.positions.pop_back(); }
     SECTION("positions oversized") { cp.positions.push_back(0.0); }
     SECTION("permutation truncated") { cp.permutation.pop_back(); }
+    SECTION("a particle count missing") { cp.active.pop_back(); }
+    SECTION("a replica above the capacity") { cp.active[1] = cp.np + 1; }
     SECTION("size product overflow") { cp.replicas = std::numeric_limits<std::size_t>::max(); }
     Scratch scratch;
     REQUIRE_THROWS_AS(alea::io::write_paths(scratch.file(), cp), std::runtime_error);
@@ -207,7 +235,7 @@ TEST_CASE("path_io compatibility requires the exact shape time grid and cell", "
     SECTION("one ULP different lattice") { lattice[0] = std::nextafter(lattice[0], 5.0); }
     SECTION("periodic to open") { lattice.clear(); }
     const SimulationCell cell = lattice.empty() ? SimulationCell(dim) : SimulationCell(2, lattice);
-    REQUIRE_THROWS_AS(alea::io::require_path_compatibility(cp, replicas, m, np,
+    REQUIRE_THROWS_AS(alea::io::require_path_compatibility(cp, replicas, m, np, np,
                                                          dim, beta, tau, cell),
                       std::runtime_error);
 }
@@ -216,17 +244,17 @@ TEST_CASE("path_io compatibility accepts matching geometry without wrapping data
     const bool periodic = GENERATE(false, true);
     const auto cp = example(periodic);
     const SimulationCell cell = periodic ? SimulationCell(cp.dim, cp.lattice) : SimulationCell(cp.dim);
-    REQUIRE_NOTHROW(alea::io::require_path_compatibility(cp, cp.replicas, cp.m, cp.np,
+    REQUIRE_NOTHROW(alea::io::require_path_compatibility(cp, cp.replicas, cp.m, cp.np, cp.np,
                                                        cp.dim, cp.beta, cp.tau, cell));
 }
 
 TEST_CASE("path_io accepts dimensionless default open cell for an open path", "[path_io]") {
     const auto cp = example();
     REQUIRE_NOTHROW(alea::io::require_path_compatibility(cp, cp.replicas, cp.m,
-                                                       cp.np, cp.dim, cp.beta,
+                                                       cp.np, cp.np, cp.dim, cp.beta,
                                                        cp.tau, SimulationCell{}));
     REQUIRE_THROWS_AS(alea::io::require_path_compatibility(cp, cp.replicas, cp.m,
-                                                         cp.np, cp.dim, cp.beta,
+                                                         cp.np, cp.np, cp.dim, cp.beta,
                                                          cp.tau, SimulationCell(1)),
                       std::runtime_error);
 }
@@ -365,6 +393,108 @@ TEST_CASE("path_io rejects dataset rank and precision reinterpretation", "[path_
         }
         SECTION("integer positions") {
             file.createDataSet("positions", std::vector<std::uint64_t>(cp.positions.size(), 0));
+        }
+    }
+    REQUIRE_THROWS_AS(alea::io::read_paths(scratch.file()), std::runtime_error);
+}
+
+// -- Version 2: replicas with different particle counts ----------------------
+
+TEST_CASE("path_io round-trips replicas holding different particle counts below the capacity",
+          "[path_io]") {
+    const bool periodic = GENERATE(false, true);
+    const auto cp = ragged(periodic);
+    Scratch scratch;
+    REQUIRE_NOTHROW(alea::io::validate_path_checkpoint(cp));
+    CHECK(alea::io::first_particle(cp, 2) == 3);
+    alea::io::write_paths(scratch.file(), cp);
+    check_equal(alea::io::read_paths(scratch.file()), cp);
+    HighFive::File file(scratch.file().string(), HighFive::File::ReadOnly);
+    std::uint64_t version = 0, capacity = 0;
+    file.getAttribute("version").read(version);
+    file.getAttribute("n_capacity").read(capacity);
+    CHECK(version == 2);
+    CHECK(capacity == 4);
+    CHECK_FALSE(file.hasAttribute("n_particles"));
+    std::vector<std::uint64_t> active;
+    file.getDataSet("n_active").read(active);
+    CHECK(active == std::vector<std::uint64_t>{3, 0, 1});
+    // Only the particles are stored: (3 + 0 + 1) rows of d*M beads.
+    CHECK(file.getDataSet("positions").getDimensions() == std::vector<std::size_t>{4 * 2 * 4});
+}
+
+TEST_CASE("path_io stores a run whose replicas all hold no particle", "[path_io]") {
+    auto cp = ragged();
+    cp.active = {0, 0, 0};
+    cp.positions.clear();
+    cp.permutation.clear();
+    Scratch scratch;
+    alea::io::write_paths(scratch.file(), cp);
+    check_equal(alea::io::read_paths(scratch.file()), cp);
+}
+
+TEST_CASE("path_io requires each replica's permutation to stay within its own particles",
+          "[path_io]") {
+    auto cp = ragged();
+    // Replica 2 holds one particle: pi(0) = 1 points at a row that is not one,
+    // although it lies below the capacity.
+    cp.permutation[3] = 1;
+    REQUIRE_THROWS_WITH(alea::io::validate_path_checkpoint(cp), ContainsSubstring("bijection"));
+}
+
+TEST_CASE("path_io reads a version-1 file with every row a particle", "[path_io]") {
+    const bool periodic = GENERATE(false, true);
+    const auto cp = example(periodic);
+    Scratch scratch;
+    alea::test::write_version1_paths(scratch.file(), cp);
+    const auto read = alea::io::read_paths(scratch.file());
+    CHECK(read.active == std::vector<std::size_t>(cp.replicas, cp.np));
+    check_equal(read, cp);
+}
+
+TEST_CASE("path_io compatibility admits each replica's particle count within the run's window",
+          "[path_io]") {
+    const auto cp = ragged();
+    const SimulationCell cell(cp.dim);
+    const auto check = [&](std::size_t n_min, std::size_t n_max) {
+        alea::io::require_path_compatibility(cp, cp.replicas, cp.m, n_min, n_max, cp.dim,
+                                             cp.beta, cp.tau, cell);
+    };
+    // The capacity of the file is not compared: a run may widen its window.
+    REQUIRE_NOTHROW(check(0, 3));
+    REQUIRE_NOTHROW(check(0, 9));
+    CHECK_THROWS_WITH(check(1, 4), ContainsSubstring("replica 1 holds 0 particles") &&
+                                       ContainsSubstring("[1, 4]"));
+    CHECK_THROWS_WITH(check(0, 2), ContainsSubstring("replica 0 holds 3 particles"));
+    CHECK_THROWS_WITH(check(3, 3), ContainsSubstring("the current run admits 3"));
+}
+
+TEST_CASE("path_io rejects corrupt version-2 particle counts", "[path_io]") {
+    Scratch scratch;
+    const auto cp = ragged();
+    alea::io::write_paths(scratch.file(), cp);
+    {
+        HighFive::File file(scratch.file().string(), HighFive::File::ReadWrite);
+        SECTION("missing counts") { file.unlink("n_active"); }
+        SECTION("a count above the capacity") {
+            file.getDataSet("n_active").write(std::vector<std::uint64_t>{5, 0, 1});
+        }
+        SECTION("counts that disagree with the stored beads") {
+            file.getDataSet("n_active").write(std::vector<std::uint64_t>{3, 0, 2});
+        }
+        SECTION("one count short") {
+            file.unlink("n_active");
+            file.createDataSet("n_active", std::vector<std::uint64_t>{3, 0});
+        }
+        SECTION("signed counts") {
+            file.unlink("n_active");
+            file.createDataSet("n_active", std::vector<std::int64_t>{3, 0, 1});
+        }
+        SECTION("version-1 particle key in a version-2 file") {
+            std::uint64_t capacity = 0;
+            file.getAttribute("n_capacity").read(capacity);
+            file.deleteAttribute("n_capacity");
+            file.createAttribute("n_particles", capacity);
         }
     }
     REQUIRE_THROWS_AS(alea::io::read_paths(scratch.file()), std::runtime_error);

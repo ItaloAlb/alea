@@ -1116,6 +1116,51 @@ TEST_CASE("the pimc parser validates its keys", "[pimc][parser]") {
         "`group`, `max_length` and `swap_length` are required");
 }
 
+TEST_CASE("the grand_canonical block of a worm is read and validated", "[pimc][parser]") {
+    const auto config = [](const std::string& block) {
+        return "qmc:\n  - method: pimc\n    time_step: 0.25\n    beta: 1.0\n"
+               "    moves:\n      - worm: { group: b, max_length: 2, swap_length: 2"
+               ", grand_canonical: " + block + " }\n";
+    };
+    const io::Config cfg = io::parse_config(config(
+        "{ chemical_potential: -0.5, n_min: 0, n_max: 3, insertion_width: 1.5, "
+        "insertion_center: [0.25, -1.0] }"));
+    REQUIRE(cfg.pimc.size() == 1);
+    REQUIRE(cfg.pimc[0].moves.size() == 1);
+    const auto& gc = cfg.pimc[0].moves[0].grand_canonical;
+    REQUIRE(gc.has_value());
+    CHECK(gc->chemical_potential == -0.5);
+    CHECK(gc->n_min == 0);
+    CHECK(gc->n_max == 3);
+    CHECK(gc->insertion_width == 1.5);
+    CHECK(gc->insertion_center == std::vector<double>{0.25, -1.0});
+    // The insertion keys are optional (a periodic cell omits them) ...
+    const auto bare = io::parse_config(config("{ chemical_potential: 1, n_min: 1, n_max: 1 }"))
+                          .pimc[0].moves[0].grand_canonical;
+    REQUIRE(bare.has_value());
+    CHECK(bare->insertion_width == 0.0);
+    CHECK(bare->insertion_center.empty());
+    // ... and a worm without the block stays canonical.
+    CHECK_FALSE(io::parse_config("qmc:\n  - method: pimc\n    time_step: 0.25\n    beta: 1.0\n"
+                                 "    moves: [ { worm: { group: b, max_length: 2, swap_length: 2 } } ]\n")
+                    .pimc[0].moves[0].grand_canonical.has_value());
+
+    const auto expect_error = [&](const std::string& block, const std::string& fragment) {
+        CHECK_THROWS_WITH(io::parse_config(config(block)),
+                          Catch::Matchers::ContainsSubstring(fragment));
+    };
+    expect_error("{ n_min: 0, n_max: 2 }", "`chemical_potential`, `n_min` and `n_max` are required");
+    expect_error("{ chemical_potential: 1, n_max: 2 }", "are required");
+    expect_error("{ chemical_potential: 1, n_min: 3, n_max: 2 }", "0 <= n_min <= n_max");
+    expect_error("{ chemical_potential: 1, n_min: 0, n_max: 0 }", "n_max >= 1");
+    expect_error("{ chemical_potential: .nan, n_min: 0, n_max: 2 }", "must be finite");
+    expect_error("{ chemical_potential: 1, n_min: 0, n_max: 2, insertion_width: 0 }",
+                 "`insertion_width` must be finite and > 0");
+    expect_error("{ chemical_potential: 1, n_min: 0, n_max: 2, insertion_center: 1 }",
+                 "`insertion_center` must list");
+    expect_error("{ chemical_potential: 1, n_min: 0, n_max: 2, mu: 1 }", "unknown key 'mu'");
+}
+
 // ── Winding tensor (pimc/winding.h) ─────────────────────────────────────────
 // A loop whose links add up to the lattice vector W gives T = W W^T / N in
 // Cartesian components, whatever basis the cell stores after its reduction.

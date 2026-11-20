@@ -21,6 +21,8 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
+#include <iosfwd>
 #include <memory>
 #include <span>
 #include <string>
@@ -51,6 +53,12 @@ namespace alea {
 inline constexpr std::uint64_t kPimcReplicaStream = 0x70696d632d726570ULL;  // "pimc-rep"
 inline constexpr std::uint64_t kPimcRingInitStream = 0x70696d632d72696eULL; // "pimc-rin"
 inline constexpr std::uint64_t kPimcEnsembleInitStream = 0x70696d632d656e73ULL; // "pimc-ens"
+
+namespace detail {
+// Rethrow the lowest-index replica failure captured inside a parallel region,
+// naming the replica and the phase (pimc.cpp).
+void rethrow_replica_error(std::span<const std::exception_ptr> errors, const char* phase);
+}  // namespace detail
 
 struct PimcConfig {
     int           threads = 1;
@@ -89,6 +97,52 @@ struct PimcConfig {
     std::vector<MoveSpec> moves;
 };
 
+// A grand-canonical stage: a worm move with a `grand_canonical` block
+// (Boninsegni, Prokof'ev & Svistunov, Phys. Rev. E 74, 036701 (2006)).  The
+// driver is then built for the capacity n_max (groups, Hamiltonian and the
+// worm's action of n_max particles, whose bead energies take every
+// N-dependent constant at the beads present on a slice), and the caller adds
+// the closed-path physics of every sector N in [n_min, n_max]: an Action built
+// with the group range [0, N), so that the springs' d N/(2 tau), the
+// inverse_power tail and every other N-dependent constant are those of N.
+// The N = 0 entry is an empty Action, never used (sector 0 has no particle to
+// move or measure).
+struct PimcGrandCanonicalSectors {
+    std::size_t initial_particles = 0;  // the closed N every replica starts with
+    std::vector<Action> actions;        // [N - n_min]
+};
+
+// Closed-path results of one sector N of a grand-canonical run.  Every value
+// is a ratio estimator over the accumulation blocks, sum_b O_b / sum_b w_b
+// with w_b the block's closed measurements in sector N, with a jackknife
+// error (numerics::ratio_of_means); a block that never visits N has w_b = 0.
+struct PimcSectorResult {
+    std::size_t n = 0;
+    double fraction = 0.0, fraction_error = 0.0;  // P(N) among closed measurements
+    double measurements = 0.0;                    // closed measurements in N, all replicas
+    double energy = 0.0, energy_error = 0.0;
+    double kinetic = 0.0, kinetic_error = 0.0;
+    double potential = 0.0, potential_error = 0.0;
+    double winding2 = 0.0, winding2_error = 0.0;  // per (particle, direction)
+    std::array<double, kMaxWindingTensor> winding_tensor{}, winding_tensor_error{};
+};
+
+struct PimcGrandCanonicalResult {
+    double chemical_potential_input = 0.0;
+    std::size_t n_min = 0, n_max = 0;
+    std::vector<PimcSectorResult> sectors;  // [N - n_min]
+    // F(N + 1) - F(N) = mu_in - T ln[P(N + 1)/P(N)], the canonical chemical
+    // potential at N + 1/2, [N - n_min] for N in [n_min, n_max - 1]; NaN
+    // where a sector was never visited.
+    std::vector<double> mu, mu_error;
+    // Closed N -> N +- 1 changes between N and N + 1, summed over replicas,
+    // [N - n_min]; and all changes of each replica, [replica].
+    std::vector<double> pair_transitions, replica_transitions;
+    double n_mean = 0.0, n_mean_error = 0.0;    // <N> over closed measurements
+    double n2_mean = 0.0, n2_mean_error = 0.0;  // <N^2>
+    double n_tau_int = 0.0;                     // of the block series of <N>, in blocks
+};
+
 class Pimc : public Driver {
 public:
     // `ensemble` supplies the initial configuration of each replica: replica
@@ -100,6 +154,8 @@ public:
     // list); null → the default primitive kinetic + potential action of `ham`.
     // run() throws (after the parallel region, naming the replica) when a
     // replica fails, e.g. a component returning a NaN action change.
+    // `sectors` is required exactly when the move set holds a grand-canonical
+    // worm; groups, np, ham and built_action then describe the capacity n_max.
     Pimc(const PimcConfig& cfg,
          std::span<const ParticleGroup> groups,
          const Hamiltonian& ham,
@@ -107,7 +163,8 @@ public:
          std::size_t dim,
          std::size_t np,
          WalkerEnsemble* ensemble = nullptr,
-         const Action* built_action = nullptr);
+         const Action* built_action = nullptr,
+         const PimcGrandCanonicalSectors* sectors = nullptr);
 
     void run() override;
 
@@ -200,6 +257,16 @@ public:
     // Opt-in observable estimators (g(r), density, ...).  Cloned per replica
     // in run() and reduced at the end, mirroring VMC/DMC.
     void set_estimators(std::vector<std::unique_ptr<Estimator>> ests);
+
+    // Grand-canonical run: the estimator set of every sector N, [N - n_min],
+    // each built with the group range [0, N) (empty for N = 0).  A sector's
+    // estimators bin the closed measurements in N and count every other
+    // measurement with weight 0, so each output is a ratio estimator of that
+    // sector; its result keys carry the label "N<n>".
+    void set_sector_estimators(std::vector<std::vector<std::unique_ptr<Estimator>>> per_sector);
+    bool grand_canonical() const noexcept { return gc_; }
+    // After run(); empty unless grand_canonical().
+    const PimcGrandCanonicalResult& grand_canonical_result() const noexcept { return gc_result_; }
 
 private:
     // Energy estimator, resolved once from cfg_.energy (no string dispatch in
@@ -300,6 +367,32 @@ private:
     // replicas, [worm][3].
     std::vector<std::array<double, 3>> worm_constants_;
     std::vector<std::vector<double>> cycle_fractions_; // [class][L-1]
+
+    // ── Grand-canonical stage (pimc_grand_canonical.cpp) ──
+    bool gc_ = false;
+    std::size_t gc_n_min_ = 0, gc_n_max_ = 0, gc_initial_ = 0;
+    std::vector<double> gc_start_n_;  // [replica]: N at the start of run()
+    double gc_mu_ = 0.0;
+    std::vector<std::vector<Action>> sector_actions_;  // [replica][N - n_min]
+    // Estimator templates and reduced results, [N - n_min][estimator].
+    std::vector<std::vector<std::unique_ptr<Estimator>>> sector_est_templates_, sector_ests_;
+    PimcGrandCanonicalResult gc_result_;
+    // Grand-block series [N - n_min][block]: closed measurements in N and the
+    // sums of E, K, V, W^2 and the winding tensor over them, each divided by
+    // the block's measurement count (field kSector*).
+    static constexpr std::size_t kSectorWeight = 0, kSectorEnergy = 1, kSectorKinetic = 2,
+                                 kSectorPotential = 3, kSectorWinding2 = 4, kSectorTensor = 5,
+                                 kSectorFields = 5 + kMaxWindingTensor;
+    std::vector<std::array<std::vector<double>, kSectorFields>> gc_sector_blocks_;
+    // Aggregate grand-block series: N [closed], N^2 [closed].
+    std::vector<double> block_gc_n_, block_gc_n2_;
+    // Validate the stage and clone the sector actions (constructor).
+    void setup_grand_canonical(const PimcGrandCanonicalSectors& sectors, const Action& base_action);
+    // run() of a grand-canonical stage, from the initial rings to finalize.
+    void run_grand_canonical();
+    void finalize_grand_canonical();
+    void write_grand_canonical(RunResult& r) const;
+    void summarize_grand_canonical(std::ostringstream& ss) const;
 
     // Resolve (YAML or default) and validate the move set; fills move_specs_.
     std::vector<std::unique_ptr<Move>> build_moves();

@@ -128,6 +128,51 @@ plateau and keeps at least 16 blocks.
 PIMC error bars are statistical only: the time-step, finite-size and
 equilibration biases are not included (`uncertainty_scope` in the results).
 
+### Grand-canonical PIMC
+
+A worm with a `grand_canonical` block ([Configuration](configuration.md#method-pimc))
+samples closed paths of N particles, N in the window $[n_\text{min}, n_\text{max}]$,
+with weight $P(N) \propto e^{\beta\mu_\text{in}N} Z_N$ (Boninsegni, Prokof'ev and
+Svistunov, *PRE* **74**, 036701 (2006)). $Z_N$ is the canonical partition
+function at the same $\tau$, the one a canonical run samples. Each measurement is
+made on a closed path and belongs to the sector N of that path; an open path
+counts with weight zero, as in any worm run.
+
+**Sector estimators.** Every observable is measured with the action and
+estimator set of its sector, built for N particles. With $w_b(N)$ the fraction
+of block $b$'s measurements that were closed in N, the sector value is the ratio
+estimator
+$\langle O\rangle_N = \sum_b O_b(N)/\sum_b w_b(N)$, with a jackknife error over
+the reblocked blocks. A block that never visits N has $w_b(N) = 0$ and adds
+nothing; it is not an undefined block mean.
+
+**Chemical potential.** For each pair of neighbouring sectors,
+
+$$F(N+1) - F(N) = \mu_\text{in} - T \ln\frac{P(N+1)}{P(N)},$$
+
+the canonical chemical potential at $N + \tfrac12$ (an identity at any $T$, not
+$E(N+1) - E(N)$). The error is $T\,\sigma_R/R$, from the jackknife error of
+$R = P(N+1)/P(N)$. A value is quotable only when the chain changed between the two
+sectors many times: `gc_mu_reliable` requires at least 100 transitions.
+
+| Result | Meaning |
+|---|---|
+| `gc_mu_N`, `gc_mu`, `gc_mu_error`, `gc_mu_reliable` | $N + \tfrac12$ and $F(N+1) - F(N)$ for each neighbouring pair; NaN where a sector was never visited |
+| `gc_pair_transitions` | Closed-path changes between N and N + 1, summed over replicas |
+| `gc_sector_N`, `gc_sector_fraction` (and `_error`), `gc_sector_measurements` | The window, $P(N)$ among closed measurements, and the closed measurements in each sector |
+| `gc_N<n>_energy`, `_kinetic`, `_potential`, `_winding2`, `_winding_tensor_*` (and `_error`) | The sector values of the PIMC energy table above; `acc_block_gc_N<n>_*` hold their block numerators $O_b(N)$ and `acc_block_gc_N<n>_weight` holds $w_b(N)$ |
+| Optional estimators | One instance per sector, its keys labelled `N<n>` (e.g. `bragg_bosons_N13`, `sofk_N13_...`) |
+| `gc_N_mean`, `gc_N_squared_mean` (and `_error`), `gc_N_tau_int` | $\langle N\rangle$, $\langle N^2\rangle$ over closed measurements, and the integrated autocorrelation time of N in blocks |
+| `gc_transitions`, `gc_sector_transitions` | All sector changes, in total and per replica |
+| `gc_chemical_potential_input`, `gc_n_min`, `gc_n_max` | The inputs |
+| `gc_initial_N` | The N of each replica at the start: the group's `up:` count, or the N of its path read by `paths_in` |
+| `energy`, `kinetic`, `potential` | Grand-canonical averages over every closed path, $\sum_N P(N)\langle O\rangle_N$ |
+| `winding2`, `winding_tensor_*` | Per particle over all sectors as $\langle N O\rangle/\langle N\rangle$, a ratio of sums, never the mean of per-particle values; `acc_block_gc_N_mean` holds the denominator |
+
+$\langle N\rangle$ and $\langle N^2\rangle$, and with them the compressibility
+$\beta(\langle N^2\rangle - \langle N\rangle^2)$ or a reweighting to another
+μ, are conditioned on the window. Only $F(N+1) - F(N)$ does not depend on it.
+
 ## 3. Optional observables
 
 | `type` | Measures | Samplers | Cell | Result keys |
@@ -662,6 +707,15 @@ order 10⁶ % near ρ_min despite sub-percent value errors.
 - `test_pimc_estimators.cpp`: replica-synchronized reblocking of every PIMC
   observable, refusal of unsupported or oversized histories.
 - `test_pimc_worm.cpp`: the worm and the momentum distribution.
+- `test_pimc_grand_canonical.cpp`, `test_pimc_grand_canonical_driver.cpp`: the
+  grand-canonical worm's detailed balance (the Metropolis ratio of every
+  accepted sub-move against its weights and proposal densities written out,
+  and the frequency of every discrete outcome from fixed configurations
+  against its enumerated probability, window boundaries included), the worm
+  against exact finite-M populations and $F(2) - F(1)$ of
+  two trapped dipoles, sector observables against canonical runs, the
+  independence of $F(N+1) - F(N)$ from $\mu_\text{in}$, and path checkpoints
+  that carry each replica's N through a file.
 - `test_potential_gradient.cpp`: gradient contracts, finite differences at
   three steps, Parry force reference.
 - `test_pimc_centroid_virial.cpp`, `test_pimc_periodic_virial.cpp`: exact
