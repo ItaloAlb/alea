@@ -594,9 +594,6 @@ GrandCanonicalStage build_grand_canonical_stage(const io::Config& cfg, const io:
     if (!periodic && !window.insertion_center.empty() && window.insertion_center.size() != dim)
         throw std::runtime_error("pimc: grand_canonical: `insertion_center` needs " +
                                  std::to_string(dim) + " coordinates");
-    if (!spec.paths_in.empty() || !spec.paths_out.empty())
-        throw std::runtime_error("pimc: grand_canonical: path checkpoints (paths_in, "
-                                 "paths_out) need checkpoint version 2, not implemented yet");
     const auto n_min = static_cast<std::size_t>(window.n_min);
     const auto n_max = static_cast<std::size_t>(window.n_max);
     const auto initial = static_cast<std::size_t>(species.count());

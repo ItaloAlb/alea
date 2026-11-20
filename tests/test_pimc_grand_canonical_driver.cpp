@@ -15,12 +15,17 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <filesystem>
 #include <functional>
+#include <numbers>
 #include <string>
 #include <vector>
 
 #include "io/parser.h"
+#include "io/path_io.h"
+#include "path_checkpoint_v1.h"
 #include "pimc/pimc.h"
 #include "qmc/app.h"
 
@@ -215,8 +220,6 @@ TEST_CASE("A grand-canonical stage refuses what it cannot sample", "[pimc][grand
     refuses([&](auto& cfg) { cfg.particles.front().down = 1; }, "put every particle in `up`");
     refuses([&](auto& cfg) { cfg.particles.push_back(cfg.particles.front()); },
             "must hold one particle group");
-    refuses([&](auto& cfg) { cfg.pimc.front().paths_out = "paths.h5"; },
-            "need checkpoint version 2");
     refuses([&](auto& cfg) { cfg.pimc.front().energy = "centroid_virial"; },
             "thermodynamic energy only");
     refuses([&](auto& cfg) { cfg.pimc.front().statistics = "boltzmannon"; },
@@ -245,4 +248,195 @@ TEST_CASE("A grand-canonical stage refuses what it cannot sample", "[pimc][grand
     worm_of(cfg).grand_canonical->insertion_width = 0.5;
     alea::App app(cfg);
     CHECK_THROWS_WITH(app.build_drivers(), ContainsSubstring("remove `insertion_width`"));
+}
+
+// -- Path checkpoints of a grand-canonical run (version 2) -------------------
+namespace {
+
+// A scratch directory owned by one test.
+struct ScratchDirectory {
+    std::filesystem::path path;
+    ScratchDirectory() {
+        const auto tick = std::chrono::steady_clock::now().time_since_epoch().count();
+        path = std::filesystem::temp_directory_path() /
+               ("alea_gc_paths_" + std::to_string(tick));
+        std::filesystem::create_directories(path);
+    }
+    ~ScratchDirectory() {
+        std::error_code ec;
+        std::filesystem::remove_all(path, ec);
+    }
+};
+
+// The trapped-dipole stage, short: these tests check the bookkeeping of the
+// paths, not the physics.
+alea::io::Config short_dipole_stage() {
+    alea::io::Config cfg = load("pimc_gc_trapped_dipoles.yaml");
+    auto& stage = cfg.pimc.front();
+    stage.equilibration_blocks = 2;
+    stage.accumulation_blocks = 4;
+    stage.steps_per_block = 20;
+    stage.sub_steps = 10;
+    return cfg;
+}
+
+// Closed rings of the 4 replicas of that stage (M = 16, d = 2), with N_r
+// particles each: particle p circles (+-0.6, 0.1 r) with radius 0.05.  A
+// replica of two particles listed in `exchanged` closes as one 2-cycle.
+alea::io::PathCheckpoint dipole_rings(const std::vector<std::size_t>& active,
+                                      const std::vector<bool>& exchanged) {
+    alea::io::PathCheckpoint cp;
+    cp.replicas = 4;
+    cp.m = 16;
+    cp.np = 2;
+    cp.dim = 2;
+    cp.beta = 2.0;
+    cp.tau = 0.125;
+    cp.active = active;
+    for (std::size_t r = 0; r < cp.replicas; ++r)
+        for (std::size_t p = 0; p < active[r]; ++p) {
+            cp.permutation.push_back(exchanged[r] ? 1 - p : p);
+            for (std::size_t d = 0; d < cp.dim; ++d)
+                for (std::size_t k = 0; k < cp.m; ++k) {
+                    const double phase = 2.0 * std::numbers::pi * static_cast<double>(k) / 16.0;
+                    cp.positions.push_back(d == 0 ? (p == 0 ? 0.6 : -0.6) + 0.05 * std::cos(phase)
+                                                  : 0.1 * static_cast<double>(r) +
+                                                        0.05 * std::sin(phase));
+                }
+        }
+    return cp;
+}
+
+alea::Pimc& only_pimc(alea::DriverPack& pack) {
+    REQUIRE(pack.drivers.size() == 1);
+    auto* pimc = dynamic_cast<alea::Pimc*>(pack.drivers.front().get());
+    REQUIRE(pimc != nullptr);
+    return *pimc;
+}
+
+void check_same_paths(const alea::io::PathCheckpoint& a, const alea::io::PathCheckpoint& b) {
+    CHECK(a.replicas == b.replicas);
+    CHECK(a.m == b.m);
+    CHECK(a.np == b.np);
+    CHECK(a.dim == b.dim);
+    CHECK(a.active == b.active);
+    CHECK(a.permutation == b.permutation);
+    CHECK(a.positions == b.positions);  // bit for bit (no NaN)
+}
+
+std::vector<double> as_doubles(const std::vector<std::size_t>& counts) {
+    return {counts.begin(), counts.end()};
+}
+
+}  // namespace
+
+// Request test 7.  Replicas at N = 1, 2, 1, 2 (one of them an exchange
+// cycle) enter through import_paths, leave through export_paths and a
+// version-2 file unchanged, start the run at their own N, and a run
+// continued from the written file starts where the first one ended.
+TEST_CASE("A grand-canonical run imports, continues and re-exports replicas at different N",
+          "[pimc][grand_canonical][checkpoint]") {
+    const alea::io::Config cfg = short_dipole_stage();
+    const auto start = dipole_rings({1, 2, 1, 2}, {false, false, false, true});
+    ScratchDirectory scratch;
+
+    alea::App app(cfg);
+    alea::DriverPack pack = app.build_drivers();
+    alea::Pimc& first = only_pimc(pack);
+    first.import_paths(start);
+    check_same_paths(first.export_paths(), start);
+    first.run();
+    const alea::RunResult first_result = first.run_result();
+    CHECK(series(first_result, "gc_initial_N") == as_doubles(start.active));
+
+    // The paths after the run: closed, in the window, through a file.
+    const auto end = first.export_paths();
+    REQUIRE_NOTHROW(alea::io::validate_path_checkpoint(end));
+    for (const std::size_t n : end.active) CHECK((n == 1 || n == 2));
+    const auto file = scratch.path / "paths.h5";
+    alea::io::write_paths(file, end);
+    const auto read = alea::io::read_paths(file);
+    check_same_paths(read, end);
+
+    // A second run continues from the file.
+    alea::App app2(cfg);
+    alea::DriverPack pack2 = app2.build_drivers();
+    alea::Pimc& second = only_pimc(pack2);
+    second.import_paths(read);
+    check_same_paths(second.export_paths(), end);
+    second.run();
+    CHECK(series(second.run_result(), "gc_initial_N") == as_doubles(end.active));
+    const double n_mean = scalar(second.run_result(), "gc_N_mean");
+    CHECK((n_mean >= 1.0 && n_mean <= 2.0));
+}
+
+TEST_CASE("A version-1 path file starts a grand-canonical run at its n_particles",
+          "[pimc][grand_canonical][checkpoint]") {
+    const alea::io::Config cfg = short_dipole_stage();  // up: 1, window {1, 2}
+    const auto canonical = dipole_rings({2, 2, 2, 2}, {false, true, false, false});
+    ScratchDirectory scratch;
+    const auto file = scratch.path / "paths_v1.h5";
+    alea::test::write_version1_paths(file, canonical);
+
+    alea::App app(cfg);
+    alea::DriverPack pack = app.build_drivers();
+    alea::Pimc& pimc = only_pimc(pack);
+    pimc.import_paths(alea::io::read_paths(file));
+    check_same_paths(pimc.export_paths(), canonical);
+    pimc.run();
+    CHECK(series(pimc.run_result(), "gc_initial_N") == std::vector<double>(4, 2.0));
+}
+
+TEST_CASE("Path imports refuse particle counts outside the run and nonfinite sector actions",
+          "[pimc][grand_canonical][checkpoint]") {
+    const auto mixed = dipole_rings({1, 2, 1, 2}, {false, false, false, true});
+
+    // A canonical stage of two particles admits N = 2 only: it takes the
+    // paths of a grand-canonical run whose replicas all hold two.
+    alea::io::Config canonical_cfg = short_dipole_stage();
+    canonical_cfg.particles.front().up = 2;
+    worm_of(canonical_cfg).grand_canonical.reset();
+    alea::App canonical_app(canonical_cfg);
+    alea::DriverPack canonical_pack = canonical_app.build_drivers();
+    CHECK_THROWS_WITH(only_pimc(canonical_pack).import_paths(mixed),
+                      ContainsSubstring("replica 0 holds 1 particles") &&
+                          ContainsSubstring("admits 2"));
+    const auto pairs = dipole_rings({2, 2, 2, 2}, {true, false, false, false});
+    only_pimc(canonical_pack).import_paths(pairs);
+    check_same_paths(only_pimc(canonical_pack).export_paths(), pairs);
+
+    // A grand-canonical window {2, 2} refuses the replicas at N = 1.
+    alea::io::Config narrow_cfg = short_dipole_stage();
+    narrow_cfg.particles.front().up = 2;
+    worm_of(narrow_cfg).grand_canonical->n_min = 2;
+    alea::App narrow_app(narrow_cfg);
+    alea::DriverPack narrow_pack = narrow_app.build_drivers();
+    CHECK_THROWS_WITH(only_pimc(narrow_pack).import_paths(mixed),
+                      ContainsSubstring("replica 0 holds 1 particles"));
+
+    // Two dipoles on the same beads: S is infinite in sector 2 (C / r^3),
+    // which only the action of that sector sees.  Nothing is imported.
+    auto collided = mixed;
+    const std::size_t row = collided.m * collided.dim;
+    const std::size_t second = alea::io::first_particle(collided, 1);  // replica 1, particle 0
+    std::copy_n(collided.positions.begin() + static_cast<std::ptrdiff_t>(second * row), row,
+                collided.positions.begin() + static_cast<std::ptrdiff_t>((second + 1) * row));
+    alea::App app(short_dipole_stage());
+    alea::DriverPack pack = app.build_drivers();
+    alea::Pimc& pimc = only_pimc(pack);
+    const auto before = pimc.export_paths();
+    CHECK_THROWS_WITH(pimc.import_paths(collided),
+                      ContainsSubstring("action is nonfinite for replica 1"));
+    check_same_paths(pimc.export_paths(), before);
+}
+
+TEST_CASE("A grand-canonical stage accepts paths_in and paths_out", "[pimc][grand_canonical]") {
+    alea::io::Config cfg = short_dipole_stage();
+    cfg.pimc.front().paths_in = "in.h5";
+    cfg.pimc.front().paths_out = "out.h5";
+    alea::App app(cfg);
+    alea::DriverPack pack = app.build_drivers();
+    REQUIRE(pack.paths_in.size() == 1);
+    CHECK(pack.paths_in.front() == "in.h5");
+    CHECK(pack.paths_out.front() == "out.h5");
 }

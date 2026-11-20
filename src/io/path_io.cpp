@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// Strict, versioned HDF5 serialization of phase-1 PIMC bead configurations.
-// Binary64 SoA data is copied without changing the physical path or cell.
+// Strict, versioned HDF5 serialization of closed PIMC paths. Binary64 SoA
+// data is copied without changing the physical path or cell.
 #include "io/path_io.h"
 
 #include <algorithm>
@@ -29,7 +29,10 @@
 namespace alea::io {
 namespace {
 
-constexpr std::uint64_t kVersion = 1;
+// Version 2 adds the capacity and the particle count of every replica
+// (grand-canonical runs); version 1 files are still read.
+constexpr std::uint64_t kVersion = 2;
+constexpr std::uint64_t kVersionAllRows = 1;
 constexpr const char* kFormat = "alea_pimc_paths";
 constexpr const char* kLayout = "replica_particle_dimension_slice_soa";
 constexpr double kGridRoundoff = 8.0 * std::numeric_limits<double>::epsilon();
@@ -50,7 +53,9 @@ std::size_t product(std::size_t a, std::size_t b) {
 void validate_metadata(const PathCheckpoint& cp) {
     if (!cp.replicas || !cp.m || !cp.np || !cp.dim ||
         cp.dim > SimulationCell::kMaxDim)
-        fail("replicas, slices, particles and supported dimension must be nonzero");
+        fail("replicas, slices, capacity and supported dimension must be nonzero");
+    // Every replica holds at most np particles: bounding the full-capacity
+    // size bounds every packed array.
     product(product(product(cp.replicas, cp.np), cp.dim), cp.m);
     if (!std::isfinite(cp.beta) || cp.beta <= 0.0 ||
         !std::isfinite(cp.tau) || cp.tau <= 0.0)
@@ -150,23 +155,37 @@ void replace_checkpoint(const std::filesystem::path& stage,
 
 } // namespace
 
+std::size_t first_particle(const PathCheckpoint& cp, std::size_t replica) {
+    std::size_t offset = 0;
+    for (std::size_t r = 0; r < replica; ++r) offset += cp.active[r];
+    return offset;
+}
+
 void validate_path_checkpoint(const PathCheckpoint& cp) {
     validate_metadata(cp);
-    const auto count = product(product(product(cp.replicas, cp.np), cp.dim), cp.m);
-    if (cp.positions.size() != count) fail("positions shape does not match metadata");
-    if (cp.permutation.size() != product(cp.replicas, cp.np))
+    if (cp.active.size() != cp.replicas)
+        fail("particle counts do not list one entry per replica");
+    std::size_t particles = 0;
+    for (std::size_t n : cp.active) {
+        if (n > cp.np) fail("a replica holds more particles than the capacity");
+        particles += n;  // <= replicas * np, which validate_metadata bounded
+    }
+    if (cp.positions.size() != product(product(particles, cp.dim), cp.m))
+        fail("positions shape does not match metadata");
+    if (cp.permutation.size() != particles)
         fail("permutation shape does not match metadata");
     for (double bead : cp.positions)
         if (!std::isfinite(bead)) fail("positions contain nonfinite beads");
-    // Each replica's permutation must be a bijection of the particles; which
+    // Each replica's permutation must be a bijection of its particles; which
     // exchanges are admissible (identity only, or within exchange classes)
     // is a property of the run, checked by the driver on import.
     std::vector<char> seen(cp.np);
-    for (std::size_t r = 0; r < cp.replicas; ++r) {
+    for (std::size_t r = 0, offset = 0; r < cp.replicas; offset += cp.active[r], ++r) {
+        const std::size_t n = cp.active[r];
         std::fill(seen.begin(), seen.end(), 0);
-        for (std::size_t p = 0; p < cp.np; ++p) {
-            const auto target = cp.permutation[r * cp.np + p];
-            if (target >= cp.np || seen[target])
+        for (std::size_t p = 0; p < n; ++p) {
+            const auto target = cp.permutation[offset + p];
+            if (target >= n || seen[target])
                 fail("permutation is not a bijection in every replica");
             seen[target] = 1;
         }
@@ -176,15 +195,17 @@ void validate_path_checkpoint(const PathCheckpoint& cp) {
 PathCheckpoint read_paths(const std::filesystem::path& path) {
     try {
         HighFive::File file(path.string(), HighFive::File::ReadOnly);
-        if (read_marker(file, "format") != kFormat ||
-            read_scalar<std::uint64_t>(file, "version") != kVersion)
+        if (read_marker(file, "format") != kFormat)
+            fail("unsupported format or version");
+        const auto version = read_scalar<std::uint64_t>(file, "version");
+        if (version != kVersion && version != kVersionAllRows)
             fail("unsupported format or version");
         if (read_marker(file, "layout") != kLayout)
             fail("unsupported positions layout");
         PathCheckpoint cp;
         cp.replicas = read_size(file, "n_replicas");
         cp.m = read_size(file, "n_slices");
-        cp.np = read_size(file, "n_particles");
+        cp.np = read_size(file, version == kVersionAllRows ? "n_particles" : "n_capacity");
         cp.dim = read_size(file, "dim");
         cp.beta = read_scalar<double>(file, "beta");
         cp.tau = read_scalar<double>(file, "tau");
@@ -200,9 +221,20 @@ PathCheckpoint read_paths(const std::filesystem::path& path) {
             fail("unsupported or contradictory boundary metadata");
         }
         validate_metadata(cp);
-        const auto count = product(product(product(cp.replicas, cp.np), cp.dim), cp.m);
-        cp.positions = read_flat<double>(file, "positions", count);
-        const auto permutation = read_flat<std::uint64_t>(file, "permutation", product(cp.replicas, cp.np));
+        std::size_t particles = 0;
+        if (version == kVersionAllRows) {
+            cp.active.assign(cp.replicas, cp.np);
+            particles = cp.replicas * cp.np;  // bounded by validate_metadata
+        } else {
+            for (auto value : read_flat<std::uint64_t>(file, "n_active", cp.replicas)) {
+                if (value > cp.np) fail("a replica holds more particles than the capacity");
+                cp.active.push_back(static_cast<std::size_t>(value));
+                particles += cp.active.back();
+            }
+        }
+        cp.positions = read_flat<double>(file, "positions",
+                                         product(product(particles, cp.dim), cp.m));
+        const auto permutation = read_flat<std::uint64_t>(file, "permutation", particles);
         cp.permutation.reserve(permutation.size());
         for (auto value : permutation) {
             if (value > std::numeric_limits<std::size_t>::max())
@@ -231,12 +263,13 @@ void write_paths(const std::filesystem::path& path, const PathCheckpoint& cp) {
             file.createAttribute("layout", std::string(kLayout));
             file.createAttribute("n_replicas", static_cast<std::uint64_t>(cp.replicas));
             file.createAttribute("n_slices", static_cast<std::uint64_t>(cp.m));
-            file.createAttribute("n_particles", static_cast<std::uint64_t>(cp.np));
+            file.createAttribute("n_capacity", static_cast<std::uint64_t>(cp.np));
             file.createAttribute("dim", static_cast<std::uint64_t>(cp.dim));
             file.createAttribute("beta", cp.beta);
             file.createAttribute("tau", cp.tau);
             file.createAttribute("boundary", std::string(cp.lattice.empty() ? "open" : "periodic"));
             if (!cp.lattice.empty()) file.createAttribute("lattice_vectors", cp.lattice);
+            file.createDataSet("n_active", std::vector<std::uint64_t>(cp.active.begin(), cp.active.end()));
             file.createDataSet("positions", cp.positions);
             file.createDataSet("permutation", std::vector<std::uint64_t>(cp.permutation.begin(), cp.permutation.end()));
             file.flush();
@@ -259,11 +292,18 @@ void write_paths(const std::filesystem::path& path, const PathCheckpoint& cp) {
 }
 
 void require_path_compatibility(const PathCheckpoint& cp, std::size_t replicas,
-                                std::size_t m, std::size_t np, std::size_t dim,
-                                double beta, double tau, const SimulationCell& cell) {
+                                std::size_t m, std::size_t n_min, std::size_t n_max,
+                                std::size_t dim, double beta, double tau,
+                                const SimulationCell& cell) {
     validate_path_checkpoint(cp);
-    if (cp.replicas != replicas || cp.m != m || cp.np != np || cp.dim != dim)
-        fail("checkpoint replica/bead/particle/dimension shape differs from current run");
+    if (cp.replicas != replicas || cp.m != m || cp.dim != dim)
+        fail("checkpoint replica/bead/dimension shape differs from current run");
+    for (std::size_t r = 0; r < cp.replicas; ++r)
+        if (cp.active[r] < n_min || cp.active[r] > n_max)
+            fail("replica " + std::to_string(r) + " holds " + std::to_string(cp.active[r]) +
+                 " particles; the current run admits " +
+                 (n_min == n_max ? std::to_string(n_min)
+                                 : "[" + std::to_string(n_min) + ", " + std::to_string(n_max) + "]"));
     if (cp.beta != beta || cp.tau != tau)
         fail("checkpoint beta or tau differs from current run");
     // Default-constructed open cells deliberately carry dimension zero: the

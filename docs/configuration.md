@@ -509,7 +509,7 @@ record `last_step_checked`, `last_step_undone` and `check_energy`).
 | `sign_threshold` | `5.0` | Fermions: flag results when $\vert\langle s\rangle\vert <$ threshold × its error |
 | `moves` | see below | List of moves |
 | `estimators` | none | Extra observables |
-| `paths_in`, `paths_out` | — | Load or save the full path configuration (HDF5) |
+| `paths_in`, `paths_out` | — | Load or save the full path configuration (HDF5): the closed path of every replica and its particle count. Files are written in version 2 of the format; version-1 files are still read. A canonical stage needs every replica at its particle count |
 
 Not supported with PIMC: `magnetic_field`, `rotation`, a non-zero `twist`, and
 `flavours` with any VMC/DMC/optimizer stage or wavefunction item.
@@ -568,8 +568,11 @@ does not depend on N (give `L` or `vectors`, not `rs`) and potential terms that
 can price a single bead: `moire`, `inverse_power`, `harmonic_trap` and the pair
 `coulomb` term (open cells, or `truncation: minimum_image`). It refuses
 `statistics`, `permutation` and `joint_permutation` moves, a second worm, the
-virial estimators, the off-diagonal estimators (`momentum_distribution`) and
-`paths_in`/`paths_out`. It also takes no configurations from an earlier stage.
+virial estimators and the off-diagonal estimators (`momentum_distribution`).
+It takes no configurations from an earlier stage. `paths_out` saves every
+replica with its N; `paths_in` starts each replica at the N of its saved path,
+which must lie in the window (a canonical or version-1 file starts every
+replica at its particle count).
 
 ### Estimators
 

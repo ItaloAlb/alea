@@ -255,11 +255,16 @@ void Pimc::run_grand_canonical() {
         for (std::size_t s = 0; s < n_replicas; ++s)
             paths_[s].collapse_to(walkers[s % walkers.size()].positions());
     }
-    for (std::size_t s = 0; s < n_replicas; ++s)
-        if (gc_initial_ > 0 &&
-            !std::isfinite(sector_actions_[s][gc_initial_ - gc_n_min_].total_action(paths_[s])))
+    // Each replica starts at the configured N, or at the N of its imported
+    // path (import_paths checked that it lies in the window).
+    gc_start_n_.assign(n_replicas, 0.0);
+    for (std::size_t s = 0; s < n_replicas; ++s) {
+        const std::size_t n = paths_[s].active_particles();
+        gc_start_n_[s] = static_cast<double>(n);
+        if (n > 0 && !std::isfinite(sector_actions_[s][n - gc_n_min_].total_action(paths_[s])))
             throw std::runtime_error("pimc: initial action is nonfinite for replica " +
                                      std::to_string(s) + "; provide a finite-action initial path");
+    }
 
     // ── Equilibration: tune C towards a 50 % closed fraction ──
     io::Logger::milestone("pimc: equilibration " + std::to_string(n_eq) + " blocks");
@@ -623,7 +628,6 @@ void Pimc::write_grand_canonical(RunResult& r) const {
     r.add_scalar("gc_chemical_potential_input", gc_result_.chemical_potential_input);
     r.add_scalar("gc_n_min", static_cast<double>(gc_result_.n_min));
     r.add_scalar("gc_n_max", static_cast<double>(gc_result_.n_max));
-    r.add_scalar("gc_initial_N", static_cast<double>(gc_initial_));
     r.add_scalar("gc_N_mean", gc_result_.n_mean);
     r.add_scalar("gc_N_mean_error", gc_result_.n_mean_error);
     r.add_scalar("gc_N_squared_mean", gc_result_.n2_mean);
@@ -633,6 +637,7 @@ void Pimc::write_grand_canonical(RunResult& r) const {
     for (const double t : gc_result_.pair_transitions) transitions += t;
     r.add_scalar("gc_transitions", transitions);
     r.add_series("gc_sector_transitions", gc_result_.replica_transitions);
+    r.add_series("gc_initial_N", gc_start_n_);  // [replica]: configured or imported
 
     std::vector<double> sector_n, fraction, fraction_error, measurements;
     for (const PimcSectorResult& s : gc_result_.sectors) {

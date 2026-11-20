@@ -164,7 +164,8 @@ sectors many times: `gc_mu_reliable` requires at least 100 transitions.
 | Optional estimators | One instance per sector, its keys labelled `N<n>` (e.g. `bragg_bosons_N13`, `sofk_N13_...`) |
 | `gc_N_mean`, `gc_N_squared_mean` (and `_error`), `gc_N_tau_int` | $\langle N\rangle$, $\langle N^2\rangle$ over closed measurements, and the integrated autocorrelation time of N in blocks |
 | `gc_transitions`, `gc_sector_transitions` | All sector changes, in total and per replica |
-| `gc_chemical_potential_input`, `gc_n_min`, `gc_n_max`, `gc_initial_N` | The inputs |
+| `gc_chemical_potential_input`, `gc_n_min`, `gc_n_max` | The inputs |
+| `gc_initial_N` | The N of each replica at the start: the group's `up:` count, or the N of its path read by `paths_in` |
 | `energy`, `kinetic`, `potential` | Grand-canonical averages over every closed path, $\sum_N P(N)\langle O\rangle_N$ |
 | `winding2`, `winding_tensor_*` | Per particle over all sectors as $\langle N O\rangle/\langle N\rangle$, a ratio of sums, never the mean of per-particle values; `acc_block_gc_N_mean` holds the denominator |
 
@@ -708,8 +709,9 @@ order 10⁶ % near ρ_min despite sub-percent value errors.
 - `test_pimc_worm.cpp`: the worm and the momentum distribution.
 - `test_pimc_grand_canonical.cpp`, `test_pimc_grand_canonical_driver.cpp`: the
   grand-canonical worm against exact finite-M populations and $F(2) - F(1)$ of
-  two trapped dipoles, sector observables against canonical runs, and the
-  independence of $F(N+1) - F(N)$ from $\mu_\text{in}$.
+  two trapped dipoles, sector observables against canonical runs, the
+  independence of $F(N+1) - F(N)$ from $\mu_\text{in}$, and path checkpoints
+  that carry each replica's N through a file.
 - `test_potential_gradient.cpp`: gradient contracts, finite differences at
   three steps, Parry force reference.
 - `test_pimc_centroid_virial.cpp`, `test_pimc_periodic_virial.cpp`: exact

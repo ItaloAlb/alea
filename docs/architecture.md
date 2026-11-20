@@ -247,12 +247,15 @@ beads present at its slice, which includes the $N$-dependent constants of a
 term (the continuum tail of `inverse_power`).
 
 For a grand-canonical stage the `App` builds the driver for the capacity
-$n_	ext{max}$ of the window (groups, `Hamiltonian`, the worm's `Action`, the
+$n_\text{max}$ of the window (groups, `Hamiltonian`, the worm's `Action`, the
 replica rows), and, for every sector $N$ of the window, a closed-path `Action`
 and estimator set built from the same config with the group's count set to
 $N$. `Pimc` runs every move but the worm with the action of the current $N$,
 so a closed path is moved and measured by exactly the canonical code of that
 $N$ (`pimc_grand_canonical.cpp`); the worm alone uses the capacity action.
+A path checkpoint (`read_paths`/`write_paths`, format version 2) stores each
+replica's closed path with its own $N$, so a grand-canonical run continues
+from the sectors where it stopped.
 
 A `Move` proposes a change, asks the `Action` for $\Delta S$, and accepts or
 rejects. The action's components are the primitive kinetic springs, the

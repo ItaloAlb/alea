@@ -371,6 +371,7 @@ private:
     // ── Grand-canonical stage (pimc_grand_canonical.cpp) ──
     bool gc_ = false;
     std::size_t gc_n_min_ = 0, gc_n_max_ = 0, gc_initial_ = 0;
+    std::vector<double> gc_start_n_;  // [replica]: N at the start of run()
     double gc_mu_ = 0.0;
     std::vector<std::vector<Action>> sector_actions_;  // [replica][N - n_min]
     // Estimator templates and reduced results, [N - n_min][estimator].

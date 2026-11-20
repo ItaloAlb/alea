@@ -537,38 +537,64 @@ std::vector<std::unique_ptr<Move>> Pimc::build_moves() {
     return moves;
 }
 
+namespace {
+// Make rows [0, n) of the closed `path` its particles, with permutation `pi`
+// over them and the beads `beads` ([n][dim][M]); rows >= n stay fixed points.
+// The identity first lets set_active_particles drop rows that the previous
+// permutation connected.  Throws before touching the beads if pi breaks the
+// exchange classes.
+void load_closed_path(PathSet& path, std::size_t n, std::span<const std::size_t> pi,
+                      std::span<const double> beads) {
+    std::vector<std::size_t> full(path.capacity());
+    std::iota(full.begin(), full.end(), std::size_t{0});
+    path.set_permutation(full);
+    path.set_active_particles(n);
+    std::copy(pi.begin(), pi.end(), full.begin());
+    path.set_permutation(full);
+    std::copy(beads.begin(), beads.end(), path.positions().begin());
+    path.rebuild_tables();
+}
+}  // namespace
+
 void Pimc::import_paths(const io::PathCheckpoint& checkpoint) {
-    if (gc_)
-        throw std::runtime_error("pimc: path checkpoints of a grand-canonical run need "
-                                 "checkpoint version 2, not implemented yet");
-    io::require_path_compatibility(checkpoint, paths_.size(), M_, np_, dim_,
+    // A canonical run needs N = np in every replica; a grand-canonical one
+    // any N of its window (a version-1 file starts it at its n_particles).
+    io::require_path_compatibility(checkpoint, paths_.size(), M_,
+                                   gc_ ? gc_n_min_ : np_, gc_ ? gc_n_max_ : np_, dim_,
                                    cfg_.beta, cfg_.time_step, cell_);
     // Validation completed before any replica changes; preserve full binary64
     // beads, not a bead-0 walker projection or a collapsed initialization.
-    const std::size_t path_size = M_ * np_ * dim_;
+    const std::size_t row_size = M_ * dim_;
+    const auto permutation_of = [&](std::size_t s) {
+        return std::span<const std::size_t>(checkpoint.permutation)
+            .subspan(io::first_particle(checkpoint, s), checkpoint.active[s]);
+    };
+    const auto beads_of = [&](std::size_t s) {
+        return std::span<const double>(checkpoint.positions)
+            .subspan(io::first_particle(checkpoint, s) * row_size, checkpoint.active[s] * row_size);
+    };
     // Compatibility alone cannot establish finite action for a numerical
     // pair domain (or an overflowing spring). Validate every candidate on a
-    // disposable path/action before committing any replica or its caches.
+    // disposable path/action before committing any replica or its caches;
+    // a grand-canonical replica is priced by the action of its sector.
     PathSet candidate(M_,np_,dim_,cfg_.time_step,cell_);
     if (quantum_) candidate.set_exchange_classes(class_id_, fermionic_);
-    Action validation=actions_.front().clone();
-    const auto permutation_of = [&](std::size_t s) {
-        return std::span<const std::size_t>(checkpoint.permutation).subspan(s * np_, np_);
-    };
+    std::vector<Action> validation;
+    if (gc_)
+        for (const Action& sector : sector_actions_.front()) validation.push_back(sector.clone());
+    else
+        validation.push_back(actions_.front().clone());
     for (std::size_t s=0; s<paths_.size(); ++s) {
+        const std::size_t n = checkpoint.active[s];
         check_permutation(permutation_of(s));
-        candidate.set_permutation(permutation_of(s));
-        std::copy_n(checkpoint.positions.begin()+s*path_size,path_size,candidate.positions().begin());
-        if (!std::isfinite(validation.total_action(candidate)))
+        load_closed_path(candidate, n, permutation_of(s), beads_of(s));
+        if (gc_ && n == 0) continue;  // the empty path has S = 0
+        Action& action = validation[gc_ ? n - gc_n_min_ : 0];
+        if (!std::isfinite(action.total_action(candidate)))
             throw std::runtime_error("pimc: checkpoint action is nonfinite for replica "+std::to_string(s));
     }
-    for (std::size_t s = 0; s < paths_.size(); ++s) {
-        paths_[s].set_permutation(permutation_of(s));
-        auto dest = paths_[s].positions();
-        std::copy_n(checkpoint.positions.begin() + s * path_size, path_size,
-                    dest.begin());
-        paths_[s].rebuild_tables();
-    }
+    for (std::size_t s = 0; s < paths_.size(); ++s)
+        load_closed_path(paths_[s], checkpoint.active[s], permutation_of(s), beads_of(s));
     imported_paths_ = true;
 }
 
@@ -584,9 +610,9 @@ void Pimc::check_permutation(std::span<const std::size_t> pi) const {
 }
 
 io::PathCheckpoint Pimc::export_paths() const {
-    if (gc_)
-        throw std::runtime_error("pimc: path checkpoints of a grand-canonical run need "
-                                 "checkpoint version 2, not implemented yet");
+    for (const PathSet& path : paths_)
+        if (path.is_open())
+            throw std::logic_error("pimc: export_paths needs closed paths (run() closes them)");
     io::PathCheckpoint checkpoint;
     checkpoint.replicas = paths_.size();
     checkpoint.m = M_;
@@ -598,13 +624,14 @@ io::PathCheckpoint Pimc::export_paths() const {
         const auto vectors = cell_.vectors();
         checkpoint.lattice.assign(vectors.begin(), vectors.end());
     }
-    checkpoint.positions.reserve(paths_.size() * M_ * np_ * dim_);
-    checkpoint.permutation.reserve(paths_.size() * np_);
+    // Only the particles: rows [0, N) of each replica, its pi over them.
     for (const PathSet& path : paths_) {
-        const auto positions = path.positions();
+        const std::size_t n = path.active_particles();
+        checkpoint.active.push_back(n);
+        const auto positions = path.positions().first(n * M_ * dim_);
         checkpoint.positions.insert(checkpoint.positions.end(),
                                     positions.begin(), positions.end());
-        const auto permutation = path.permutation();
+        const auto permutation = path.permutation().first(n);
         checkpoint.permutation.insert(checkpoint.permutation.end(),
                                       permutation.begin(), permutation.end());
     }
