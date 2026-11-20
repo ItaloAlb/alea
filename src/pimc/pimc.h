@@ -128,10 +128,12 @@ struct PimcSectorResult {
 };
 
 struct PimcGrandCanonicalResult {
-    double chemical_potential_input = 0.0;
     std::size_t n_min = 0, n_max = 0;
+    // mu_in of each pair N <-> N + 1, [N - n_min] for N in [n_min, n_max - 1]
+    // (the one YAML value repeated, or the YAML list).
+    std::vector<double> mu_input;
     std::vector<PimcSectorResult> sectors;  // [N - n_min]
-    // F(N + 1) - F(N) = mu_in - T ln[P(N + 1)/P(N)], the canonical chemical
+    // F(N + 1) - F(N) = mu_input[N - n_min] - T ln[P(N + 1)/P(N)], the canonical chemical
     // potential at N + 1/2, [N - n_min] for N in [n_min, n_max - 1]; NaN
     // where a sector was never visited.
     std::vector<double> mu, mu_error;
@@ -372,7 +374,7 @@ private:
     bool gc_ = false;
     std::size_t gc_n_min_ = 0, gc_n_max_ = 0, gc_initial_ = 0;
     std::vector<double> gc_start_n_;  // [replica]: N at the start of run()
-    double gc_mu_ = 0.0;
+    std::vector<double> gc_mu_;  // mu_in of each pair N <-> N + 1, [N - n_min]
     std::vector<std::vector<Action>> sector_actions_;  // [replica][N - n_min]
     // Estimator templates and reduced results, [N - n_min][estimator].
     std::vector<std::vector<std::unique_ptr<Estimator>>> sector_est_templates_, sector_ests_;

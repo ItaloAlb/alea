@@ -86,15 +86,29 @@ GrandCanonicalWormMove::GrandCanonicalWormMove(int max_length, int swap_length,
         throw std::invalid_argument("GrandCanonicalWormMove: swap_length must be >= 2");
     if (!tune_ && !(std::isfinite(worm_constant) && worm_constant > 0.0))
         throw std::invalid_argument("GrandCanonicalWormMove: the worm constant C must be finite and > 0");
-    if (!std::isfinite(spec_.chemical_potential))
-        throw std::invalid_argument("GrandCanonicalWormMove: the chemical potential must be finite");
     if (spec_.n_max < 1 || spec_.n_min > spec_.n_max)
         throw std::invalid_argument("GrandCanonicalWormMove: needs 0 <= n_min <= n_max and n_max >= 1");
+    const std::size_t pairs = spec_.n_max - spec_.n_min;
+    if (spec_.chemical_potential.empty() ||
+        (spec_.chemical_potential.size() != 1 && spec_.chemical_potential.size() != pairs))
+        throw std::invalid_argument(
+            "GrandCanonicalWormMove: give one chemical potential or one per pair of sectors (" +
+            std::to_string(pairs) + ")");
+    for (const double mu : spec_.chemical_potential)
+        if (!std::isfinite(mu))
+            throw std::invalid_argument("GrandCanonicalWormMove: the chemical potential must be finite");
     if (!(std::isfinite(spec_.insertion_width) && spec_.insertion_width >= 0.0))
         throw std::invalid_argument("GrandCanonicalWormMove: insertion_width must be finite and >= 0");
     for (const double c : spec_.insertion_center)
         if (!std::isfinite(c))
             throw std::invalid_argument("GrandCanonicalWormMove: insertion_center must be finite");
+}
+
+double GrandCanonicalWormMove::row_chemical_potential(std::size_t rows) const noexcept {
+    // Row R holds the beads of the pair N = R - 1 <-> R, entry R - 1 - n_min.
+    const auto& mu = spec_.chemical_potential;
+    if (mu.size() == 1 || rows <= spec_.n_min + 1) return mu.front();
+    return mu[std::min(rows - 1 - spec_.n_min, mu.size() - 1)];
 }
 
 void GrandCanonicalWormMove::set_selection_probability(double p) {
@@ -254,7 +268,7 @@ bool GrandCanonicalWormMove::attempt_open(PathSet& path, Action& action, numeric
     const double removed = bead_actions(path, action, g, false, R);
     double sep[SimulationCell::kMaxDim];
     bead_separation(path, head, tail, sep);
-    const double tau_mu = path.tau() * spec_.chemical_potential;
+    const double tau_mu = path.tau() * row_chemical_potential(R);
     const double log_ratio = std::log(constant_) - tau_mu * static_cast<double>(g) +
                              std::log(kClose) + std::log(static_cast<double>(n_beads)) +
                              std::log(static_cast<double>(L + 1)) - std::log(p_select_) -
@@ -313,7 +327,7 @@ bool GrandCanonicalWormMove::attempt_close(PathSet& path, Action& action, numeri
         if (periodic) path.cell().wrap(r);
     }
     const double added = bead_actions(path, action, g, true, R);
-    const double tau_mu = path.tau() * spec_.chemical_potential;
+    const double tau_mu = path.tau() * row_chemical_potential(R);
     const double log_ratio = std::log(p_select_) + std::log(kOpenZ) + log_rho0(sep, n, path) +
                              tau_mu * static_cast<double>(g) - std::log(constant_) -
                              std::log(kClose) -
@@ -374,7 +388,7 @@ bool GrandCanonicalWormMove::attempt_insert(PathSet& path, Action& action, numer
     initial_constant(path);
     // The new beads meet the N closed rows at their slices.
     const double added = bead_actions(path, action, m + 1, true, N);
-    const double tau_mu = path.tau() * spec_.chemical_potential;
+    const double tau_mu = path.tau() * row_chemical_potential(N + 1);  // the new row's beads
     const double log_ratio = std::log(constant_) + std::log(kRemove) +
                              std::log(static_cast<double>(M)) + std::log(static_cast<double>(L)) +
                              tau_mu * static_cast<double>(m + 1) - std::log(p_select_) -
@@ -408,7 +422,7 @@ bool GrandCanonicalWormMove::attempt_remove(PathSet& path, Action& action, numer
     const double removed = bead_actions(path, action, worm_beads, false, R);
     double r_tail[SimulationCell::kMaxDim];
     for (std::size_t dd = 0; dd < d; ++dd) r_tail[dd] = path.pos(p, dd, tail.slice);
-    const double tau_mu = path.tau() * spec_.chemical_potential;
+    const double tau_mu = path.tau() * row_chemical_potential(R);
     const double log_ratio = std::log(p_select_) + std::log(1.0 - kOpenZ) +
                              log_insertion_density(path, r_tail) -
                              tau_mu * static_cast<double>(m + 1) - std::log(constant_) -
@@ -455,7 +469,7 @@ bool GrandCanonicalWormMove::attempt_advance(PathSet& path, Action& action, nume
         if (periodic) path.cell().wrap(r);
     }
     const double added = bead_actions(path, action, m, true, R);
-    const double log_ratio = path.tau() * spec_.chemical_potential * static_cast<double>(m) +
+    const double log_ratio = path.tau() * row_chemical_potential(R) * static_cast<double>(m) +
                              std::log(kRecede / kAdvance);
     if (!accept(log_ratio, added, rng, head)) return false;
     commit(path, m);
@@ -480,7 +494,7 @@ bool GrandCanonicalWormMove::attempt_recede(PathSet& path, Action& action, numer
         bead = path.bead_before(bead.particle, bead.slice);
     }
     const double removed = bead_actions(path, action, m, false, R);
-    const double log_ratio = -path.tau() * spec_.chemical_potential * static_cast<double>(m) +
+    const double log_ratio = -path.tau() * row_chemical_potential(R) * static_cast<double>(m) +
                              std::log(kAdvance / kRecede);
     if (!accept(log_ratio, -removed, rng, head)) return false;
     path.set_head(bead);

@@ -552,7 +552,7 @@ moves:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `chemical_potential` | — (required) | μ_in, in the run's energy unit |
+| `chemical_potential` | — (required) | μ_in, in the run's energy unit: one value, or a list of $n_\text{max} - n_\text{min}$ values, the μ_in of each pair $N \leftrightarrow N+1$ from $N = n_\text{min}$ (below) |
 | `n_min`, `n_max` | — (required) | The window of closed-path particle counts, $0 \le n_\text{min} \le n_\text{max}$, $n_\text{max} \ge 1$. The group's `up:` count is the initial N and must lie in it |
 | `insertion_width` | — | Open cells (required there): an inserted worm starts at a point drawn from a Gaussian of this width. Periodic cells draw it uniformly and refuse the key |
 | `insertion_center` | origin | Open cells: the centre of that Gaussian, one coordinate per axis |
@@ -560,6 +560,23 @@ moves:
 Both sectors of a pair are visited only if μ_in lies within a few $T$ of
 $F(N+1) - F(N)$: an offset of $\delta\mu$ scales $P(N+1)/P(N)$ by
 $e^{\beta\,\delta\mu}$. A short run over a wide window locates it.
+
+**One μ per pair.** $F(N)$ is not linear in N, so a single μ_in keeps only
+one or two sectors of a wide window visited. A list gives each pair its own
+μ, $\mu_{N+1/2}$, and the stage samples
+$P(N) \propto e^{\beta\sum_{n_\text{min} \le K < N}\mu_{K+1/2}}Z_N$; one value
+is the same list with every entry equal. This is the multicanonical weight of
+N (Berg and Neuhaus, Phys. Rev. Lett. 68, 9 (1992); umbrella sampling,
+Torrie and Valleau, J. Comput. Phys. 23, 187 (1977)): the weight is known,
+so the run removes it exactly, $F(N+1) - F(N) = \mu_{N+1/2} - T\ln[P(N+1)/P(N)]$,
+whatever the list holds. With each entry near the expected $F(N+1) - F(N)$
+(e.g. from two-sector windows) every sector carries a similar weight, and
+replicas can move across the whole window, e.g. from a configuration of N
+that never reaches N − 1 directly, through N + 1, to one that does:
+
+```yaml
+grand_canonical: { chemical_potential: [21.45, 22.68], n_min: 12, n_max: 14 }
+```
 
 All replicas of a grand-canonical stage share one worm constant `C`. When the
 YAML does not fix it, it is tuned during equilibration towards a 50 % closed

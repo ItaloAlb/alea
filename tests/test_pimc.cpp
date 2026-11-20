@@ -1129,7 +1129,7 @@ TEST_CASE("the grand_canonical block of a worm is read and validated", "[pimc][p
     REQUIRE(cfg.pimc[0].moves.size() == 1);
     const auto& gc = cfg.pimc[0].moves[0].grand_canonical;
     REQUIRE(gc.has_value());
-    CHECK(gc->chemical_potential == -0.5);
+    CHECK(gc->chemical_potential == std::vector<double>{-0.5});
     CHECK(gc->n_min == 0);
     CHECK(gc->n_max == 3);
     CHECK(gc->insertion_width == 1.5);
@@ -1140,6 +1140,12 @@ TEST_CASE("the grand_canonical block of a worm is read and validated", "[pimc][p
     REQUIRE(bare.has_value());
     CHECK(bare->insertion_width == 0.0);
     CHECK(bare->insertion_center.empty());
+    // One chemical potential per pair of sectors N <-> N + 1, from n_min.
+    const auto pairs = io::parse_config(config("{ chemical_potential: [21.4, 22.7], n_min: 12, "
+                                               "n_max: 14 }"))
+                           .pimc[0].moves[0].grand_canonical;
+    REQUIRE(pairs.has_value());
+    CHECK(pairs->chemical_potential == std::vector<double>{21.4, 22.7});
     // ... and a worm without the block stays canonical.
     CHECK_FALSE(io::parse_config("qmc:\n  - method: pimc\n    time_step: 0.25\n    beta: 1.0\n"
                                  "    moves: [ { worm: { group: b, max_length: 2, swap_length: 2 } } ]\n")
@@ -1154,6 +1160,11 @@ TEST_CASE("the grand_canonical block of a worm is read and validated", "[pimc][p
     expect_error("{ chemical_potential: 1, n_min: 3, n_max: 2 }", "0 <= n_min <= n_max");
     expect_error("{ chemical_potential: 1, n_min: 0, n_max: 0 }", "n_max >= 1");
     expect_error("{ chemical_potential: .nan, n_min: 0, n_max: 2 }", "must be finite");
+    expect_error("{ chemical_potential: [1, .inf], n_min: 0, n_max: 2 }", "must be finite");
+    expect_error("{ chemical_potential: [1, 2, 3], n_min: 0, n_max: 2 }",
+                 "one value per pair of sectors (n_max - n_min = 2)");
+    expect_error("{ chemical_potential: [1], n_min: 0, n_max: 2 }", "one value per pair");
+    expect_error("{ chemical_potential: [], n_min: 1, n_max: 1 }", "one value per pair");
     expect_error("{ chemical_potential: 1, n_min: 0, n_max: 2, insertion_width: 0 }",
                  "`insertion_width` must be finite and > 0");
     expect_error("{ chemical_potential: 1, n_min: 0, n_max: 2, insertion_center: 1 }",

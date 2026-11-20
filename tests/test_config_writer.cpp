@@ -510,7 +510,7 @@ qmc:
     moves:
       - bisection: { levels: 3, weight: 2.0 }
       - worm: { group: g, max_length: 6, swap_length: 4, weight: 2.0,
-                grand_canonical: { chemical_potential: 1.25, n_min: 1, n_max: 3,
+                grand_canonical: { chemical_potential: [1.25, 1.75], n_min: 1, n_max: 3,
                                    insertion_width: 0.8, insertion_center: [0.5, -0.25] } }
 )";
     const fs::path run_dir = tmp.path / "run";
@@ -524,6 +524,7 @@ qmc:
     const auto& gb = b.pimc[0].moves[1].grand_canonical;
     REQUIRE(ga.has_value());
     REQUIRE(gb.has_value());
+    CHECK(ga->chemical_potential == std::vector<double>{1.25, 1.75});
     CHECK(gb->chemical_potential == ga->chemical_potential);
     CHECK(gb->n_min == ga->n_min);
     CHECK(gb->n_max == ga->n_max);

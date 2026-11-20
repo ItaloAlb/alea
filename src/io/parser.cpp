@@ -973,16 +973,30 @@ Config parse_config(const std::string& yaml_text) {
                                     "pimc worm grand_canonical: `chemical_potential`, `n_min` "
                                     "and `n_max` are required");
                             PimcMoveSpec::GrandCanonical g;
-                            g.chemical_potential = gc["chemical_potential"].as<double>();
                             g.n_min = gc["n_min"].as<int>();
                             g.n_max = gc["n_max"].as<int>();
-                            if (!std::isfinite(g.chemical_potential))
-                                throw std::runtime_error(
-                                    "pimc worm grand_canonical: `chemical_potential` must be finite");
                             if (g.n_min < 0 || g.n_max < 1 || g.n_min > g.n_max)
                                 throw std::runtime_error(
                                     "pimc worm grand_canonical: needs 0 <= n_min <= n_max "
                                     "and n_max >= 1");
+                            // A scalar mu_in, or a list with the mu of each pair
+                            // of sectors N <-> N + 1 from N = n_min.
+                            const YAML::Node mu = gc["chemical_potential"];
+                            if (mu.IsSequence()) {
+                                const auto pairs = static_cast<std::size_t>(g.n_max - g.n_min);
+                                if (mu.size() != pairs || pairs == 0)
+                                    throw std::runtime_error(
+                                        "pimc worm grand_canonical: a `chemical_potential` list "
+                                        "needs one value per pair of sectors (n_max - n_min = " +
+                                        std::to_string(pairs) + "), or give one value");
+                                for (const YAML::Node& x : mu) g.chemical_potential.push_back(x.as<double>());
+                            } else {
+                                g.chemical_potential.push_back(mu.as<double>());
+                            }
+                            for (const double x : g.chemical_potential)
+                                if (!std::isfinite(x))
+                                    throw std::runtime_error(
+                                        "pimc worm grand_canonical: `chemical_potential` must be finite");
                             if (gc["insertion_width"]) {
                                 g.insertion_width = gc["insertion_width"].as<double>();
                                 if (!(std::isfinite(g.insertion_width) && g.insertion_width > 0.0))

@@ -126,8 +126,55 @@ TEST_CASE("A grand-canonical stage of two trapped dipoles gives the exact F(2) -
         CHECK(series(r, "gc_mu_reliable")[0] == 1.0);
         CHECK(series(r, "gc_sector_N") == std::vector<double>{1.0, 2.0});
         CHECK(scalar(r, "gc_N2_energy") == two.energy);
-        CHECK(scalar(r, "gc_chemical_potential_input") == 1.85);
+        CHECK(series(r, "gc_mu_input") == std::vector<double>{1.85});
         CHECK(series(r, "acc_block_gc_N1_weight").size() == 400);
+    });
+}
+
+// ── Exact: the same dipoles in a window {0, 1, 2}, one mu per pair ──────────
+// F(1) - F(0) = -T ln Z_1, with Z_1 the 2-D discretized harmonic ring of one
+// particle at this M (any mass; tests/references/inverse_power_trap_primitive.py):
+//     Z_1 = prod_{j=0}^{M-1} (4 sin^2(pi j / M) + tau^2 omega^2)^{-1},
+// and F(2) - F(1) as above.  F(1) - F(0) = 0.854 and F(2) - F(1) = 1.847 are
+// a whole unit apart, so mu = (0.85, 1.85) puts about a third of the weight in
+// each sector; each output mu removes its own pair's input exactly.
+TEST_CASE("A window of three sectors with one mu per pair gives the exact F(1) - F(0) and F(2) - F(1)",
+          "[pimc][grand_canonical][physics]") {
+    constexpr double kDeltaF = 1.847461147235;  // F(2) - F(1)
+    const double beta = 2.0, tau = 0.125, omega = 1.0;
+    const std::size_t M = 16;
+    double log_z1 = 0.0;
+    for (std::size_t j = 0; j < M; ++j) {
+        const double s = std::sin(std::numbers::pi * static_cast<double>(j) / static_cast<double>(M));
+        log_z1 -= std::log(4.0 * s * s + tau * tau * omega * omega);
+    }
+    const double delta_f_1 = -log_z1 / beta;  // 0.853733047618
+    alea::io::Config cfg = load("pimc_gc_trapped_dipoles.yaml");
+    worm_of(cfg).grand_canonical->n_min = 0;
+    worm_of(cfg).grand_canonical->chemical_potential = {0.85, 1.85};
+    run_stage(cfg, [&](const alea::Pimc& pimc) {
+        const alea::PimcGrandCanonicalResult& gc = pimc.grand_canonical_result();
+        INFO(pimc.summary());
+        REQUIRE(gc.sectors.size() == 3);
+        REQUIRE(gc.mu.size() == 2);
+        CHECK(gc.mu_input == std::vector<double>{0.85, 1.85});
+        for (std::size_t i = 0; i < 3; ++i) {
+            CAPTURE(i, gc.sectors[i].fraction);
+            CHECK(gc.sectors[i].n == i);
+            CHECK(gc.sectors[i].fraction > 0.2);
+        }
+        for (std::size_t i = 0; i < 2; ++i) {
+            CAPTURE(i, gc.pair_transitions[i]);
+            CHECK(gc.pair_transitions[i] >= 100.0);
+        }
+        INFO("F(1) - F(0) = " << gc.mu[0] << " +/- " << gc.mu_error[0] << " exact " << delta_f_1);
+        INFO("F(2) - F(1) = " << gc.mu[1] << " +/- " << gc.mu_error[1] << " exact " << kDeltaF);
+        CHECK(std::abs(gc.mu[0] - delta_f_1) <= 4.0 * gc.mu_error[0]);
+        CHECK(std::abs(gc.mu[1] - kDeltaF) <= 4.0 * gc.mu_error[1]);
+        const alea::RunResult r = pimc.run_result();
+        CHECK(series(r, "gc_mu_input") == std::vector<double>{0.85, 1.85});
+        CHECK(series(r, "gc_mu_N") == std::vector<double>{0.5, 1.5});
+        CHECK(series(r, "gc_mu") == gc.mu);
     });
 }
 
@@ -167,7 +214,7 @@ TEST_CASE("Moire dipoles: grand-canonical sectors match canonical runs and F(4) 
     for (const double mu_in : {22.6, 24.6}) {
         CAPTURE(mu_in);
         alea::io::Config cfg = load("pimc_gc_moire_dipoles.yaml");
-        worm_of(cfg).grand_canonical->chemical_potential = mu_in;
+        worm_of(cfg).grand_canonical->chemical_potential = {mu_in};
         run_stage(cfg, [&](const alea::Pimc& pimc) {
             const alea::PimcGrandCanonicalResult& gc = pimc.grand_canonical_result();
             INFO(pimc.summary());

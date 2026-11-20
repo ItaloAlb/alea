@@ -603,12 +603,14 @@ struct PimcMoveSpec {
     int         swap_length = 0;
     double      worm_constant = std::numeric_limits<double>::quiet_NaN();
     // worm only: the grand-canonical block (absent for a canonical worm).
-    // chemical_potential is mu_in in the run's energy units; the closed
-    // particle count stays in [n_min, n_max].  Open cells draw the tail of an
+    // chemical_potential is mu_in in the run's energy units: one value (the
+    // YAML scalar) or one per pair of sectors N <-> N + 1, N = n_min ..
+    // n_max - 1 (a YAML list of n_max - n_min values); the closed particle
+    // count stays in [n_min, n_max].  Open cells draw the tail of an
     // inserted worm from a Gaussian of insertion_width (required there, absent
     // in periodic cells) around insertion_center (empty: the origin).
     struct GrandCanonical {
-        double chemical_potential = 0.0;
+        std::vector<double> chemical_potential;
         int    n_min = 0;
         int    n_max = 0;
         double insertion_width = 0.0;          // 0: absent
