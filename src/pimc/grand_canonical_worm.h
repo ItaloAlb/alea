@@ -13,11 +13,23 @@
 //
 // ── Configuration space and weights ─────────────────────────────────────────
 // Z: closed paths of N = R active rows (PathSet::active_particles),
-//      W_Z = exp(beta mu N) prod_links rho0 exp(-S_V),
+//      W_Z = exp(Phi(N M)) prod_links rho0 exp(-S_V),
 // G: one open worldline whose head is followed by a gap of g in [0, M - 1]
 //    missing beads (PathSet::gap; at most one per slice), n_b = R M - g beads,
-//      W_G = C exp(tau mu n_b) prod_{present links} rho0 exp(-S_V)
-// (BPS's Z and G sectors at discrete tau).  rho0 is the normalized free propagator
+//      W_G = C exp(Phi(n_b)) prod_{present links} rho0 exp(-S_V)
+// (BPS's Z and G sectors at discrete tau).  Phi is the chemical-potential
+// weight of the bead count, piecewise linear with slope tau mu_R on the
+// beads of the R-th row, n_b in ((R - 1) M, R M]:
+//      Phi(n_b) - Phi(n_b') = tau mu_R (n_b - n_b')   for both in that range,
+// so the closed sectors weigh exp(beta sum_{R <= N} mu_R).  BPS's single
+// mu_in is mu_R = mu_in for every R, Phi = tau mu_in n_b.  One mu per pair
+// of sectors (mu_R for N = R - 1 <-> R) is the multicanonical preweighting
+// of N (Berg & Neuhaus, Phys. Rev. Lett. 68, 9 (1992); Torrie & Valleau,
+// J. Comput. Phys. 23, 187 (1977)): with mu_R near F(R) - F(R - 1) every
+// sector of a wide window is visited, and the driver removes the known
+// weights exactly.  G configurations with R = n_min rows (n_b below n_min M)
+// take the first pair's mu: any weight of G is valid, since G carries no
+// measurement, and P(N) does not depend on it.  rho0 is the normalized free propagator
 // of one link, S_V = tau sum_k V(R_k) over the beads R_k present at slice k
 // (primitive action), with every N-dependent constant of V taken at the n_k
 // beads of that slice (HamiltonianComponent::bead_energy).  The weights are
@@ -37,18 +49,22 @@
 // With A the cell area (periodic; an open cell draws the tail from the
 // Gaussian density q(r) of width insertion_width and replaces 1/A by q):
 //
+// Every sub-move that changes n_b stays inside one row's range of Phi, so
+// its factor is e^{tau mu_R dn_b} with R the row count of its G configuration
+// (R = N + 1 for an insert from N):
+//
 //   open   (head = uniform bead of R M, the g beads after it go missing)
-//          A = C e^{-tau mu g} e^{-dS} kClose R M (L + 1) / (p_sel kOpenZ rho0(t - h; g + 1))
+//          A = C e^{-tau mu_R g} e^{-dS} kClose R M (L + 1) / (p_sel kOpenZ rho0(t - h; g + 1))
 //   close  (free bridge h -> t over g + 1 links fills the gap, g <= L)
-//          A = p_sel kOpenZ rho0(t - h; g + 1) e^{tau mu g} e^{-dS} / (C kClose R M (L + 1))
+//          A = p_sel kOpenZ rho0(t - h; g + 1) e^{tau mu_R g} e^{-dS} / (C kClose R M (L + 1))
 //   insert (new row; tail uniform in the cell and in slice; walk of m links)
-//          A = C A M L e^{tau mu (m + 1)} e^{-dS} kRemove / (p_sel (1 - kOpenZ))
+//          A = C A M L e^{tau mu_{N+1} (m + 1)} e^{-dS} kRemove / (p_sel (1 - kOpenZ))
 //   remove (a single-row worm of m + 1 <= L + 1 beads)
-//          A = p_sel (1 - kOpenZ) e^{-tau mu (m + 1)} e^{-dS} / (C A M L kRemove)
+//          A = p_sel (1 - kOpenZ) e^{-tau mu_R (m + 1)} e^{-dS} / (C A M L kRemove)
 //   advance (m <= g gap beads drawn as a free walk from the head)
-//          A = e^{tau mu m} e^{-dS} kRecede / kAdvance
+//          A = e^{tau mu_R m} e^{-dS} kRecede / kAdvance
 //   recede (the head and its m - 1 predecessors go missing, g + m <= M - 1)
-//          A = e^{-tau mu m} e^{-dS} kAdvance / kRecede
+//          A = e^{-tau mu_R m} e^{-dS} kAdvance / kRecede
 //   swap   (BPS swap, as WormMove; alpha by heat bath among the beads present
 //          at slice k_h + m_s)   A = e^{-dS} Sigma_h / Sigma_zeta
 //
@@ -77,7 +93,9 @@ namespace alea {
 
 // The grand-canonical block of a worm move.
 struct GrandCanonicalSpec {
-    double chemical_potential = 0.0;  // mu_in, the run's energy unit
+    // mu_in in the run's energy unit: one value for every pair of sectors, or
+    // n_max - n_min values, the mu of each pair N <-> N + 1 from N = n_min.
+    std::vector<double> chemical_potential;
     std::size_t n_min = 0, n_max = 0; // window of the closed particle count
     // Open cells only: the tail of an inserted worm is drawn from a Gaussian
     // of this width (> 0) around insertion_center ([dim]); periodic cells draw
@@ -94,7 +112,8 @@ public:
 
     // max_length >= 1 (<= M - 2 on use); swap_length >= 2 (<= M - 1 on use);
     // worm_constant > 0, or NaN to start from an estimate and tune it; the
-    // window 1 <= n_max, n_min <= n_max; a finite chemical potential.
+    // window 1 <= n_max, n_min <= n_max; finite chemical potentials, one or
+    // n_max - n_min of them.
     GrandCanonicalWormMove(int max_length, int swap_length, double worm_constant,
                            GrandCanonicalSpec spec);
 
@@ -115,7 +134,13 @@ public:
     [[nodiscard]] bool tunes_constant() const noexcept override { return tune_; }
     void tune_constant(double closed_fraction, double open_fraction,
                        double target_ratio) override;
+    // Use C = c (finite, > 0) from now on: the driver hands every replica the
+    // one C it tunes from their pooled closed fraction.  Throws invalid_argument.
+    void set_worm_constant(double c);
     [[nodiscard]] const GrandCanonicalSpec& spec() const noexcept { return spec_; }
+    // mu_R, the slope of Phi on the beads of row R (configurations with R
+    // rows in G, i.e. the pair N = R - 1 <-> R); R = n_min takes the first pair's.
+    [[nodiscard]] double row_chemical_potential(std::size_t rows) const noexcept;
     // dS_V of the last accepted proposal (tests compare it with an
     // independent evaluation of the potential action before and after).
     [[nodiscard]] double last_delta_action() const noexcept { return last_delta_s_; }

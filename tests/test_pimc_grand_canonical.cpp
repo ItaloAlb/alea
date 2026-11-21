@@ -409,11 +409,11 @@ TEST_CASE("Grand-canonical worm moves change S_V by exactly their bead actions",
         double charge;
     };
     GrandCanonicalSpec periodic_spec;
-    periodic_spec.chemical_potential = 8.0;
+    periodic_spec.chemical_potential = {8.0};
     periodic_spec.n_min = 1;
     periodic_spec.n_max = 4;
     GrandCanonicalSpec open_spec;
-    open_spec.chemical_potential = 2.0;
+    open_spec.chemical_potential = {2.0};
     open_spec.n_min = 0;
     open_spec.n_max = 3;
     open_spec.insertion_width = 0.8;
@@ -605,19 +605,28 @@ void sector_fractions(const SectorBlocks& run, std::vector<double>& mean,
     }
 }
 
-// Exact P(N) over [n_min, n_max] from the absolute Z_N.
-std::vector<double> exact_populations(double beta, double mu, std::size_t n_min,
-                                      std::size_t n_max, std::size_t M,
+// Exact P(N) over [n_min, n_max] from the absolute Z_N, with one mu per pair
+// N <-> N + 1 (pair_mu[N - n_min]): P(N) ∝ e^{beta sum_{n_min <= K < N} mu_K} Z_N.
+std::vector<double> exact_populations(double beta, const std::vector<double>& pair_mu,
+                                      std::size_t n_min, std::size_t n_max, std::size_t M,
                                       const std::function<pimc_reference::Ring(std::size_t)>& ring) {
     std::vector<double> p(n_max + 1, 0.0);
-    double total = 0.0;
+    double total = 0.0, exponent = 0.0;
     for (std::size_t n = n_min; n <= n_max; ++n) {
+        if (n > n_min) exponent += beta * pair_mu.at(n - 1 - n_min);
         const double z = n == 0 ? 1.0 : pimc_reference::recursion(n, M, +1, ring).partition;
-        p[n] = std::exp(beta * mu * static_cast<double>(n)) * z;
+        p[n] = std::exp(exponent) * z;
         total += p[n];
     }
     for (double& x : p) x /= total;
     return p;
+}
+
+// The same with one mu_in for every pair: P(N) ∝ e^{beta mu_in N} Z_N.
+std::vector<double> exact_populations(double beta, double mu, std::size_t n_min,
+                                      std::size_t n_max, std::size_t M,
+                                      const std::function<pimc_reference::Ring(std::size_t)>& ring) {
+    return exact_populations(beta, std::vector<double>(n_max - n_min, mu), n_min, n_max, M, ring);
 }
 
 // A collapsed start of n particles at distinct points, capacity rows, one class.
@@ -675,7 +684,7 @@ TEST_CASE("Ideal bosons in a periodic box: sector populations are e^{beta mu N} 
         for (std::size_t n = 1; n <= n_max; ++n) actions.emplace_back(one_group(n, dim), free, dim);
         Action worm_action(one_group(n_max, dim), free, dim);
         GrandCanonicalSpec spec;
-        spec.chemical_potential = pt.mu;
+        spec.chemical_potential = {pt.mu};
         spec.n_min = 0;
         spec.n_max = n_max;
         GrandCanonicalWormMove worm(pt.max_length, pt.swap_length, std::nan(""), spec);
@@ -684,6 +693,78 @@ TEST_CASE("Ideal bosons in a periodic box: sector populations are e^{beta mu N} 
         const auto ring = [&](std::size_t K) { return pimc_reference::periodic_ring(K, tau, L, dim); };
         check_populations(run, exact_populations(pt.beta, pt.mu, 0, n_max, M, ring));
     }
+}
+
+TEST_CASE("The worm takes one mu or one per pair, and row R carries the mu of the pair R - 1 <-> R",
+          "[pimc][grand_canonical]") {
+    GrandCanonicalSpec spec;
+    spec.n_min = 2;
+    spec.n_max = 5;
+    spec.chemical_potential = {1.0, 2.0, 3.0};
+    const GrandCanonicalWormMove pairs(4, 3, 0.1, spec);
+    CHECK(pairs.row_chemical_potential(2) == 1.0);  // G at R = n_min: the first pair's
+    CHECK(pairs.row_chemical_potential(3) == 1.0);  // 2 <-> 3
+    CHECK(pairs.row_chemical_potential(4) == 2.0);  // 3 <-> 4
+    CHECK(pairs.row_chemical_potential(5) == 3.0);  // 4 <-> 5
+    spec.chemical_potential = {7.0};
+    const GrandCanonicalWormMove one(4, 3, 0.1, spec);
+    for (std::size_t rows = 2; rows <= 5; ++rows) CHECK(one.row_chemical_potential(rows) == 7.0);
+    for (const std::vector<double>& bad :
+         {std::vector<double>{}, std::vector<double>{1.0, 2.0},
+          std::vector<double>{1.0, std::nan(""), 3.0}}) {
+        spec.chemical_potential = bad;
+        CAPTURE(bad);
+        CHECK_THROWS_AS(GrandCanonicalWormMove(4, 3, 0.1, spec), std::invalid_argument);
+    }
+}
+
+// One mu per pair (the multicanonical weight of N): with mu_K = F(K + 1) -
+// F(K) + delta_K, from the exact Z_N, P(N) ∝ e^{beta sum_{K < N} delta_K}.
+// Offsets of a few tenths at beta = 3 spread the populations by factors of
+// e^{beta delta} ~ 2 to 3 in both directions, so a sub-move that took the mu
+// of a neighbouring pair (or one mu for all) would miss them by many sigma,
+// while every sector is still visited.
+TEST_CASE("Ideal bosons in a periodic box with one mu per pair: populations are "
+          "e^{beta sum_K mu_K} Z_N",
+          "[pimc][grand_canonical][physics]") {
+    const double beta = 3.0, tau = 0.1, L = 4.0;
+    const std::size_t M = 30, dim = 2, n_max = 4;
+    const SimulationCell cell(2, std::vector<double>{L, 0.0, 0.0, L});
+    const auto ring = [&](std::size_t K) { return pimc_reference::periodic_ring(K, tau, L, dim); };
+    const std::vector<double> delta{0.3, -0.25, 0.2, -0.35};
+    std::vector<double> pair_mu;
+    double z_lower = 1.0;  // Z_0
+    for (std::size_t n = 0; n < n_max; ++n) {
+        const double z_upper = pimc_reference::recursion(n + 1, M, +1, ring).partition;
+        pair_mu.push_back(-std::log(z_upper / z_lower) / beta + delta[n]);
+        z_lower = z_upper;
+    }
+    CAPTURE(pair_mu);
+    PathSet path(M, n_max, dim, tau, cell);
+    start_path(path, 1);
+    const Hamiltonian free;
+    std::vector<Action> actions;
+    actions.emplace_back(one_group(n_max, dim), free, dim);  // [0] unused
+    for (std::size_t n = 1; n <= n_max; ++n) actions.emplace_back(one_group(n, dim), free, dim);
+    Action worm_action(one_group(n_max, dim), free, dim);
+    GrandCanonicalSpec spec;
+    spec.chemical_potential = pair_mu;
+    spec.n_min = 0;
+    spec.n_max = n_max;
+    GrandCanonicalWormMove worm(8, 5, std::nan(""), spec);
+    const SectorBlocks run = run_grand_canonical(path, actions, worm_action, worm, 4, 20261120,
+                                                 20, 200, 20000, 0);
+    const std::vector<double> exact = exact_populations(beta, pair_mu, 0, n_max, M, ring);
+    // Power: the populations of one mu_in (their mean) differ from these.
+    double mean_mu = 0.0;
+    for (const double m : pair_mu) mean_mu += m / static_cast<double>(n_max);
+    const std::vector<double> one_mu = exact_populations(beta, mean_mu, 0, n_max, M, ring);
+    for (std::size_t n = 0; n <= n_max; ++n) {
+        CAPTURE(n, exact[n], one_mu[n]);
+        CHECK(exact[n] > 0.05);
+    }
+    CHECK(std::abs(exact[1] - one_mu[1]) > 0.1);
+    check_populations(run, exact);
 }
 
 TEST_CASE("Ideal bosons in a harmonic trap: populations do not depend on the insertion width",
@@ -707,7 +788,7 @@ TEST_CASE("Ideal bosons in a harmonic trap: populations do not depend on the ins
         for (std::size_t n = 1; n <= n_max; ++n) actions.emplace_back(one_group(n, dim), trap(n), dim);
         Action worm_action(groups, trap(n_max), dim);
         GrandCanonicalSpec spec;
-        spec.chemical_potential = mu;
+        spec.chemical_potential = {mu};
         spec.n_min = 0;
         spec.n_max = n_max;
         spec.insertion_width = width;
@@ -734,7 +815,7 @@ TEST_CASE("A one-sector window samples the canonical ensemble with gaps",
     for (std::size_t n = 0; n <= N; ++n) actions.emplace_back(one_group(N, dim), trap, dim);
     Action worm_action(one_group(N, dim), trap, dim);
     GrandCanonicalSpec spec;
-    spec.chemical_potential = 0.7;  // irrelevant at one sector, but it must cancel
+    spec.chemical_potential = {0.7};  // irrelevant at one sector, but it must cancel
     spec.n_min = N;
     spec.n_max = N;
     spec.insertion_width = 1.0;
@@ -839,7 +920,7 @@ TEST_CASE("Two dipolar bosons in a trap: a window of one and two particles measu
         actions.emplace_back(one_group(n, dim), trapped_dipoles(n), dim);
     Action worm_action(one_group(n_max, dim), trapped_dipoles(n_max), dim);
     GrandCanonicalSpec spec;
-    spec.chemical_potential = mu;
+    spec.chemical_potential = {mu};
     spec.n_min = 1;
     spec.n_max = n_max;
     spec.insertion_width = 0.8;
@@ -920,8 +1001,8 @@ constexpr double kNoWay = -std::numeric_limits<double>::infinity();
 // What the weights and proposal densities of one grand-canonical chain need
 // (mass 1, d = 2 throughout).
 struct Rules {
-    double constant = 0.0;  // C
-    double mu = 0.0;        // mu_in
+    double constant = 0.0;      // C
+    std::vector<double> mu;     // mu_in: one value, or one per pair N <-> N + 1 from n_min
     std::size_t n_min = 0, n_max = 0;
     std::size_t max_length = 0;   // L
     std::size_t swap_length = 0;  // m_s
@@ -1008,11 +1089,22 @@ double log_bridge(const PathSet& path, Bead from, std::size_t n) {
     return log_walk(path, from, n) - log_rho0(path, from, walk_forward(path, from, n), n);
 }
 
+// The mu of the beads of row R = 1, 2, ...: the pair R - 1 <-> R, entry
+// R - 1 - n_min of a per-pair list; rows at or below n_min (G configurations
+// with n_min rows) take the first entry.
+double row_mu(const Rules& rules, std::size_t row) {
+    if (rules.mu.size() == 1 || row <= rules.n_min + 1) return rules.mu.front();
+    return rules.mu.at(row - 1 - rules.n_min);
+}
+
 // ln W (BPS Sec. III at discrete tau, unlabeled configurations):
-//   Z: e^{beta mu N} prod_links rho0 e^{-S_V},
-//   G: C e^{tau mu n_b} prod_{present links} rho0 e^{-S_V},
-// a link being present when both its beads are and it does not leave the
-// head (the cut link of a gap-free worm).
+//   Z: e^{Phi(N M)} prod_links rho0 e^{-S_V},
+//   G: C e^{Phi(n_b)} prod_{present links} rho0 e^{-S_V},
+// with Phi(n) = tau sum_{j = 1..n} mu(row of bead j), bead j counted in row
+// ceil(j / M): written bead by bead, not as the per-move tau mu_R dn_b the
+// worm uses, and e^{beta mu_in N}, e^{tau mu_in n_b} for one mu.  A link is
+// present when both its beads are and it does not leave the head (the cut
+// link of a gap-free worm).
 double log_weight(const PathSet& path, const Rules& rules, const SimulationCell& cell,
                   const std::vector<Hamiltonian>& hams) {
     const std::vector<char> mask = present_beads(path);
@@ -1028,8 +1120,10 @@ double log_weight(const PathSet& path, const Rules& rules, const SimulationCell&
             if ((path.is_open() && same_bead(a, path.head())) || !present(path, mask, b)) continue;
             value += log_rho0(path, a, b, 1);
         }
-    if (!path.is_open()) return value + path.beta() * rules.mu * static_cast<double>(R);
-    return value + std::log(rules.constant) + path.tau() * rules.mu * static_cast<double>(beads);
+    double phi = 0.0;
+    for (std::size_t j = 1; j <= beads; ++j) phi += path.tau() * row_mu(rules, (j + M - 1) / M);
+    if (!path.is_open()) return value + phi;
+    return value + std::log(rules.constant) + phi;
 }
 
 // The swap's heat-bath weight of target bead `to` from `from`: rho0 over m_s
@@ -1271,20 +1365,23 @@ TEST_CASE("Every accepted grand-canonical sub-move has the Metropolis ratio of i
         double charge;
         double area;  // the cell's, from its lattice vectors: 3 x (3 sqrt(3) / 2)
     };
+    // The periodic case has one mu per pair (1 <-> 2, 2 <-> 3, 3 <-> 4), 1.5
+    // apart: a sub-move that took the mu of a neighbouring row would be off
+    // by tau 1.5 per bead, ~0.08 in ln r per bead; the open case has one mu.
     GrandCanonicalSpec periodic_spec;
-    periodic_spec.chemical_potential = 8.0;
+    periodic_spec.chemical_potential = {6.5, 8.0, 9.5};
     periodic_spec.n_min = 1;
     periodic_spec.n_max = 4;
     GrandCanonicalSpec open_spec;
-    open_spec.chemical_potential = 2.0;
+    open_spec.chemical_potential = {2.0};
     open_spec.n_min = 0;
     open_spec.n_max = 3;
     open_spec.insertion_width = 0.8;
     const auto trap = [](std::size_t n, const SimulationCell&) { return trapped_coulomb(n); };
     const std::vector<Case> cases{
-        {"moire + inverse_power, hexagonal L = 3", hexagonal_cell(), dipolar_moire, periodic_spec,
-         0.0, 4.5 * std::numbers::sqrt3},
-        {"harmonic_trap + coulomb, open", SimulationCell{}, +trap, open_spec, 1.0, 0.0}};
+        {"moire + inverse_power, hexagonal L = 3, one mu per pair", hexagonal_cell(),
+         dipolar_moire, periodic_spec, 0.0, 4.5 * std::numbers::sqrt3},
+        {"harmonic_trap + coulomb, open, one mu", SimulationCell{}, +trap, open_spec, 1.0, 0.0}};
     for (const auto& c : cases) {
         SECTION(c.name) {
             const std::size_t M = 12, dim = 2, capacity = c.spec.n_max, L = 4, ms = 3;
@@ -1317,6 +1414,7 @@ TEST_CASE("Every accepted grand-canonical sub-move has the Metropolis ratio of i
             rules.width = c.spec.insertion_width;
 
             std::array<std::size_t, kKinds> checked{};
+            std::map<std::size_t, std::size_t> rows_checked;  // R of the step's G configuration
             double worst = 0.0;
             for (int attempt = 0; attempt < 20000; ++attempt) {
                 if (!path.is_open() && attempt % 2 == 1 && path.active_particles() > 0) {
@@ -1334,12 +1432,20 @@ TEST_CASE("Every accepted grand-canonical sub-move has the Metropolis ratio of i
                         Catch::Approx(expected).epsilon(1e-10).margin(1e-9));
                 worst = std::max(worst, std::abs(worm.last_log_acceptance() - expected));
                 ++checked[step.kind];
+                ++rows_checked[path.is_open() ? path.active_particles() : before.active_particles()];
             }
             for (const auto& [key, value] : worm.extra_diagnostics()) UNSCOPED_INFO(key << " = " << value);
             UNSCOPED_INFO("largest |ln r - explicit| = " << worst);
             for (int k = 0; k < kKinds; ++k) {
                 CAPTURE(kKindNames[k], checked[k]);
                 CHECK(checked[k] >= 20);
+            }
+            // Steps in G with every row count above the window's lowest, so
+            // that each pair's mu enters some checked ratio.
+            for (std::size_t rows = std::max<std::size_t>(c.spec.n_min, 1) + 1; rows <= c.spec.n_max;
+                 ++rows) {
+                CAPTURE(rows, rows_checked[rows]);
+                CHECK(rows_checked[rows] >= 20);
             }
         }
     }
@@ -1521,7 +1627,7 @@ TEST_CASE("Grand-canonical sub-moves draw every discrete outcome with its enumer
             rules.width = st.periodic ? 0.0 : width;
             rules.center = {0.3, -0.2};
             GrandCanonicalSpec spec;
-            spec.chemical_potential = 0.0;
+            spec.chemical_potential = {0.0};
             spec.n_min = st.n_min;
             spec.n_max = capacity;
             if (!st.periodic) {

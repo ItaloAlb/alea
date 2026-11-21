@@ -133,7 +133,9 @@ equilibration biases are not included (`uncertainty_scope` in the results).
 A worm with a `grand_canonical` block ([Configuration](configuration.md#method-pimc))
 samples closed paths of N particles, N in the window $[n_\text{min}, n_\text{max}]$,
 with weight $P(N) \propto e^{\beta\mu_\text{in}N} Z_N$ (Boninsegni, Prokof'ev and
-Svistunov, *PRE* **74**, 036701 (2006)). $Z_N$ is the canonical partition
+Svistunov, *PRE* **74**, 036701 (2006)), or, with one μ per pair of sectors,
+$P(N) \propto e^{\beta\sum_{n_\text{min} \le K < N}\mu_{K+1/2}} Z_N$ (a
+multicanonical weight; [Configuration](configuration.md#method-pimc)). $Z_N$ is the canonical partition
 function at the same $\tau$, the one a canonical run samples. Each measurement is
 made on a closed path and belongs to the sector N of that path; an open path
 counts with weight zero, as in any worm run.
@@ -148,8 +150,9 @@ nothing; it is not an undefined block mean.
 
 **Chemical potential.** For each pair of neighbouring sectors,
 
-$$F(N+1) - F(N) = \mu_\text{in} - T \ln\frac{P(N+1)}{P(N)},$$
+$$F(N+1) - F(N) = \mu_{N+1/2} - T \ln\frac{P(N+1)}{P(N)},$$
 
+with $\mu_{N+1/2}$ the input μ of that pair (μ_in when one value is given):
 the canonical chemical potential at $N + \tfrac12$ (an identity at any $T$, not
 $E(N+1) - E(N)$). The error is $T\,\sigma_R/R$, from the jackknife error of
 $R = P(N+1)/P(N)$. A value is quotable only when the chain changed between the two
@@ -164,7 +167,7 @@ sectors many times: `gc_mu_reliable` requires at least 100 transitions.
 | Optional estimators | One instance per sector, its keys labelled `N<n>` (e.g. `bragg_bosons_N13`, `sofk_N13_...`) |
 | `gc_N_mean`, `gc_N_squared_mean` (and `_error`), `gc_N_tau_int` | $\langle N\rangle$, $\langle N^2\rangle$ over closed measurements, and the integrated autocorrelation time of N in blocks |
 | `gc_transitions`, `gc_sector_transitions` | All sector changes, in total and per replica |
-| `gc_chemical_potential_input`, `gc_n_min`, `gc_n_max` | The inputs |
+| `gc_mu_input`, `gc_n_min`, `gc_n_max` | The inputs: $\mu_{N+1/2}$ of each pair, aligned with `gc_mu_N` (one value repeated when the YAML gives one), and the window |
 | `gc_initial_N` | The N of each replica at the start: the group's `up:` count, or the N of its path read by `paths_in` |
 | `energy`, `kinetic`, `potential` | Grand-canonical averages over every closed path, $\sum_N P(N)\langle O\rangle_N$ |
 | `winding2`, `winding_tensor_*` | Per particle over all sectors as $\langle N O\rangle/\langle N\rangle$, a ratio of sums, never the mean of per-particle values; `acc_block_gc_N_mean` holds the denominator |

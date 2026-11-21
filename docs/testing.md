@@ -31,8 +31,9 @@ radial eigenproblem, extrapolated by Richardson over spacings h and h/2;
 reference: the partition function of two bosons with C/r^p at a finite number
 of slices in the primitive approximation, by a radial transfer matrix over
 partial waves. It is exact at the M the simulation uses, so the
-grand-canonical test compares F(2) − F(1) and the two-particle energy with no
-time-step extrapolation:
+grand-canonical tests compare F(2) − F(1) and the two-particle energy with no
+time-step extrapolation (and, in a window {0, 1, 2} with one μ per pair,
+F(1) − F(0) of the one-particle ring as well):
 
 ```bash
 python tests/references/dot_two_electron_exact.py --w0 0.25 --B 0 0.2 0.4 --m 0 -1

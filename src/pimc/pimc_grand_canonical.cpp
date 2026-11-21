@@ -8,8 +8,12 @@
 //
 // ── What is sampled ─────────────────────────────────────────────────────────
 // Closed paths of N bosons in [n_min, n_max] with weight
-//     P(N) ∝ e^{beta mu_in N} Z_N,
-// Z_N the canonical finite-M primitive partition function, and open paths
+//     P(N) ∝ e^{beta sum_{n_min <= K < N} mu_{K+1/2}} Z_N,
+// Z_N the canonical finite-M primitive partition function and mu_{K+1/2} the
+// input mu of the pair K <-> K + 1: one value for all pairs is BPS's
+// e^{beta mu_in N}; one per pair is a multicanonical weight of N (Berg &
+// Neuhaus, Phys. Rev. Lett. 68, 9 (1992)) that keeps every sector of a wide
+// window visited when F(N) is far from linear in N.  Open paths
 // (BPS's G sector) that carry no diagonal measurement.  In Z the driver draws
 // a move by weight: the worm runs with the capacity action (its bead energies
 // count the beads present on each slice), every other move with the action of
@@ -26,8 +30,9 @@
 // (numerics::ratio_of_means): a block that never visits N has w_b(N) = 0
 // instead of an undefined block mean.  The sector fractions
 // P(N) = sum_b w_b(N) / sum_b w_b(closed) give
-//     F(N + 1) - F(N) = mu_in - T ln[P(N + 1)/P(N)]
-// (the canonical chemical potential at N + 1/2; BPS Sec. III), whose error
+//     F(N + 1) - F(N) = mu_{N+1/2} - T ln[P(N + 1)/P(N)]
+// (the canonical chemical potential at N + 1/2; BPS Sec. III; the known
+// weight is removed exactly, whatever mu_{N+1/2} was), whose error
 // follows from the jackknife error of the ratio of the two sector weights by
 // the delta method, sigma_mu = T sigma_R / R.  The all-sector aggregates are ratios of sums:
 // <E>, <K>, <V> over every closed path (grand-canonical averages), and the
@@ -80,9 +85,17 @@ void Pimc::setup_grand_canonical(const PimcGrandCanonicalSectors& sectors,
         throw std::runtime_error("pimc: a grand-canonical stage needs a worm move with a "
                                  "grand_canonical block");
     const auto& window = *worm_spec->grand_canonical;
-    gc_mu_ = window.chemical_potential;
     gc_n_min_ = static_cast<std::size_t>(window.n_min);
     gc_n_max_ = static_cast<std::size_t>(window.n_max);
+    // mu_in of each pair: the one value repeated, or the list as given.
+    const std::size_t pairs = gc_n_max_ - gc_n_min_;
+    if (window.chemical_potential.size() == 1)
+        gc_mu_.assign(pairs, window.chemical_potential.front());
+    else if (window.chemical_potential.size() == pairs)
+        gc_mu_ = window.chemical_potential;
+    else
+        throw std::logic_error("pimc: a grand-canonical stage needs one chemical potential or "
+                               "one per pair of sectors");
     if (np_ != gc_n_max_)
         throw std::logic_error("pimc: a grand-canonical stage is built for its capacity n_max = " +
                                std::to_string(gc_n_max_) + ", not " + std::to_string(np_));
@@ -239,7 +252,10 @@ void Pimc::run_grand_canonical() {
         return stop_replicas.load(std::memory_order_relaxed);
     };
 
-    io::Logger::milestone("pimc: grand canonical, mu_in=" + std::to_string(gc_mu_) +
+    std::string mu_text;
+    for (std::size_t i = 0; i < gc_mu_.size(); ++i)
+        mu_text += (i == 0 ? "" : ",") + std::to_string(gc_mu_[i]);
+    io::Logger::milestone("pimc: grand canonical, mu_in per pair=[" + mu_text + "]" +
                           " window=[" + std::to_string(gc_n_min_) + ", " +
                           std::to_string(gc_n_max_) + "] M=" + std::to_string(M_) +
                           " tau=" + std::to_string(cfg_.time_step) + " beta=" +
@@ -266,34 +282,57 @@ void Pimc::run_grand_canonical() {
                                      std::to_string(s) + "; provide a finite-action initial path");
     }
 
-    // ── Equilibration: tune C towards a 50 % closed fraction ──
+    // ── Equilibration: one C for every replica, tuned towards a 50 % closed
+    // fraction ──
+    // C does not enter the weights of Z (BPS Sec. III), so every C samples the
+    // same P(N); it sets how often a replica opens a worm, and so how often it
+    // can change N.  Tuned per replica from its own blocks, C followed the long
+    // G excursions of that replica (the gap walking back over the slices before
+    // it can close): a block spent mostly in G halves C, and twenty such blocks
+    // left replicas whose C was 10^5 times smaller than the others' and that
+    // never opened again, keeping their initial N.  The closed fraction pooled
+    // over the replicas averages those excursions out; after each block every
+    // replica takes the one tuned C.  The pooled counts are summed in replica
+    // order, so the tuned C does not depend on the thread count.
     io::Logger::milestone("pimc: equilibration " + std::to_string(n_eq) + " blocks");
-    #pragma omp parallel for schedule(dynamic) num_threads(n_threads)
-    for (int s = 0; s < samples; ++s) {
-        const auto r = static_cast<std::size_t>(s);
-        try {
-            auto& worm = static_cast<WormBase&>(*moves_[r][worm_index]);
-            for (int b = 0; b < n_eq && !stopped(); ++b) {
-                std::size_t closed_attempts = 0;
+    auto* lead = dynamic_cast<GrandCanonicalWormMove*>(moves_[0][worm_index].get());
+    if (lead == nullptr)
+        throw std::logic_error("pimc: a grand-canonical stage needs the grand-canonical worm");
+    std::vector<std::size_t> closed_attempts(n_replicas, 0);  // [replica], this block
+    for (int b = 0; b < n_eq && !stopped(); ++b) {
+        #pragma omp parallel for schedule(dynamic) num_threads(n_threads)
+        for (int s = 0; s < samples; ++s) {
+            const auto r = static_cast<std::size_t>(s);
+            try {
+                std::size_t closed = 0;
                 for (int st = 0; st < steps && !stopped(); ++st)
                     for (int ss = 0; ss < sub_steps; ++ss) {
                         if (paths_[r].is_open()) {
                             attempt(r, worm_index);
                             continue;
                         }
-                        ++closed_attempts;
+                        ++closed;
                         attempt(r, select_move(rngs_[r]));
                     }
-                const double total = static_cast<double>(steps) * sub_steps;
-                const double closed = static_cast<double>(closed_attempts) / total;
-                worm.tune_constant(closed, 1.0 - closed, 1.0);
+                closed_attempts[r] = closed;
+            } catch (...) {
+                replica_errors[r] = std::current_exception();
+                stop_replicas.store(true, std::memory_order_relaxed);
             }
-        } catch (...) {
-            replica_errors[r] = std::current_exception();
-            stop_replicas.store(true, std::memory_order_relaxed);
         }
+        detail::rethrow_replica_error(replica_errors, "equilibration");
+        // A fixed C (given in the YAML) is never tuned; a C still unset (no
+        // open or insert attempted yet) cannot be.
+        if (!lead->tunes_constant() || !(lead->worm_constant() > 0.0)) continue;
+        std::size_t pooled = 0;
+        for (const std::size_t c : closed_attempts) pooled += c;
+        const double closed = static_cast<double>(pooled) /
+                              (static_cast<double>(steps) * sub_steps * static_cast<double>(samples));
+        lead->tune_constant(closed, 1.0 - closed, 1.0);
+        for (std::size_t r = 1; r < n_replicas; ++r)
+            static_cast<GrandCanonicalWormMove&>(*moves_[r][worm_index])
+                .set_worm_constant(lead->worm_constant());
     }
-    detail::rethrow_replica_error(replica_errors, "equilibration");
 
     // ── Accumulation ──
     io::Logger::milestone("pimc: accumulation " + std::to_string(n_acc) + " blocks");
@@ -501,7 +540,7 @@ void Pimc::run_grand_canonical() {
 
     // Sector counts, transitions and cycle fractions, summed in replica order.
     gc_result_ = PimcGrandCanonicalResult{};
-    gc_result_.chemical_potential_input = gc_mu_;
+    gc_result_.mu_input = gc_mu_;
     gc_result_.n_min = gc_n_min_;
     gc_result_.n_max = gc_n_max_;
     gc_result_.sectors.assign(n_sectors, {});
@@ -600,7 +639,7 @@ void Pimc::finalize_grand_canonical() {
         const auto weights = numerics::ratio_of_means(gc_sector_blocks_[i + 1][kSectorWeight],
                                                       gc_sector_blocks_[i][kSectorWeight]);
         if (!(weights.mean > 0.0) || !std::isfinite(weights.mean)) continue;
-        gc_result_.mu[i] = gc_mu_ - temperature * std::log(weights.mean);
+        gc_result_.mu[i] = gc_mu_[i] - temperature * std::log(weights.mean);
         gc_result_.mu_error[i] = temperature * weights.error / weights.mean;
     }
     const auto n_mean = numerics::ratio_of_means(block_gc_n_, block_closed_);
@@ -617,15 +656,16 @@ void Pimc::write_grand_canonical(RunResult& r) const {
     r.add_metadata("grand_canonical",
                    "worm with spare rows and gaps (Boninsegni, Prokof'ev & Svistunov, PRE 74, "
                    "036701 (2006)); closed N in [gc_n_min, gc_n_max] sampled with weight "
-                   "exp(beta mu_in N) Z_N");
+                   "exp(beta sum_{n_min <= K < N} gc_mu_input[K - n_min]) Z_N");
     r.add_metadata("gc_aggregates",
                    "energy, kinetic, potential: grand-canonical averages over every closed path; "
                    "winding2 and winding_tensor_*: <N O>/<N> over closed paths (acc_block_winding* "
                    "hold N O, acc_block_gc_N_mean holds N); per-sector values under gc_N<n>_*");
     r.add_metadata("gc_mu_definition",
-                   "gc_mu[i] = mu_in - T ln[P(N+1)/P(N)] = F(N+1) - F(N) at N = gc_mu_N[i] - 1/2; "
-                   "gc_mu_reliable needs >= 100 transitions between the two sectors");
-    r.add_scalar("gc_chemical_potential_input", gc_result_.chemical_potential_input);
+                   "gc_mu[i] = gc_mu_input[i] - T ln[P(N+1)/P(N)] = F(N+1) - F(N) at "
+                   "N = gc_mu_N[i] - 1/2; gc_mu_reliable needs >= 100 transitions between the "
+                   "two sectors");
+    r.add_series("gc_mu_input", gc_result_.mu_input);  // [pair], like gc_mu_N
     r.add_scalar("gc_n_min", static_cast<double>(gc_result_.n_min));
     r.add_scalar("gc_n_max", static_cast<double>(gc_result_.n_max));
     r.add_scalar("gc_N_mean", gc_result_.n_mean);
@@ -693,8 +733,15 @@ void Pimc::write_grand_canonical(RunResult& r) const {
 }
 
 void Pimc::summarize_grand_canonical(std::ostringstream& ss) const {
-    ss << "\npimc: grand canonical, mu_in = " << gc_result_.chemical_potential_input
-       << ", window [" << gc_result_.n_min << ", " << gc_result_.n_max << "], <N> = "
+    ss << "\npimc: grand canonical, mu_in = ";
+    const auto& mu_in = gc_result_.mu_input;
+    const bool one_mu = std::all_of(mu_in.begin(), mu_in.end(),
+                                    [&](double m) { return m == mu_in.front(); });
+    if (mu_in.empty()) ss << "(one sector)";
+    else if (one_mu) ss << mu_in.front();
+    for (std::size_t i = 0; !one_mu && i < mu_in.size(); ++i)
+        ss << (i == 0 ? "[" : ", ") << mu_in[i] << (i + 1 == mu_in.size() ? "] (per pair)" : "");
+    ss << ", window [" << gc_result_.n_min << ", " << gc_result_.n_max << "], <N> = "
        << gc_result_.n_mean << " +/- " << gc_result_.n_mean_error
        << "; E, K, V above are grand-canonical averages";
     for (const PimcSectorResult& s : gc_result_.sectors) {
