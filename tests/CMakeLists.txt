@@ -496,11 +496,13 @@ add_executable(test_potential_gradient
     test_fsc_fit_derivative.cpp
     test_potential_continuity.cpp
     test_screened_table_continuity.cpp
+    test_configuration_gradient.cpp
     ${SRC_DIR}/hamiltonian/hamiltonian.cpp
     ${SRC_DIR}/hamiltonian/kinetic.cpp
     ${SRC_DIR}/hamiltonian/coulomb.cpp
     ${SRC_DIR}/hamiltonian/harmonic_trap.cpp
     ${SRC_DIR}/hamiltonian/moire.cpp
+    ${SRC_DIR}/hamiltonian/inverse_power.cpp
     ${SRC_DIR}/hamiltonian/rytova_keldysh.cpp
     ${SRC_DIR}/hamiltonian/ewald_term.cpp
     ${SRC_DIR}/hamiltonian/screened_coulomb.cpp
@@ -711,6 +713,7 @@ set(APP_SOURCES
     ${SRC_DIR}/pimc/action.cpp
     ${SRC_DIR}/pimc/fixed_node_restriction.cpp
     ${SRC_DIR}/pimc/pair_product_action.cpp
+    ${SRC_DIR}/pimc/takahashi_imada_action.cpp
     ${SRC_DIR}/numerics/finite_grid_pair.cpp
     ${SRC_DIR}/pimc/move.cpp
     ${SRC_DIR}/pimc/grand_canonical_worm.cpp
@@ -1253,6 +1256,7 @@ add_executable(test_pimc
     ${SRC_DIR}/pimc/action.cpp
     ${SRC_DIR}/pimc/fixed_node_restriction.cpp
     ${SRC_DIR}/pimc/pair_product_action.cpp
+    ${SRC_DIR}/pimc/takahashi_imada_action.cpp
     ${SRC_DIR}/numerics/finite_grid_pair.cpp
     ${SRC_DIR}/pimc/move.cpp
     ${SRC_DIR}/pimc/grand_canonical_worm.cpp
@@ -1279,7 +1283,7 @@ target_compile_options(test_pimc PRIVATE -Wall -Wextra -Wpedantic -fopenmp-simd)
 # Independent contracts share the unit source set, not the production App.
 get_target_property(PIMC_UNIT_SOURCES test_pimc SOURCES)
 list(REMOVE_ITEM PIMC_UNIT_SOURCES test_pimc.cpp)
-foreach(contract action contract incremental_moves exchange permutation joint worm grand_canonical validation_fast)
+foreach(contract action contract incremental_moves exchange permutation joint worm grand_canonical validation_fast takahashi_imada)
     if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test_pimc_${contract}.cpp")
         continue()
     endif()
@@ -1299,6 +1303,11 @@ if(TARGET test_pimc_grand_canonical)
 endif()
 if(TARGET test_pimc_permutation)
     target_sources(test_pimc_permutation PRIVATE ${SRC_DIR}/estimators/density.cpp)
+endif()
+# The Takahashi-Imada action is checked on the study's moire + dipolar terms.
+if(TARGET test_pimc_takahashi_imada)
+    target_sources(test_pimc_takahashi_imada PRIVATE
+        ${SRC_DIR}/hamiltonian/moire.cpp ${SRC_DIR}/hamiltonian/inverse_power.cpp)
 endif()
 if(TARGET test_pimc_action)
     target_sources(test_pimc_action PRIVATE
@@ -1328,6 +1337,7 @@ add_executable(test_pimc_physics
     test_pimc_pair_product.cpp
     test_pimc_fixed_node.cpp
     test_pimc_grand_canonical_driver.cpp
+    test_pimc_takahashi_imada_physics.cpp
     ${SRC_DIR}/io/config_writer.cpp
     ${APP_SOURCES}
 )
@@ -1449,6 +1459,7 @@ catch_discover_tests(test_pimc_permutation)
 catch_discover_tests(test_pimc_joint)
 catch_discover_tests(test_pimc_worm)
 catch_discover_tests(test_pimc_grand_canonical)
+catch_discover_tests(test_pimc_takahashi_imada)
 catch_discover_tests(test_pimc_validation_fast)
 catch_discover_tests(test_pimc_checkpoint)
 if(TARGET test_electron_hole_proximity)

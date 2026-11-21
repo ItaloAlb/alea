@@ -9,7 +9,7 @@
 // ── What is sampled ─────────────────────────────────────────────────────────
 // Closed paths of N bosons in [n_min, n_max] with weight
 //     P(N) ∝ e^{beta sum_{n_min <= K < N} mu_{K+1/2}} Z_N,
-// Z_N the canonical finite-M primitive partition function and mu_{K+1/2} the
+// Z_N the canonical finite-M partition function of the action and mu_{K+1/2} the
 // input mu of the pair K <-> K + 1: one value for all pairs is BPS's
 // e^{beta mu_in N}; one per pair is a multicanonical weight of N (Berg &
 // Neuhaus, Phys. Rev. Lett. 68, 9 (1992)) that keeps every sector of a wide
@@ -137,8 +137,8 @@ void Pimc::setup_grand_canonical(const PimcGrandCanonicalSectors& sectors,
             throw std::logic_error("pimc: the sector action of N = " + std::to_string(n) +
                                    " must act on N particles");
         if (!a.supports_free_bridge() || !a.slice_local_deltas() || !a.restricted_blocks().empty())
-            throw std::runtime_error("pimc: a grand-canonical run needs the primitive action in "
-                                     "every sector");
+            throw std::runtime_error("pimc: a grand-canonical run needs a slice-local action "
+                                     "(potential: primitive or takahashi_imada) in every sector");
         for (std::size_t d = 0; d < dim_; ++d)
             if (a.mass(0, d) != base_action.mass(0, d))
                 throw std::logic_error("pimc: the sector actions must share the species' mass");

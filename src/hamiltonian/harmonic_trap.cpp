@@ -102,6 +102,31 @@ double HarmonicTrap::bead_energy(const ParticleBatch& configs, std::size_t,
     return energy;
 }
 
+void HarmonicTrap::configuration_gradient(const ParticleBatch& configs, std::size_t w,
+    std::size_t p, std::size_t n_rows, std::size_t skip, std::span<double> out) const {
+    const std::size_t dim = configs.dim(), nw = configs.num_walkers();
+    const std::size_t rows = std::min(half_k_.size() / dim, n_rows);
+    const auto positions = configs.positions(); // [np*dim*nw]
+    for (std::size_t j = 0; j < rows; ++j) {
+        if (!counted_row(j, p, n_rows, skip)) continue;
+        for (std::size_t d = 0; d < dim; ++d)
+            out[j * dim + d] += 2.0 * half_k_[j * dim + d] *
+                                (positions[(j * dim + d) * nw + w] - center_[d]);
+    }
+}
+
+void HarmonicTrap::bead_gradient(const ParticleBatch& configs, std::size_t, std::size_t p,
+    std::span<const double> position, std::size_t, std::size_t, std::span<double> self,
+    std::span<double>) const {
+    const std::size_t dim = configs.dim();
+    if ((p + 1) * dim > half_k_.size()) return;
+    double candidate[SimulationCell::kMaxDim];
+    for (std::size_t d = 0; d < dim; ++d) candidate[d] = position[d];
+    configs.cell().wrap(candidate);
+    for (std::size_t d = 0; d < dim; ++d)
+        self[d] += 2.0 * half_k_[p * dim + d] * (candidate[d] - center_[d]);
+}
+
 // One changed particle: O(dim), preserving wrapped one-body semantics.
 double HarmonicTrap::delta_potential_particle(ParticleBatch& configs,
     std::size_t p, std::size_t k, std::span<const double> proposed,

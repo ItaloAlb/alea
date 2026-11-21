@@ -260,7 +260,11 @@ from the sectors where it stopped.
 A `Move` proposes a change, asks the `Action` for $\Delta S$, and accepts or
 rejects. The action's components are the primitive kinetic springs, the
 primitive potential $\tau V$ (evaluated through the `Hamiltonian`), the
-pair-product potential, and the fixed-node restriction. The energy estimators
+Takahashi–Imada potential $\tau V + \tau^3 W$ (which squares the total force
+on each particle, from the Hamiltonian's per-configuration gradients
+`configuration_gradient` and `bead_gradient`, which can leave rows out as a
+grand-canonical slice needs), the pair-product potential, and the fixed-node
+restriction. The energy estimators
 (thermodynamic, centroid virial, periodic virial) are sums of per-component
 contributions (`measure_thermo`, `measure_open_centroid`,
 `measure_periodic_virial`); a component that does not admit a virial

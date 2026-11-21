@@ -1,0 +1,54 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# 1-D quantum harmonic oscillator with the Takahashi-Imada action.
+#
+# One distinguishable particle in V = ½ω²x², ω = 1, m = 1, β = 2, M = 4
+# slices (τ = 0.5).  Each slice carries τV + τ³|V'|²/24 = τ·½ω_eff²x² with
+# ω_eff² = ω²(1 + τ²ω²/12), so the M-slice path integral is a Gaussian ring:
+#   ln Z = -(1/2) Σ_{j=0}^{M-1} ln(4 sin²(πj/M) + x),  x = τ²ω²(1 + τ²ω²/12),
+# and E = -∂_β ln Z at fixed M, <V> = (1/β) ∂_g(-ln Z) for ω² → gω².
+#   E = 0.6562772779106,  <V> = <K> = 0.3281386390
+# (primitive at this M: E = 0.6405228757944; continuum 0.6565176427497).
+project:
+  name: pimc_ho_1d_takahashi_imada
+  seed: 4417
+
+system:
+  lattice:
+    type: open
+    dimension: 1
+    L: 3.0
+  particles:
+    - name: p
+      group: particle
+      type: boltzmannon
+      mass: 1.0
+      charge: 0
+      up: 1
+      down: 0
+
+hamiltonian:
+  terms:
+    - type: harmonic_trap
+      omega: 1.0
+
+action:
+  - kinetic: primitive
+  - potential: takahashi_imada
+
+qmc:
+  - method: pimc
+    threads: 2
+    samples: 64
+    time_step: 0.5
+    beta: 2.0
+    equilibration_blocks: 100
+    accumulation_blocks: 1600
+    steps_per_block: 20
+    sub_steps: 1
+    moves:
+      - bisection: { levels: 1, weight: 1.0 }
+      - centroid:  { step: 0.6, weight: 1.0 }
+    energy: thermodynamic

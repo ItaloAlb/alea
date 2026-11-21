@@ -13,6 +13,7 @@
 #include "pimc/fixed_node_restriction.h"
 #include "pimc/primitive_action.h"
 #include "pimc/pair_product_action.h"
+#include "pimc/takahashi_imada_action.h"
 #include "wavefunction/trial_wavefunction.h"
 
 namespace alea {
@@ -61,6 +62,13 @@ inline void build_action_component(const io::ActionItemSpec& spec,
                 one_body.add_component(component->clone());
         action.add_component(
             std::make_unique<PrimitivePotentialAction>(groups, one_body));
+        return;
+    }
+    // `- potential: takahashi_imada`: tau V + tau^3 W per slice in place of
+    // the primitive tau V (takahashi_imada_action.h).
+    if (spec.component == "potential" && spec.form == "takahashi_imada") {
+        action.add_component(
+            std::make_unique<TakahashiImadaPotentialAction>(groups, ham, dim));
         return;
     }
     if (spec.form != "primitive")

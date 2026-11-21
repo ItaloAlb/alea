@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Grand-canonical worm with the Takahashi-Imada action, window {1, 2}: bosons
+# of mass 1 in a 2-D trap (omega = 1) with C / r^3, C = 1, at beta = 2 and
+# M = 8 (tau = 0.25).  The exact values at this M come from
+#   python tests/references/inverse_power_trap_primitive.py --beta 2 --slices 8
+#          --omega 1 --strength 1 --exponent 3 --action takahashi_imada
+#   F(2) - F(1) = 1.843217428155, E(1) = 1.313004021710, E(2) = 3.432125016076
+# (the primitive action at this M gives 1.807635592069, 1.304760176536 and
+# 3.346367849628).  test_pimc_takahashi_imada_physics.cpp.
+project: { name: pimc_gc_trapped_dipoles_takahashi_imada, seed: 20261121, output: false, log: false }
+system:
+  lattice: { type: open, dimension: 2 }
+  particles:
+    - { name: x, group: bosons, type: bosons, mass: 1.0, charge: 0, up: 1, down: 0 }
+hamiltonian:
+  terms:
+    - { type: harmonic_trap, omega: 1.0 }
+    - { type: inverse_power, pair: [bosons, bosons], strength: 1.0, exponent: 3 }
+action:
+  - kinetic: primitive
+  - potential: takahashi_imada
+qmc:
+  - method: pimc
+    threads: 4
+    samples: 4
+    beta: 2.0
+    time_step: 0.25
+    equilibration_blocks: 20
+    accumulation_blocks: 400
+    steps_per_block: 100
+    sub_steps: 50
+    moves:
+      - bisection: { levels: 2, weight: 2 }
+      - centroid: { step: 0.5, weight: 1 }
+      - worm: { group: bosons, max_length: 4, swap_length: 3, weight: 2,
+                grand_canonical: { chemical_potential: 1.84, n_min: 1, n_max: 2,
+                                   insertion_width: 0.8 } }
+    energy: thermodynamic

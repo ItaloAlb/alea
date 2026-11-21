@@ -121,6 +121,29 @@ double CoulombTerm::bead_energy(const ParticleBatch& configs, std::size_t w,
         [&](double r) { return coefficient / std::sqrt(r * r + d2_); }, counted);
 }
 
+void CoulombTerm::configuration_gradient(const ParticleBatch& configs, std::size_t w,
+    std::size_t p, std::size_t n_rows, std::size_t skip, std::span<double> out) const {
+    const double coefficient = group_a_.charge *
+        (is_intragroup_ ? group_a_.charge : group_b_.charge) * inv_epsilon_;
+    radial_configuration_gradient(configs, w, p, n_rows, skip, group_a_, group_b_,
+        [&](double r) {
+            const double radius2 = r * r + d2_;
+            return -coefficient / (radius2 * std::sqrt(radius2));
+        }, out);
+}
+
+void CoulombTerm::bead_gradient(const ParticleBatch& configs, std::size_t w, std::size_t p,
+    std::span<const double> position, std::size_t n_rows, std::size_t skip,
+    std::span<double> self, std::span<double> rows) const {
+    const double coefficient = group_a_.charge *
+        (is_intragroup_ ? group_a_.charge : group_b_.charge) * inv_epsilon_;
+    radial_bead_gradient(configs, w, p, position, n_rows, skip, group_a_, group_b_,
+        [&](double r) {
+            const double radius2 = r * r + d2_;
+            return -coefficient / (radius2 * std::sqrt(radius2));
+        }, self, rows);
+}
+
 // Changed pairs only: O(N) radial evaluations, committed batch untouched.
 double CoulombTerm::delta_potential_particle(ParticleBatch& configs,
     std::size_t p, std::size_t k, std::span<const double> proposed,

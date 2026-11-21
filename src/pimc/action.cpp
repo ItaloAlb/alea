@@ -189,14 +189,13 @@ ActionThermoMeasure PrimitiveKineticAction::measure_periodic_virial(
     return {kinetic, 0.0, kinetic};
 }
 
-PrimitivePotentialAction::PrimitivePotentialAction(
-    std::span<const ParticleGroup> groups, const Hamiltonian& ham)
-    : ham_(ham.clone()) {
+void refuse_unnormalizable_pairs(std::span<const ParticleGroup> groups,
+                                 const Hamiltonian& ham, const std::string& action) {
     // Test actual nonempty group pairs; a one-particle self-group has no pair.
     // Attractive 1/r yields exp(+tau*a/r), nonintegrable for every positive
     // tau. Attractive RK logs are conservatively unsupported: a pair requires
     // tau*|qa qb|/(epsilon*r0)<d, and clusters impose stronger conditions.
-    for (const auto& component : ham_.components()) {
+    for (const auto& component : ham.components()) {
         if (!component->is_potential())
             continue;
         for (std::size_t a = 0; a < groups.size(); ++a)
@@ -206,17 +205,23 @@ PrimitivePotentialAction::PrimitivePotentialAction(
                     continue;
                 if (component->coulomb_cusp_residue(groups[a], groups[b]) < 0.0)
                     throw std::invalid_argument(
-                        "primitive action: attractive 1/r pole in " +
+                        action + ": attractive 1/r pole in " +
                         component->name() +
                         "; use a finite layer separation or pair action");
                 if (!component->primitive_pair_admissible(groups[a], groups[b]))
                     throw std::invalid_argument(
-                        "primitive action: unsupported attractive singularity "
+                        action + ": unsupported attractive singularity "
                         "in " +
                         component->name() +
                         "; use a finite layer separation or pair action");
             }
     }
+}
+
+PrimitivePotentialAction::PrimitivePotentialAction(
+    std::span<const ParticleGroup> groups, const Hamiltonian& ham)
+    : ham_(ham.clone()) {
+    refuse_unnormalizable_pairs(groups, ham_, "primitive action");
 }
 PrimitivePotentialAction::PrimitivePotentialAction(
     const PrimitivePotentialAction& other)

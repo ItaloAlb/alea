@@ -679,11 +679,12 @@ struct PimcSpec : RunSpec {
 // `hamiltonian:`): which piecewise component the Euclidean action includes.
 //   kinetic: primitive     free-particle springs (required by any path integral)
 //   potential: primitive   tau*V(R_k) from the Hamiltonian's potential terms
+//   potential: takahashi_imada   tau*V + tau^3*W, W = sum (1/24m)|grad V|^2
 //   primitive: {}          shorthand for both (the default when `action:` is
 //                          omitted; the snapshot records it explicitly)
 struct ActionItemSpec {
     std::string component;   // "kinetic" | "potential" | "primitive" | "pair_product" | "nodes"
-    std::string form = "primitive";  // "wavefunction" for nodes
+    std::string form = "primitive";  // "takahashi_imada" (potential); "wavefunction" for nodes
     double extent = 0.0;     // explicit finite-grid relative endpoint half-width
     int grid_points = 17;
 };

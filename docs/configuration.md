@@ -398,11 +398,34 @@ a single key.
 | `- primitive: {}` | Kinetic springs plus $\tau V$ per slice. **Default** when `action:` is absent |
 | `- kinetic: primitive` | The kinetic (spring) part alone |
 | `- potential: primitive` | The $\tau V$ part alone |
+| `- potential: takahashi_imada` | $\tau V + \tau^3 W$ per slice, $W = \frac{1}{24}\sum_{j,d} m_{jd}^{-1} (\partial V/\partial r_{jd})^2$ (Takahashi–Imada). Use with `- kinetic: primitive`. Every potential term must supply its forces: `moire`, `inverse_power`, `harmonic_trap` and `coulomb` do, `rytova_keldysh`, `screened_coulomb` and Ewald sums do not yet. Only the thermodynamic energy estimator |
 | `- pair_product: { extent: <float>, grid_points: 17, form: finite_grid }` | Numerical pair-product action on a finite grid (experimental). `extent` is required; `grid_points` is odd, 5 to 33. Replaces the primitive potential |
 | `- nodes: wavefunction` | Fixed-node restriction: every path keeps the sign of each determinant of the `wavefunction:` block's `slater` items on all of its slices (time-independent nodes). Requires `statistics: fixed_node` in the PIMC stage, real determinants, and no `optimizer` stage. Gaussian orbitals in a periodic cell are refused when their minimum-image fold neglects more than $10^{-6}$ of the peak |
 
 Each of kinetic, potential and nodes may be given at most once (`primitive`
 counts as both kinetic and potential).
+
+**Takahashi–Imada.** The trace of $[e^{-\tau T} e^{-\tau V - \tau^3 W}]^M$
+agrees with $\mathrm{Tr}\, e^{-\beta H}$ to $O(\tau^4)$ for a smooth potential
+(M. Takahashi and M. Imada, *J. Phys. Soc. Jpn.* **53**, 3765 (1984)), so the
+free energy, $\mu$ and the thermodynamic energy converge much faster in $\tau$
+than with the primitive action. $V$ is the total potential, so $W$ includes
+the cross terms between the external and pair forces. Three limits:
+observables measured at single slices (density, $S(k)$, Bragg intensities)
+keep an $O(\tau^2)$ error; a singular pair core does not reach the $\tau^4$
+regime at practical $\tau$ (for two $C/r^3$ dipoles in a trap, $C = 1$,
+$\beta = 2$, the error in $\ln Z$ falls by 3.2 and 3.7 per halving of $\tau$
+from $M = 50$ to 200, and is 2.8 to 4.3 times below the primitive one); and
+minimum-image pair forces jump across the Wigner–Seitz
+faces of a periodic cell. Check the convergence with a time-step scan. A
+bead move costs $O(N^2)$ instead of $O(N)$, since it changes the force on
+every particle it interacts with.
+
+```yaml
+action:
+  - kinetic: primitive
+  - potential: takahashi_imada
+```
 
 With `nodes`, the run estimates the fixed-node ground state of the
 determinant's nodal surface only as $\beta \to \infty$. What the restriction

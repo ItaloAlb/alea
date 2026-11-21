@@ -75,6 +75,85 @@ double radial_bead_energy(const ParticleBatch& configs, std::size_t w, std::size
     return energy;
 }
 
+// The rows of a configuration a bead-level evaluation counts: [0, n_rows)
+// other than p and skip (HamiltonianComponent::bead_energy's R).
+inline bool counted_row(std::size_t j, std::size_t p, std::size_t n_rows,
+                        std::size_t skip) noexcept {
+    return j < n_rows && j != p && j != skip;
+}
+
+// Forces of a radial pair term V = Σ v(r_ij) between the rows of R that its
+// groups contain, at configuration w (HamiltonianComponent::
+// configuration_gradient): with Δ = r_i − r_j at minimum image and r = |Δ|,
+//   ∂V/∂r_i = (v'(r)/r) Δ = −∂V/∂r_j.
+// `dv_over_r(r)` returns v'(r)/r, finite at r = 0 when v is smooth there (a
+// layer offset).  Separations as min_image_dist2 computes them for the
+// distance tables.  out [n_particles * dim], accumulated.  O(N²).
+template<class DvOverR>
+void radial_configuration_gradient(const ParticleBatch& configs, std::size_t w,
+    std::size_t p, std::size_t n_rows, std::size_t skip, const ParticleGroup& a,
+    const ParticleGroup& b, DvOverR dv_over_r, std::span<double> out) {
+    const auto dim = configs.dim(), nw = configs.num_walkers();
+    const auto positions = configs.positions(); // [np*dim*nw]
+    auto pair = [&](std::size_t i, std::size_t j) {
+        double delta[SimulationCell::kMaxDim];
+        for (std::size_t d = 0; d < dim; ++d)
+            delta[d] = positions[i * dim * nw + d * nw + w] - positions[j * dim * nw + d * nw + w];
+        const double g = dv_over_r(std::sqrt(configs.cell().min_image_dist2(delta)));
+        for (std::size_t d = 0; d < dim; ++d) {
+            out[i * dim + d] += g * delta[d];
+            out[j * dim + d] -= g * delta[d];
+        }
+    };
+    if (a == b) {
+        for (std::size_t i = a.first; i < a.last; ++i) {
+            if (!counted_row(i, p, n_rows, skip)) continue;
+            for (std::size_t j = i + 1; j < a.last; ++j)
+                if (counted_row(j, p, n_rows, skip)) pair(i, j);
+        }
+    } else {
+        for (std::size_t i = a.first; i < a.last; ++i) {
+            if (!counted_row(i, p, n_rows, skip)) continue;
+            for (std::size_t j = b.first; j < b.last; ++j)
+                if (counted_row(j, p, n_rows, skip)) pair(i, j);
+        }
+    }
+}
+
+// The force change of a radial pair term when row p at `position` (wrapped
+// into the cell) joins R (HamiltonianComponent::bead_gradient): for each
+// partner j of R, with Δ = r − r_j at minimum image,
+//   self += (v'/r) Δ,   rows[j] −= (v'/r) Δ.
+// self [dim], rows [n_particles * dim], accumulated.  O(N).
+template<class DvOverR>
+void radial_bead_gradient(const ParticleBatch& configs, std::size_t w, std::size_t p,
+    std::span<const double> position, std::size_t n_rows, std::size_t skip,
+    const ParticleGroup& a, const ParticleGroup& b, DvOverR dv_over_r,
+    std::span<double> self, std::span<double> rows) {
+    const auto dim = configs.dim(), nw = configs.num_walkers();
+    const auto positions = configs.positions(); // [np*dim*nw]
+    double candidate[SimulationCell::kMaxDim];
+    for (std::size_t d = 0; d < dim; ++d) candidate[d] = position[d];
+    configs.cell().wrap(candidate);
+    auto pair = [&](std::size_t j) {
+        if (!counted_row(j, p, n_rows, skip)) return;
+        double delta[SimulationCell::kMaxDim];
+        for (std::size_t d = 0; d < dim; ++d)
+            delta[d] = candidate[d] - positions[j * dim * nw + d * nw + w];
+        const double g = dv_over_r(std::sqrt(configs.cell().min_image_dist2(delta)));
+        for (std::size_t d = 0; d < dim; ++d) {
+            self[d] += g * delta[d];
+            rows[j * dim + d] -= g * delta[d];
+        }
+    };
+    if (a == b) {
+        if (a.contains(p)) for (std::size_t j = a.first; j < a.last; ++j) pair(j);
+    } else {
+        if (a.contains(p)) for (std::size_t j = b.first; j < b.last; ++j) pair(j);
+        if (b.contains(p)) for (std::size_t j = a.first; j < a.last; ++j) pair(j);
+    }
+}
+
 // Leading short-range singularity V_ab(r) ≈ C / r^p of a pair potential that is
 // stronger than the 1/r pole coulomb_cusp_residue reports (p > 1).
 // coefficient == 0 means the pair has no such core.
@@ -193,6 +272,36 @@ public:
                                std::size_t /*p*/, std::span<const double> /*position*/,
                                std::size_t /*n_rows*/, std::size_t /*skip*/) const {
         throw std::logic_error(name() + ": no grand-canonical bead energy");
+    }
+
+    // ── Forces at one configuration (opt-in) ──
+    // For a path-integral action with a |∇V|² term (Takahashi–Imada), which
+    // needs every force of a slice, also with rows left out (a grand-canonical
+    // slice, or the rows other than a moved bead).  R is the rows [0, n_rows)
+    // other than p and skip (npos: none), as in bead_energy.
+    //   configuration_gradient: out[j*dim + d] += ∂V(R)/∂r_{j,d} for every row
+    //     j of R at configuration w; the other rows are untouched.
+    //   bead_gradient: the change when row p at `position` joins R:
+    //     self[d] += ∂V(R ∪ {r})/∂r_d, and for every j of R
+    //     rows[j*dim + d] += ∂[V(R ∪ {r}) − V(R)]/∂r_{j,d}.
+    // Stored positions are read as evaluate_potential reads them, `position`
+    // is wrapped into the cell, and pair separations are minimum image as
+    // min_image_dist2 computes them.  N-dependent constants (a continuum
+    // tail) have no gradient.  out and rows [n_particles * dim], self [dim].
+    // Read-only.  A pair term costs O(N²) and O(N).  This is the per-
+    // configuration counterpart of evaluate_potential_gradient (batched over
+    // walkers, every particle counted), which tests use as its oracle.
+    [[nodiscard]] virtual bool supports_configuration_gradient() const noexcept { return false; }
+    virtual void configuration_gradient(const ParticleBatch& /*configs*/, std::size_t /*w*/,
+                                        std::size_t /*p*/, std::size_t /*n_rows*/,
+                                        std::size_t /*skip*/, std::span<double> /*out*/) const {
+        throw std::logic_error(name() + ": no configuration gradient");
+    }
+    virtual void bead_gradient(const ParticleBatch& /*configs*/, std::size_t /*w*/,
+                               std::size_t /*p*/, std::span<const double> /*position*/,
+                               std::size_t /*n_rows*/, std::size_t /*skip*/,
+                               std::span<double> /*self*/, std::span<double> /*rows*/) const {
+        throw std::logic_error(name() + ": no bead gradient");
     }
 
     // True when this term is a potential V(R): a function of the particle

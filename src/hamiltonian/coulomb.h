@@ -64,6 +64,15 @@ public:
     double bead_energy(const ParticleBatch&, std::size_t, std::size_t,
         std::span<const double>, std::size_t, std::size_t) const override;
 
+    // v'(r)/r = −q_a q_b / (ε (r² + d_layer²)^{3/2}), intra- and inter-group,
+    // at the minimum image (the sampled truncated interaction, not Ewald).
+    bool supports_configuration_gradient() const noexcept override { return true; }
+    void configuration_gradient(const ParticleBatch&, std::size_t, std::size_t, std::size_t,
+                                std::size_t, std::span<double>) const override;
+    void bead_gradient(const ParticleBatch&, std::size_t, std::size_t, std::span<const double>,
+                       std::size_t, std::size_t, std::span<double>,
+                       std::span<double>) const override;
+
     void evaluate_potential(const ParticleBatch& batch, std::span<double> v_out,
                             std::size_t w_begin = 0,
                             std::size_t w_end = npos) const override;

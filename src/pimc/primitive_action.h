@@ -29,6 +29,12 @@
 #include "population/particle_group.h"
 
 namespace alea {
+// Refuses the attractive singularities whose e^{-tau V} has no normalizable
+// collision measure (an attractive 1/r pole; components that decline
+// primitive_pair_admissible).  `action` names the caller in the message.
+void refuse_unnormalizable_pairs(std::span<const ParticleGroup> groups,
+                                 const Hamiltonian& ham, const std::string& action);
+
 class PrimitiveKineticAction final : public ActionComponent {
 public:
     PrimitiveKineticAction(std::span<const ParticleGroup> groups, std::size_t dim);

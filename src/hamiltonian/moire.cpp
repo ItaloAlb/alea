@@ -130,6 +130,40 @@ void MoireTerm::evaluate_potential_gradient(const ParticleBatch& batch,
             }
 }
 
+void MoireTerm::configuration_gradient(const ParticleBatch& configs, std::size_t w,
+    std::size_t p, std::size_t n_rows, std::size_t skip, std::span<double> out) const {
+    const auto nw = configs.num_walkers();
+    const auto positions = configs.positions(); // [np*dim*nw]
+    for (const auto& [first, last] : ranges_)
+        for (std::size_t j = first; j < last; ++j) {
+            if (!counted_row(j, p, n_rows, skip)) continue;
+            for (const auto& g : g_) {
+                double phase = phi_;
+                for (std::size_t d = 0; d < dim_; ++d)
+                    phase += g[d] * positions[(j * dim_ + d) * nw + w];
+                const double scale = -two_Vtilde_ * std::sin(phase);
+                for (std::size_t d = 0; d < dim_; ++d) out[j * dim_ + d] += scale * g[d];
+            }
+        }
+}
+
+void MoireTerm::bead_gradient(const ParticleBatch& configs, std::size_t, std::size_t p,
+    std::span<const double> position, std::size_t, std::size_t, std::span<double> self,
+    std::span<double>) const {
+    bool acts = false;
+    for (const auto& [first, last] : ranges_) acts = acts || (p >= first && p < last);
+    if (!acts) return;
+    double candidate[SimulationCell::kMaxDim];
+    for (std::size_t d = 0; d < dim_; ++d) candidate[d] = position[d];
+    configs.cell().wrap(candidate);
+    for (const auto& g : g_) {
+        double phase = phi_;
+        for (std::size_t d = 0; d < dim_; ++d) phase += g[d] * candidate[d];
+        const double scale = -two_Vtilde_ * std::sin(phase);
+        for (std::size_t d = 0; d < dim_; ++d) self[d] += scale * g[d];
+    }
+}
+
 // V(r) = V0 + 2 Ṽ Σ_i cos(g_i · r + φ) at the wrapped position, as
 // evaluate_potential reads it from the wrapped coordinates.
 double MoireTerm::bead_energy(const ParticleBatch& configs, std::size_t,

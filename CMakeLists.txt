@@ -197,6 +197,7 @@ set(SOURCES
     src/pimc/action.cpp
     src/pimc/fixed_node_restriction.cpp
     src/pimc/pair_product_action.cpp
+    src/pimc/takahashi_imada_action.cpp
     src/numerics/finite_grid_pair.cpp
     src/pimc/move.cpp
     src/pimc/grand_canonical_worm.cpp

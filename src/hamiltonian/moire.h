@@ -68,6 +68,15 @@ public:
     double bead_energy(const ParticleBatch&, std::size_t, std::size_t,
         std::span<const double>, std::size_t, std::size_t) const override;
 
+    // The same G_p for the rows of R in a listed range; a joining bead adds
+    // only its own (one-body: no other row changes).
+    bool supports_configuration_gradient() const noexcept override { return true; }
+    void configuration_gradient(const ParticleBatch&, std::size_t, std::size_t, std::size_t,
+                                std::size_t, std::span<double>) const override;
+    void bead_gradient(const ParticleBatch&, std::size_t, std::size_t, std::span<const double>,
+                       std::size_t, std::size_t, std::span<double>,
+                       std::span<double>) const override;
+
     void evaluate_potential(const ParticleBatch& batch, std::span<double> v_out,
                             std::size_t w_begin = 0,
                             std::size_t w_end = npos) const override;

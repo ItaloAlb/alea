@@ -32,6 +32,14 @@ public:
     double bead_energy(const ParticleBatch&, std::size_t, std::size_t,
         std::span<const double>, std::size_t, std::size_t) const override;
 
+    // The same G for the rows of R; a joining bead adds only its own.
+    bool supports_configuration_gradient() const noexcept override { return true; }
+    void configuration_gradient(const ParticleBatch&, std::size_t, std::size_t, std::size_t,
+                                std::size_t, std::span<double>) const override;
+    void bead_gradient(const ParticleBatch&, std::size_t, std::size_t, std::span<const double>,
+                       std::size_t, std::size_t, std::span<double>,
+                       std::span<double>) const override;
+
     std::string name() const override { return "harmonic_trap"; }
     PairActionRole pair_action_role() const noexcept override { return PairActionRole::one_body; }
 

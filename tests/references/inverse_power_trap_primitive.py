@@ -6,7 +6,8 @@
 
 """inverse_power_trap_primitive.py -- exact finite-M path integral of two
 identical bosons in a 2-D isotropic harmonic trap interacting through C / r^p,
-in the primitive approximation that alea's PIMC samples.
+in the primitive approximation that alea's PIMC samples, or (--action
+takahashi_imada) in the Takahashi-Imada approximation.
 
 Reference for the grand-canonical worm with an interaction: with mass 1 and
 hbar = 1, the window {1, 2} has P(2)/P(1) = e^{beta mu} Z_2 / Z_1, i.e.
@@ -31,6 +32,15 @@ ring does not depend on the mass (rescale x -> sqrt(m) x: the Jacobian cancels
 the rho0 normalizations), so z_cm = Z_1 and
 
     Z_2 / Z_1 = Z_rel.
+
+Takahashi-Imada (M. Takahashi and M. Imada, J. Phys. Soc. Jpn. 53, 3765
+(1984)).  Each slice carries tau V + tau^3 W, W = (1/24) sum_j |grad_j V|^2
+(mass 1).  With f = v'(r) r_hat the pair force, |grad_1 V|^2 + |grad_2 V|^2 =
+w^4 (2 X^2 + r^2/2) + 2 w^2 r v'(r) + 2 v'(r)^2: it still separates.  The
+centre of mass is a harmonic ring with w^2 -> w^2 (1 + tau^2 w^2/12), as is
+one particle, so Z_2 / Z_1 = Z_rel again, now with
+
+    U_TI(r) = U(r) + (tau^2/24) [w^4 r^2/2 + 2 w^2 r v'(r) + 2 v'(r)^2].
 
 Partial waves.  e^{z cos theta} = sum_m I_m(z) e^{i m theta} (Abramowitz &
 Stegun 9.6.34) splits the 2-D free propagator of mass mu,
@@ -68,6 +78,7 @@ with an r^-3 core: at beta = 2, C = 1 the difference in ln Z_rel falls by
 
     py -3 tests/references/inverse_power_trap_primitive.py --beta 2 --slices 16 --omega 1 --strength 1 --exponent 3
     py -3 tests/references/inverse_power_trap_primitive.py ... --check
+    py -3 tests/references/inverse_power_trap_primitive.py ... --action takahashi_imada
 """
 
 from __future__ import annotations
@@ -83,16 +94,21 @@ from scipy.special import ive
 MU_REL = 0.5  # reduced mass of two particles of mass 1
 
 
-def ring_log_z(slices: int, tau: float, omega: float, dim: int = 2) -> float:
-    """ln z(K) of one particle in the discretized harmonic ring (any mass)."""
+def ring_log_z(slices: int, tau: float, omega: float, dim: int = 2,
+               action: str = "primitive") -> float:
+    """ln z(K) of one particle in the discretized harmonic ring (any mass); the
+    Takahashi-Imada slice is the primitive one with w^2 (1 + tau^2 w^2 / 12)."""
     j = np.arange(slices)
-    mode = 4.0 * np.sin(np.pi * j / slices) ** 2 + (tau * omega) ** 2
+    x = (tau * omega) ** 2
+    if action == "takahashi_imada":
+        x *= 1.0 + x / 12.0
+    mode = 4.0 * np.sin(np.pi * j / slices) ** 2 + x
     return float(-0.5 * dim * np.sum(np.log(mode)))
 
 
 def relative_traces(tau: float, slices: int, omega: float, strength: float,
                     exponent: float, nodes: int, r_max: float,
-                    tolerance: float = 1e-15) -> list[float]:
+                    tolerance: float = 1e-15, action: str = "primitive") -> list[float]:
     """t_m = Tr (G_m)^M for m = 0, 1, 2, ... until two consecutive t_m fall
     below tolerance * t_0."""
     if (slices < 1 or nodes < 2 or not tau > 0 or not omega > 0 or not r_max > 0
@@ -105,6 +121,10 @@ def relative_traces(tau: float, slices: int, omega: float, strength: float,
     r = 0.5 * r_max * (x + 1.0)
     w = 0.5 * r_max * w
     u = 0.5 * MU_REL * omega ** 2 * r ** 2 + strength * r ** (-exponent)
+    if action == "takahashi_imada":
+        dv = -exponent * strength * r ** (-exponent - 1.0)  # v'(r)
+        u = u + tau ** 2 / 24.0 * (0.5 * omega ** 4 * r ** 2 + 2.0 * omega ** 2 * r * dv
+                                   + 2.0 * dv ** 2)
     side = np.sqrt(w * r) * np.exp(-0.5 * tau * u)
     gauss = (MU_REL / tau) * np.exp(-MU_REL * (r[:, None] - r[None, :]) ** 2 / (2.0 * tau))
     arg = MU_REL * np.outer(r, r) / tau
@@ -135,15 +155,18 @@ def relative_partition(traces: list[float]) -> dict[str, float]:
 
 
 def solve(beta: float, slices: int, omega: float, strength: float, exponent: float,
-          nodes: int, r_max: float) -> dict[str, float]:
+          nodes: int, r_max: float, action: str = "primitive") -> dict[str, float]:
     """ln Z_rel (boson, direct, exchange), E(1), E(2) and F(2) - F(1) at finite M."""
     tau = beta / slices
-    z = relative_partition(relative_traces(tau, slices, omega, strength, exponent, nodes, r_max))
+    def traces(t: float) -> list[float]:
+        return relative_traces(t, slices, omega, strength, exponent, nodes, r_max, action=action)
+    z = relative_partition(traces(tau))
     h = 1e-4 * tau
-    zp = relative_partition(relative_traces(tau + h, slices, omega, strength, exponent, nodes, r_max))
-    zm = relative_partition(relative_traces(tau - h, slices, omega, strength, exponent, nodes, r_max))
+    zp = relative_partition(traces(tau + h))
+    zm = relative_partition(traces(tau - h))
     e_rel = -(math.log(zp["boson"]) - math.log(zm["boson"])) / (2.0 * h) / slices
-    e_cm = -(ring_log_z(slices, tau + h, omega) - ring_log_z(slices, tau - h, omega)) / (2.0 * h) / slices
+    e_cm = -(ring_log_z(slices, tau + h, omega, action=action) -
+             ring_log_z(slices, tau - h, omega, action=action)) / (2.0 * h) / slices
     return {
         "tau": tau,
         "ln_z_rel_boson": math.log(z["boson"]),
@@ -171,17 +194,19 @@ def check(args: argparse.Namespace) -> None:
     beta, M, omega = args.beta, args.slices, args.omega
     tau = beta / M
     # 1. Non-interacting closed forms (normalization, measure, exchange sign).
-    ideal = relative_partition(relative_traces(tau, M, omega, 0.0, args.exponent, args.nodes, args.r_max))
-    direct = math.exp(ring_log_z(M, tau, omega))
-    exchange = math.exp(ring_log_z(2 * M, tau, omega)) / direct
+    ideal = relative_partition(relative_traces(tau, M, omega, 0.0, args.exponent, args.nodes, args.r_max,
+                                               action=args.action))
+    direct = math.exp(ring_log_z(M, tau, omega, action=args.action))
+    exchange = math.exp(ring_log_z(2 * M, tau, omega, action=args.action)) / direct
     print(f"C = 0: direct {ideal['direct']:.12f} closed form {direct:.12f} "
           f"(rel. diff {ideal['direct'] / direct - 1:.2e})")
     print(f"C = 0: exchange {ideal['exchange']:.12f} closed form {exchange:.12f} "
           f"(rel. diff {ideal['exchange'] / exchange - 1:.2e})")
     # 2. Quadrature: twice the nodes, a larger box.
-    base = solve(beta, M, omega, args.strength, args.exponent, args.nodes, args.r_max)
-    finer = solve(beta, M, omega, args.strength, args.exponent, 2 * args.nodes, args.r_max)
-    wider = solve(beta, M, omega, args.strength, args.exponent, args.nodes, 1.25 * args.r_max)
+    base = solve(beta, M, omega, args.strength, args.exponent, args.nodes, args.r_max, args.action)
+    finer = solve(beta, M, omega, args.strength, args.exponent, 2 * args.nodes, args.r_max, args.action)
+    wider = solve(beta, M, omega, args.strength, args.exponent, args.nodes, 1.25 * args.r_max,
+                  args.action)
     for key in ("ln_z_rel_boson", "energy_2"):
         print(f"{key}: {base[key]:.12f}; 2x nodes {finer[key] - base[key]:+.2e}; "
               f"1.25x r_max {wider[key] - base[key]:+.2e}")
@@ -192,9 +217,10 @@ def check(args: argparse.Namespace) -> None:
     previous = None
     for slices in (50, 100, 200):
         nodes = max(args.nodes, int(12 * args.r_max / math.sqrt(beta / slices / MU_REL)))
-        res = solve(beta, slices, omega, args.strength, args.exponent, nodes, args.r_max)
+        res = solve(beta, slices, omega, args.strength, args.exponent, nodes, args.r_max, args.action)
         diff = res["ln_z_rel_boson"] - math.log(z_cont)
-        ratio = "" if previous is None else f"  (previous / this = {previous / diff:.2f}; 4 once tau^2)"
+        order = "16 once tau^4" if args.action == "takahashi_imada" else "4 once tau^2"
+        ratio = "" if previous is None else f"  (previous / this = {previous / diff:.2f}; {order})"
         print(f"M = {slices:4d} (nodes {nodes}): ln Z_rel = {res['ln_z_rel_boson']:.8f}, "
               f"minus continuum {diff:+.3e}{ratio}")
         previous = diff
@@ -209,13 +235,15 @@ def main() -> None:
     parser.add_argument("--exponent", type=float, default=3.0)
     parser.add_argument("--nodes", type=int, default=300)
     parser.add_argument("--r-max", type=float, default=12.0)
+    parser.add_argument("--action", choices=("primitive", "takahashi_imada"), default="primitive")
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
     res = solve(args.beta, args.slices, args.omega, args.strength, args.exponent,
-                args.nodes, args.r_max)
+                args.nodes, args.r_max, args.action)
     for key, value in res.items():
         print(f"{key} = {value:.12f}")
-    ideal = solve(args.beta, args.slices, args.omega, 0.0, args.exponent, args.nodes, args.r_max)
+    ideal = solve(args.beta, args.slices, args.omega, 0.0, args.exponent, args.nodes, args.r_max,
+                  args.action)
     print(f"ideal delta_free_energy = {ideal['delta_free_energy']:.12f}")
     print(f"no-exchange delta_free_energy = "
           f"{-(res['ln_z_rel_direct'] - math.log(2.0)) / args.beta:.12f}")
