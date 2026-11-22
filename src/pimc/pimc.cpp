@@ -279,8 +279,8 @@ Pimc::Pimc(const PimcConfig& cfg,
     // couples slices through links (pair product) would still count it.
     if (worm_ && !base_action.slice_local_deltas())
         throw std::runtime_error("pimc: the worm needs an action whose potential terms are "
-                                 "slice-local (primitive); the pair-product action couples "
-                                 "the cut link");
+                                 "slice-local (primitive or takahashi_imada); the pair-product "
+                                 "action couples the cut link");
     if (energy_estimator_ == EnergyEstimator::centroid_virial)
         base_action.validate_open_centroid(cell,np,dim);
     if (energy_estimator_ == EnergyEstimator::periodic_virial)

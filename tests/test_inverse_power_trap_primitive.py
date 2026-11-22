@@ -40,6 +40,27 @@ class InversePowerTrapPrimitiveTests(unittest.TestCase):
         fine = relative_partition(relative_traces(tau, slices, 1.0, 1.0, 3.0, 600, 12.0))
         self.assertLess(abs(math.log(fine["boson"] / coarse["boson"])), 1e-11)
 
+    def test_takahashi_imada_without_interaction_gives_the_shifted_rings(self):
+        # C = 0: every TI slice is a primitive one with w^2 (1 + tau^2 w^2/12),
+        # in the relative traces and in the closed-form rings alike.
+        tau, slices, omega = 0.25, 8, 1.3
+        z = relative_partition(relative_traces(tau, slices, omega, 0.0, 3.0, 300, 12.0,
+                                               action="takahashi_imada"))
+        shifted = omega * math.sqrt(1.0 + (tau * omega) ** 2 / 12.0)
+        direct = math.exp(ring_log_z(slices, tau, shifted))
+        exchange = math.exp(ring_log_z(2 * slices, tau, shifted)) / direct
+        self.assertAlmostEqual(z["direct"] / direct, 1.0, delta=1e-11)
+        self.assertAlmostEqual(z["exchange"] / exchange, 1.0, delta=1e-11)
+        self.assertAlmostEqual(ring_log_z(slices, tau, omega, action="takahashi_imada"),
+                               ring_log_z(slices, tau, shifted), delta=1e-13)
+
+    def test_takahashi_imada_values_quoted_by_the_grand_canonical_test(self):
+        # test_pimc_takahashi_imada_physics.cpp, M = 8.
+        res = solve(2.0, 8, 1.0, 1.0, 3.0, 300, 12.0, action="takahashi_imada")
+        self.assertAlmostEqual(res["delta_free_energy"], 1.843217428155, delta=1e-11)
+        self.assertAlmostEqual(res["energy_1"], 1.313004021710, delta=1e-9)
+        self.assertAlmostEqual(res["energy_2"], 3.432125016076, delta=1e-9)
+
     def test_values_quoted_by_the_grand_canonical_test(self):
         # test_pimc_grand_canonical.cpp, "Two dipolar bosons in a trap".
         res = solve(2.0, 16, 1.0, 1.0, 3.0, 300, 12.0)

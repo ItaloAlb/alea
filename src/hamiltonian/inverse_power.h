@@ -52,7 +52,11 @@ namespace alea {
 // a kink).  This is not `lattice.truncation: minimum_image` of a Coulomb term,
 // whose dropped remainder diverges: here it is integrable and supplied.
 //
-// No potential gradient is offered, so PIMC virial estimators refuse the term.
+// evaluate_potential_gradient is not offered, so PIMC virial estimators
+// refuse the term.  The per-configuration gradient (configuration_gradient,
+// bead_gradient) is, for the Takahashi–Imada action: ∂_i C r^{−p} =
+// −p C r^{−p−2} Δ at the minimum image.  That force jumps where a pair
+// crosses a WS face (V's kink), so a |∇V|² term jumps there too.
 class InversePowerTerm : public HamiltonianComponent {
 public:
     // Throws on a non-finite or non-positive exponent, a non-finite strength,
@@ -92,7 +96,18 @@ public:
     double bead_energy(const ParticleBatch&, std::size_t, std::size_t,
         std::span<const double>, std::size_t, std::size_t) const override;
 
+    // Intra- and inter-group; the tail, a constant of N, has no gradient.
+    bool supports_configuration_gradient() const noexcept override { return true; }
+    void configuration_gradient(const ParticleBatch&, std::size_t, std::size_t, std::size_t,
+                                std::size_t, std::span<double>) const override;
+    void bead_gradient(const ParticleBatch&, std::size_t, std::size_t, std::span<const double>,
+                       std::size_t, std::size_t, std::span<double>,
+                       std::span<double>) const override;
+
 private:
+    // v'(r)/r = −p C r^{−p−2}, by repeated multiplication for an integer p.
+    [[nodiscard]] double slope_over_r(double r) const noexcept;
+
     [[nodiscard]] bool is_own_pair(const ParticleGroup& a,
                                    const ParticleGroup& b) const noexcept {
         return (a == group_a_ && b == group_b_) || (a == group_b_ && b == group_a_);

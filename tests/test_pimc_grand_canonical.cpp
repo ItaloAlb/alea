@@ -1731,3 +1731,190 @@ TEST_CASE("Grand-canonical sub-moves draw every discrete outcome with its enumer
         }
     }
 }
+
+
+// ── The same bookkeeping with the Takahashi-Imada action ────────────────────
+
+#include "pimc/primitive_action.h"
+#include "pimc/takahashi_imada_action.h"
+
+namespace {
+// tau V_k + tau^3 W_k of the beads `rows` of `path` at slice k, from a one-slice
+// path holding exactly those beads and a Takahashi-Imada action of that size;
+// row `moved` (if any) sits at `at` instead.
+double oracle_ti_slice(const PathSet& path, const SimulationCell& cell, const Hamiltonian& ham,
+                       const std::vector<std::size_t>& rows, std::size_t k,
+                       std::size_t moved = HamiltonianComponent::npos,
+                       std::span<const double> at = {}) {
+    PathSet one(1, rows.size(), path.dim(), path.tau(), cell);
+    for (std::size_t i = 0; i < rows.size(); ++i)
+        for (std::size_t d = 0; d < path.dim(); ++d)
+            one.pos(i, d, 0) = rows[i] == moved ? at[d] : path.pos(rows[i], d, k);
+    one.wrap_positions();
+    one.rebuild_tables();
+    const auto g = group(0, rows.size(), path.dim());
+    TakahashiImadaPotentialAction ti(std::span<const ParticleGroup>(&g, 1), ham, path.dim());
+    return ti.potential_action_slice(one, 0);
+}
+
+// S_V of the beads present at every slice (the missing bead of an open path
+// left out).
+double oracle_ti_action(const PathSet& path, const SimulationCell& cell,
+                        const std::vector<Hamiltonian>& hams) {
+    double action = 0.0;
+    for (std::size_t k = 0; k < path.num_slices(); ++k) {
+        std::vector<std::size_t> rows;
+        for (std::size_t j = 0; j < path.active_particles(); ++j)
+            if (path.missing_row(k) != j) rows.push_back(j);
+        if (!rows.empty()) action += oracle_ti_slice(path, cell, hams[rows.size()], rows, k);
+    }
+    return action;
+}
+
+Action ti_action(std::size_t n, const Hamiltonian& ham, std::size_t dim) {
+    const auto g = group(0, n, dim);
+    Action action(std::span<const ParticleGroup>(&g, 1), ham, dim, false, false);
+    action.add_component(std::make_unique<PrimitiveKineticAction>(
+        std::span<const ParticleGroup>(&g, 1), dim));
+    action.add_component(std::make_unique<TakahashiImadaPotentialAction>(
+        std::span<const ParticleGroup>(&g, 1), ham, dim));
+    return action;
+}
+
+// A component of the closed-path action of sector N that adds nothing to the
+// action and checks every bead delta a closed move (bisection, centroid) asks
+// the Takahashi-Imada action for: the delta of bead (p, k) must equal the
+// oracle slice action with the bead moved minus the oracle slice action as it
+// is.  Like the Takahashi-Imada action it is evaluated jointly on slices that
+// hold several staged beads, so it sees exactly the bead deltas that action
+// is asked for.  The path must be closed with N particles, since a closed
+// move gets the action of the current N.
+class TiDeltaCheck final : public ActionComponent {
+public:
+    TiDeltaCheck(std::size_t n, const Hamiltonian& ham, const SimulationCell& cell, std::size_t dim)
+        : n_(n), ham_(ham.clone()), cell_(&cell), group_(group(0, n, dim)),
+          ti_(std::span<const ParticleGroup>(&group_, 1), ham, dim) {}
+    TiDeltaCheck(const TiDeltaCheck& other)
+        : n_(other.n_), ham_(other.ham_.clone()), cell_(other.cell_), group_(other.group_),
+          ti_(other.ti_) {}
+    bool slice_local_deltas() const noexcept override { return true; }
+    bool joint_slice_deltas() const noexcept override { return true; }
+    bool supports_free_bridge() const noexcept override { return true; }
+    void prepare(std::size_t M) override { ti_.prepare(M); }
+    double total_action(const PathSet&) override { return 0.0; }
+    double delta_potential_particle(PathSet& path, std::size_t p, std::size_t k,
+                                    std::span<const double> proposed) override {
+        REQUIRE(!path.is_open());
+        REQUIRE(path.active_particles() == n_);
+        REQUIRE(p < n_);
+        const double engine = ti_.delta_potential_particle(path, p, k, proposed);
+        std::vector<std::size_t> rows(n_);
+        for (std::size_t j = 0; j < n_; ++j) rows[j] = j;
+        const double oracle = oracle_ti_slice(path, *cell_, ham_, rows, k, p, proposed) -
+                              oracle_ti_slice(path, *cell_, ham_, rows, k);
+        CAPTURE(p, k);
+        ++checks;
+        REQUIRE(engine == Catch::Approx(oracle).epsilon(1e-9).margin(1e-9));
+        return 0.0;
+    }
+    std::unique_ptr<ActionComponent> clone() const override {
+        return std::make_unique<TiDeltaCheck>(*this);
+    }
+    static inline std::size_t checks = 0;
+
+private:
+    std::size_t n_;
+    Hamiltonian ham_;
+    const SimulationCell* cell_;
+    ParticleGroup group_;
+    TakahashiImadaPotentialAction ti_;
+};
+
+// The smallest distance between two beads present at one slice, minimum
+// image, from the coordinates alone (not the distance tables).
+double closest_present_pair(const PathSet& path) {
+    double best = std::numeric_limits<double>::infinity();
+    const std::size_t n = path.active_particles(), dim = path.dim();
+    for (std::size_t k = 0; k < path.num_slices(); ++k) {
+        const std::size_t missing = path.missing_row(k);
+        for (std::size_t i = 0; i < n; ++i) {
+            if (i == missing) continue;
+            for (std::size_t j = i + 1; j < n; ++j) {
+                if (j == missing) continue;
+                double del[SimulationCell::kMaxDim];
+                for (std::size_t d = 0; d < dim; ++d) del[d] = path.pos(i, d, k) - path.pos(j, d, k);
+                best = std::min(best, std::sqrt(path.cell().min_image_dist2(del)));
+            }
+        }
+    }
+    return best;
+}
+}  // namespace
+
+// Worm moves on the capacity's action, bisection and centroid moves on the
+// action of the current N, all with the Takahashi-Imada potential, against a
+// one-slice oracle of S_V.  Two beads closer than r_floor = 0.2 at one slice
+// weigh e^{-(tau V + tau^3 W)} < e^{-40} here (C/r^3 with C = 5.44): a sampled
+// pair that close means a move accepted on a wrong action change.
+TEST_CASE("Grand-canonical worm and closed-path moves change the Takahashi-Imada S_V by exactly "
+          "their deltas", "[pimc][grand_canonical][worm][takahashi_imada]") {
+    GrandCanonicalSpec spec;
+    spec.chemical_potential = {8.0};
+    spec.n_min = 1;
+    spec.n_max = 4;
+    const SimulationCell cell = hexagonal_cell();
+    const std::size_t M = 12, dim = 2, capacity = spec.n_max;
+    const double tau = 0.05, r_floor = 0.2;
+    PathSet path(M, capacity, dim, tau, cell);
+    fill_distinct(path);
+    path.wrap_positions();
+    path.rebuild_tables();
+    one_class(path);
+    path.set_active_particles(2);
+    Action worm_action = ti_action(capacity, dipolar_moire(capacity, cell), dim);
+    std::vector<Action> sector;
+    for (std::size_t n = 1; n <= capacity; ++n) {
+        Action a = ti_action(n, dipolar_moire(n, cell), dim);
+        a.add_component(std::make_unique<TiDeltaCheck>(n, dipolar_moire(n, cell), cell, dim));
+        sector.push_back(std::move(a));
+    }
+    GrandCanonicalWormMove worm(4, 3, 0.03, spec);
+    worm.set_selection_probability(0.5);
+    BisectionMove bisection(2);
+    CentroidMove centroid(0.2);
+    numerics::Random rng(20261121);
+    const std::vector<Hamiltonian> hams = by_count(dipolar_moire, capacity, cell);
+    TiDeltaCheck::checks = 0;
+    double s_v = oracle_ti_action(path, cell, hams);
+    std::size_t worm_accepts = 0, closed_accepts = 0;
+    for (int attempt = 0; attempt < 40000; ++attempt) {
+        bool accepted = false;
+        const bool closed_move = !path.is_open() && attempt % 2 == 1;
+        if (closed_move) {
+            Action& a = sector[path.active_particles() - 1];
+            accepted = attempt % 4 == 1 ? bisection.attempt(path, a, rng) : centroid.attempt(path, a, rng);
+            closed_accepts += accepted;
+        } else {
+            accepted = worm.attempt(path, worm_action, rng);
+            worm_accepts += accepted;
+        }
+        const double s_new = oracle_ti_action(path, cell, hams);
+        CAPTURE(attempt, closed_move, path.active_particles(), path.is_open());
+        if (accepted && !closed_move)
+            REQUIRE(s_new - s_v == Catch::Approx(worm.last_delta_action()).epsilon(1e-9).margin(1e-9));
+        if (closed_move) {
+            // The sector action of the closed path is the oracle.
+            Action& a = sector[path.active_particles() - 1];
+            double potential_now = 0.0;
+            for (std::size_t k = 0; k < M; ++k) potential_now += a.potential_action_slice(path, k);
+            REQUIRE(potential_now == Catch::Approx(s_new).epsilon(1e-10).margin(1e-10));
+        }
+        if (!accepted) REQUIRE(s_new == Catch::Approx(s_v).epsilon(1e-12).margin(1e-12));
+        s_v = s_new;
+        require_present_tables(path);
+        REQUIRE(closest_present_pair(path) > r_floor);
+    }
+    CHECK(worm_accepts > 1000);
+    CHECK(closed_accepts > 100);
+    CHECK(TiDeltaCheck::checks > 0);
+}

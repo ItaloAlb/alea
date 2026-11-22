@@ -1084,6 +1084,24 @@ TEST_CASE("the action parser rejects unknown and duplicate components",
                       Catch::Matchers::ContainsSubstring("list of components"));
 }
 
+TEST_CASE("the potential takes the Takahashi-Imada form, the kinetic springs do not",
+          "[pimc][parser][takahashi_imada]") {
+    const io::Config c = io::parse_config(
+        "action: [ { kinetic: primitive }, { potential: takahashi_imada } ]\n");
+    REQUIRE(c.action.size() == 2);
+    CHECK(c.action[1].component == "potential");
+    CHECK(c.action[1].form == "takahashi_imada");
+    const io::Config m = io::parse_config(
+        "action: [ { kinetic: primitive }, { potential: { form: takahashi_imada } } ]\n");
+    CHECK(m.action[1].form == "takahashi_imada");
+    CHECK_THROWS_WITH(io::parse_config("action: [ { kinetic: takahashi_imada } ]\n"),
+                      Catch::Matchers::ContainsSubstring("unknown form"));
+    CHECK_THROWS_WITH(io::parse_config("action: [ { primitive: takahashi_imada } ]\n"),
+                      Catch::Matchers::ContainsSubstring("unknown form"));
+    CHECK_THROWS_WITH(io::parse_config("action: [ { potential: takahashi } ]\n"),
+                      Catch::Matchers::ContainsSubstring("expected 'primitive' or 'takahashi_imada'"));
+}
+
 TEST_CASE("the pimc parser validates its keys", "[pimc][parser]") {
     auto expect_error = [](const std::string& body, const std::string& frag) {
         CHECK_THROWS_WITH(io::parse_config("qmc:\n  - method: pimc\n" + body),

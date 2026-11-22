@@ -189,14 +189,13 @@ ActionThermoMeasure PrimitiveKineticAction::measure_periodic_virial(
     return {kinetic, 0.0, kinetic};
 }
 
-PrimitivePotentialAction::PrimitivePotentialAction(
-    std::span<const ParticleGroup> groups, const Hamiltonian& ham)
-    : ham_(ham.clone()) {
+void refuse_unnormalizable_pairs(std::span<const ParticleGroup> groups,
+                                 const Hamiltonian& ham, const std::string& action) {
     // Test actual nonempty group pairs; a one-particle self-group has no pair.
     // Attractive 1/r yields exp(+tau*a/r), nonintegrable for every positive
     // tau. Attractive RK logs are conservatively unsupported: a pair requires
     // tau*|qa qb|/(epsilon*r0)<d, and clusters impose stronger conditions.
-    for (const auto& component : ham_.components()) {
+    for (const auto& component : ham.components()) {
         if (!component->is_potential())
             continue;
         for (std::size_t a = 0; a < groups.size(); ++a)
@@ -206,17 +205,23 @@ PrimitivePotentialAction::PrimitivePotentialAction(
                     continue;
                 if (component->coulomb_cusp_residue(groups[a], groups[b]) < 0.0)
                     throw std::invalid_argument(
-                        "primitive action: attractive 1/r pole in " +
+                        action + ": attractive 1/r pole in " +
                         component->name() +
                         "; use a finite layer separation or pair action");
                 if (!component->primitive_pair_admissible(groups[a], groups[b]))
                     throw std::invalid_argument(
-                        "primitive action: unsupported attractive singularity "
+                        action + ": unsupported attractive singularity "
                         "in " +
                         component->name() +
                         "; use a finite layer separation or pair action");
             }
     }
+}
+
+PrimitivePotentialAction::PrimitivePotentialAction(
+    std::span<const ParticleGroup> groups, const Hamiltonian& ham)
+    : ham_(ham.clone()) {
+    refuse_unnormalizable_pairs(groups, ham_, "primitive action");
 }
 PrimitivePotentialAction::PrimitivePotentialAction(
     const PrimitivePotentialAction& other)
@@ -383,7 +388,9 @@ Action::Action(std::span<const ParticleGroup> groups, const Hamiltonian& ham,
 }
 Action::Action(const Action& other)
     : dim_(other.dim_), np_(other.np_), prepared_M_(other.prepared_M_),
-      window_saved_(other.window_saved_), window_beads_(other.window_beads_) {
+      window_saved_(other.window_saved_), window_beads_(other.window_beads_),
+      slice_beads_(other.slice_beads_), shared_slices_(other.shared_slices_),
+      shared_before_(other.shared_before_) {
     components_.reserve(other.components_.size());
     for (const auto& component : other.components_)
         components_.push_back(component->clone());
@@ -394,6 +401,7 @@ void Action::add_component(std::unique_ptr<ActionComponent> component) {
     if (prepared_M_ != 0)
         component->prepare(prepared_M_);
     components_.push_back(std::move(component));
+    shared_before_.resize(components_.size() * prepared_M_);
     centroid_M_ = 0; // Composition changes invalidate all centroid preparation.
     periodic_field_.invalidate();
 }
@@ -407,6 +415,9 @@ void Action::prepare(std::size_t M) {
     for (const auto& component : components_)
         component->prepare(M);
     window_saved_.resize(M * dim_);
+    slice_beads_.resize(M);
+    shared_slices_.resize(M);
+    shared_before_.resize(components_.size() * M);
     prepared_M_ = M;
 }
 void Action::validate_sampling(const SimulationCell& cell, double tau) const {
@@ -608,11 +619,7 @@ double Action::delta_potential_window(PathSet& path, std::size_t p,
 
 // A window covering a whole permutation cycle (count = L*M) moves L beads on
 // every slice, so isolated per-bead deltas would miss the changed pair terms
-// between moved beads.  Slice-local components telescope instead: each bead's
-// delta is taken with the previously staged beads already committed, so the
-// sum is exactly V(all new) - V(all old).  Link-coupled components are
-// evaluated before and after the complete commit.  Every bead and table is
-// restored before returning or throwing.
+// between moved beads: the beads go to delta_beads_prepared, member by member.
 double Action::delta_cycle_window(PathSet& path, std::size_t p,
                                   std::size_t first,
                                   std::span<const double> proposed) {
@@ -654,29 +661,57 @@ double Action::delta_potential_beads(PathSet& path,
 
 // Several beads may share a slice (a permutation cycle moves L particles on
 // every slice), so isolated per-bead deltas would miss the changed pair terms
-// between moved beads.  Slice-local components telescope instead: each bead's
-// delta is taken with the previously staged beads already committed, so the
-// sum is exactly V(all new) - V(all old).  Link-coupled components are
-// evaluated before and after the complete commit.  Every bead and table is
-// restored before returning or throwing.
+// between moved beads.  Per kind of component:
+//  - slice-local: each bead's delta is taken with the previously staged beads
+//    already committed, so the telescoped sum is V(all new) - V(all old) in
+//    exact arithmetic (its rounding: ActionComponent::joint_slice_deltas);
+//  - slice-local and joint_slice_deltas: a slice holding two or more staged
+//    beads contributes S_k after minus S_k before the complete commit, with no
+//    intermediate state; a slice holding one contributes that bead's delta
+//    against the unmoved path, which is exact because nothing else moves
+//    there;
+//  - link-coupled: the whole action before and after the complete commit.
+// Without a joint_slice_deltas component the arithmetic is the plain
+// telescoping, unchanged.  Every bead and table is restored before returning
+// or throwing.
 double Action::delta_beads_prepared(PathSet& path,
                                     std::span<const PathSet::Bead> beads,
                                     std::span<const double> proposed) {
-    const auto dim = path.dim();
+    const auto dim = path.dim(), M = path.num_slices();
     for (std::size_t i = 0; i < beads.size(); ++i)
         for (std::size_t d = 0; d < dim; ++d)
             window_saved_[i * dim + d] = path.pos(beads[i].particle, d, beads[i].slice);
-    double coupled_old = 0.0;
-    for (const auto& component : components_)
-        if (!component->slice_local_deltas())
-            coupled_old += component->total_action(path);
+    // Count the staged beads per slice and list each shared slice once.
+    for (const auto& bead : beads)
+        slice_beads_[bead.slice] = 0;
+    std::size_t shared = 0;
+    for (const auto& bead : beads)
+        if (++slice_beads_[bead.slice] == 2)
+            shared_slices_[shared++] = bead.slice;
+    double result = 0.0, coupled_old = 0.0;
+    for (std::size_t c = 0; c < components_.size(); ++c) {
+        auto& component = *components_[c];
+        if (!component.slice_local_deltas()) {
+            coupled_old += component.total_action(path);
+        } else if (component.joint_slice_deltas()) {
+            for (std::size_t i = 0; i < beads.size(); ++i)
+                if (slice_beads_[beads[i].slice] == 1)
+                    result += component.delta_potential_particle(
+                        path, beads[i].particle, beads[i].slice,
+                        proposed.subspan(i * dim, dim));
+            for (std::size_t s = 0; s < shared; ++s)
+                shared_before_[c * M + s] =
+                    component.potential_action_slice(path, shared_slices_[s]);
+        }
+    }
+    if (!std::isfinite(result))
+        return result;
     BeadRestore restore{path, beads.data(), window_saved_};
-    double result = 0.0;
     for (std::size_t i = 0; i < beads.size(); ++i) {
         const auto [q, k] = beads[i];
         const auto bead = proposed.subspan(i * dim, dim);
         for (const auto& component : components_)
-            if (component->slice_local_deltas())
+            if (component->slice_local_deltas() && !component->joint_slice_deltas())
                 result += component->delta_potential_particle(path, q, k, bead);
         if (!std::isfinite(result))
             return result;
@@ -686,9 +721,16 @@ double Action::delta_beads_prepared(PathSet& path,
         restore.committed = i + 1;
     }
     double coupled_new = 0.0;
-    for (const auto& component : components_)
-        if (!component->slice_local_deltas())
-            coupled_new += component->total_action(path);
+    for (std::size_t c = 0; c < components_.size(); ++c) {
+        auto& component = *components_[c];
+        if (!component.slice_local_deltas()) {
+            coupled_new += component.total_action(path);
+        } else if (component.joint_slice_deltas()) {
+            for (std::size_t s = 0; s < shared; ++s)
+                result += component.potential_action_slice(path, shared_slices_[s]) -
+                          shared_before_[c * M + s];
+        }
+    }
     return result + (coupled_new - coupled_old);
 }
 double Action::total_action(PathSet& path) {

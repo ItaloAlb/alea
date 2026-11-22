@@ -96,9 +96,12 @@ public:
                                   std::span<const double> positions);
     // Action change when the listed beads ([n], each at most once, possibly
     // several particles on one slice) move to `positions` ([n*dim]).  Slice-
-    // local components telescope bead by bead; link-coupled components take
-    // full before/after differences.  Coordinates and tables are restored
-    // before returning or throwing.  n <= 2 * largest_exchange_class() * M.
+    // local components telescope bead by bead, except that a
+    // joint_slice_deltas component evaluates each slice holding several
+    // staged beads after and before the complete move; link-coupled
+    // components take full before/after differences.  Coordinates and tables
+    // are restored before returning or throwing.
+    // n <= 2 * largest_exchange_class() * M.
     double delta_potential_beads(PathSet&, std::span<const PathSet::Bead> beads,
                                  std::span<const double> positions);
     double total_action(PathSet& path);
@@ -125,13 +128,19 @@ private:
     std::vector<double> window_saved_; // [L_max*M*dim], proposal/restore scratch
     // Staged beads [L_max*M]: particle and slice of each proposed bead.
     std::vector<PathSet::Bead> window_beads_;
+    // delta_beads_prepared scratch, sized by prepare(M): staged beads per
+    // slice [M]; the slices holding two or more of them, each once [M]; and
+    // the joint_slice_deltas components' S_k on those slices before the move
+    // [n_components * M], component c at c*M.
+    std::vector<std::size_t> slice_beads_, shared_slices_;
+    std::vector<double> shared_before_;
     // Grow the window scratch to the largest permutation cycle of `path`.
     void reserve_cycle_window(const PathSet& path);
     // delta_potential_particle without prepare(): the path is prepared.
     double delta_particle_prepared(PathSet&, std::size_t p, std::size_t k,
                                    std::span<const double> proposed);
-    // Exact telescoping difference for staged beads (each bead at most once);
-    // the caller prepared the path and saved nothing yet.
+    // Exact difference for staged beads (each bead at most once); the caller
+    // prepared the path and saved nothing yet.
     double delta_beads_prepared(PathSet&, std::span<const PathSet::Bead> beads,
                                 std::span<const double> proposed);
     // Exact difference for a window that visits a slice more than once.

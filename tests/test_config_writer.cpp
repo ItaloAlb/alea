@@ -31,6 +31,20 @@ TEST_CASE("Pair action snapshots retain their explicit domain and resolved grid 
     fs::remove(source); fs::remove(output/"source.yaml"); fs::remove(output); fs::remove(dir);
 }
 
+TEST_CASE("A Takahashi-Imada action survives the snapshot", "[config_writer][takahashi_imada]") {
+    const auto dir=fs::temp_directory_path()/"alea_ti_snapshot";
+    fs::create_directories(dir);
+    const auto source=dir/"source.yaml",output=dir/"output";
+    fs::create_directories(output);
+    { std::ofstream file(source); file << "project: {seed: 3}\naction:\n  - kinetic: primitive\n  - potential: takahashi_imada\nqmc:\n  - {method: pimc, beta: 1, time_step: 0.125}\n"; }
+    alea::io::write_config_snapshot(source.string(),{},output,3);
+    const auto config=alea::io::parse_config_file((output/"source.yaml").string());
+    REQUIRE(config.action.size()==2);
+    CHECK(config.action[1].component=="potential");
+    CHECK(config.action[1].form=="takahashi_imada");
+    fs::remove(source); fs::remove(output/"source.yaml"); fs::remove(output); fs::remove(dir);
+}
+
 namespace {
 
 // A config with one optimisable jastrow, an optimizer in the qmc list, and a

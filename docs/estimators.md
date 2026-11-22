@@ -502,6 +502,21 @@ $$
 The two kinetic terms nearly cancel and each grows with $M$, hence the
 variance.
 
+With the Takahashi–Imada potential (`- potential: takahashi_imada`) each slice
+carries $\tau V(R_k) + \tau^3 W(R_k)$, $W = \frac1{24}\sum_{j,d}
+m_{jd}^{-1}(\partial V/\partial r_{jd})^2$, and $-\partial_\beta \ln Z$ at fixed
+$M$ adds $\overline{3\tau^2 W}$ to $E_{\rm th}$. The split follows
+Hellmann–Feynman in a coupling $g$ of $V$ ($S_V = \sum_k [\tau g V_k + \tau^3
+g^2 W_k]$):
+
+$$
+\langle V\rangle=\Big\langle\frac1M\sum_k\big(V_k+2\tau^2W_k\big)\Big\rangle,\qquad
+K = K_{\rm th} + \Big\langle\frac1M\sum_k\tau^2W_k\Big\rangle .
+$$
+
+Both are exact derivatives of the approximate $\ln Z$, so they share its
+$O(\tau^4)$ error for a smooth potential.
+
 **Centroid virial (open, confined).**
 
 $$
@@ -632,6 +647,7 @@ tests potential names.
 | `screened_coulomb` (open FSC fit) | yes | yes | controlled fit finite in value and slope on a 1025-point scan of its band |
 | `ewald` (Coulomb, RK, screened kernels) | — | yes, 2D | real-space cutoff value matches the long-range endpoint; finite weights and charges; same cell as built |
 | pair-product action | no | no | experimental; thermodynamic only |
+| Takahashi–Imada potential | no | no | a virial of $\tau^3 W$ needs the Hessian of $V$; thermodynamic only |
 | fixed-node restriction (`nodes`) | no | no | the nodal surface carries a singular force the virials do not include; thermodynamic only |
 
 Admission certifies the integration-by-parts identity **for the represented

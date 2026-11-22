@@ -135,6 +135,38 @@ double Hamiltonian::bead_energy(const ParticleBatch& configs, std::size_t w,
     return energy;
 }
 
+bool Hamiltonian::supports_configuration_gradient() const noexcept {
+    for (const auto& component : components_)
+        if (component->is_potential() && !component->supports_configuration_gradient())
+            return false;
+    return true;
+}
+
+void Hamiltonian::configuration_gradient(const ParticleBatch& configs, std::size_t w,
+    std::size_t p, std::size_t n_rows, std::size_t skip, std::span<double> out) const {
+    const std::size_t size = configs.n_particles() * configs.dim();
+    if (w >= configs.num_walkers() || n_rows > configs.n_particles() || out.size() < size)
+        throw std::invalid_argument("configuration gradient: invalid configuration, row count or output");
+    std::fill(out.begin(), out.begin() + static_cast<std::ptrdiff_t>(size), 0.0);
+    for (const auto& component : components_)
+        if (component->is_potential())
+            component->configuration_gradient(configs, w, p, n_rows, skip, out);
+}
+
+void Hamiltonian::bead_gradient(const ParticleBatch& configs, std::size_t w, std::size_t p,
+    std::span<const double> position, std::size_t n_rows, std::size_t skip,
+    std::span<double> self, std::span<double> rows) const {
+    const std::size_t dim = configs.dim(), size = configs.n_particles() * dim;
+    if (w >= configs.num_walkers() || position.size() != dim ||
+        n_rows > configs.n_particles() || self.size() < dim || rows.size() < size)
+        throw std::invalid_argument("bead gradient: invalid configuration, position, row count or output");
+    std::fill(self.begin(), self.begin() + static_cast<std::ptrdiff_t>(dim), 0.0);
+    std::fill(rows.begin(), rows.begin() + static_cast<std::ptrdiff_t>(size), 0.0);
+    for (const auto& component : components_)
+        if (component->is_potential())
+            component->bead_gradient(configs, w, p, position, n_rows, skip, self, rows);
+}
+
 bool Hamiltonian::translation_invariant() const noexcept {
     for (const auto& component : components_)
         if (component->is_potential() && !component->is_translation_invariant()) return false;

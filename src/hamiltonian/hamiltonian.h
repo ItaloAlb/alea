@@ -68,6 +68,23 @@ public:
                        std::span<const double> position, std::size_t n_rows,
                        std::size_t skip) const;
 
+    // Every potential term offers HamiltonianComponent::configuration_gradient
+    // and bead_gradient.
+    [[nodiscard]] bool supports_configuration_gradient() const noexcept;
+    // ∂V(R)/∂r_j for the rows j of R = [0, n_rows) \ {p, skip} at
+    // configuration w into out [n_particles * dim]: zeroes it, then
+    // accumulates every potential term.  Rows outside R stay 0.
+    void configuration_gradient(const ParticleBatch& configs, std::size_t w,
+                                std::size_t p, std::size_t n_rows, std::size_t skip,
+                                std::span<double> out) const;
+    // The force change when row p at `position` joins R (see
+    // HamiltonianComponent::bead_gradient) into self [dim] and rows
+    // [n_particles * dim]: zeroes both, then accumulates every potential term.
+    void bead_gradient(const ParticleBatch& configs, std::size_t w, std::size_t p,
+                       std::span<const double> position, std::size_t n_rows,
+                       std::size_t skip, std::span<double> self,
+                       std::span<double> rows) const;
+
     // Accumulate ∂E_L/∂p_k into `out` [n_opt * nw]; zeros it first.
     void local_energy_parameter_derivatives(const WalkerSet& batch,
                                             std::span<const double> dgrad,

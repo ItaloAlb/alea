@@ -131,6 +131,29 @@ double InversePowerTerm::bead_energy(const ParticleBatch& configs, std::size_t w
     return pairs + tail_pair_density_ * (static_cast<double>(counted) + 0.5);
 }
 
+double InversePowerTerm::slope_over_r(double r) const noexcept {
+    if (integer_exponent_ > 0) {
+        const double inv_r = 1.0 / r;
+        double inv_rp = inv_r * inv_r;  // r^{-(p+2)}
+        for (int k = 0; k < integer_exponent_; ++k) inv_rp *= inv_r;
+        return -exponent_ * strength_ * inv_rp;
+    }
+    return -exponent_ * strength_ * std::pow(r, -exponent_ - 2.0);
+}
+
+void InversePowerTerm::configuration_gradient(const ParticleBatch& configs, std::size_t w,
+    std::size_t p, std::size_t n_rows, std::size_t skip, std::span<double> out) const {
+    radial_configuration_gradient(configs, w, p, n_rows, skip, group_a_, group_b_,
+        [this](double r) { return slope_over_r(r); }, out);
+}
+
+void InversePowerTerm::bead_gradient(const ParticleBatch& configs, std::size_t w,
+    std::size_t p, std::span<const double> position, std::size_t n_rows, std::size_t skip,
+    std::span<double> self, std::span<double> rows) const {
+    radial_bead_gradient(configs, w, p, position, n_rows, skip, group_a_, group_b_,
+        [this](double r) { return slope_over_r(r); }, self, rows);
+}
+
 void InversePowerTerm::evaluate_potential(const ParticleBatch& batch,
                                           std::span<double> v_out,
                                           std::size_t w_begin,

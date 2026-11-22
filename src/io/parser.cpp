@@ -809,10 +809,13 @@ Config parse_config(const std::string& yaml_text) {
                 } else if (!form.IsNull()) {
                     throw std::runtime_error("action " + comp + ": expected a form or map");
                 }
-                if (as.form != "primitive")
+                // The potential also takes the Takahashi-Imada form.
+                if (as.form != "primitive" &&
+                    !(comp == "potential" && as.form == "takahashi_imada"))
                     throw std::runtime_error(
-                        "action: unknown form '" + as.form + "' for " +
-                        comp + " (expected 'primitive')");
+                        "action: unknown form '" + as.form + "' for " + comp +
+                        (comp == "potential" ? " (expected 'primitive' or 'takahashi_imada')"
+                                             : " (expected 'primitive')"));
             } else if (comp == "pair_product") {
                 as.component=comp; as.form="finite_grid";
                 const YAML::Node parameters=kv->second;

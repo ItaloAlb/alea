@@ -33,13 +33,16 @@ of slices in the primitive approximation, by a radial transfer matrix over
 partial waves. It is exact at the M the simulation uses, so the
 grand-canonical tests compare F(2) − F(1) and the two-particle energy with no
 time-step extrapolation (and, in a window {0, 1, 2} with one μ per pair,
-F(1) − F(0) of the one-particle ring as well):
+F(1) − F(0) of the one-particle ring as well). With `--action
+takahashi_imada` it adds the $\tau^3 W$ term (the centre of mass still
+separates), the reference of the Takahashi–Imada grand-canonical test:
 
 ```bash
 python tests/references/dot_two_electron_exact.py --w0 0.25 --B 0 0.2 0.4 --m 0 -1
 python tests/references/inverse_power_trap_exact.py --omega 1 5 20 --strength 1 --exponent 3
 python tests/references/pair_bound_state.py --d 0.4 --check
 python tests/references/inverse_power_trap_primitive.py --beta 2 --slices 16 --strength 1 --exponent 3
+python tests/references/inverse_power_trap_primitive.py --beta 2 --slices 8 --strength 1 --exponent 3 --action takahashi_imada
 ```
 
 Full simulations compared with exact references and with the literature (the
