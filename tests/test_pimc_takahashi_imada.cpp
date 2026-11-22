@@ -210,6 +210,123 @@ TEST_CASE("A Takahashi-Imada bead delta is the change of the total action and le
     }
 }
 
+namespace {
+// Two bosons swapped into one exchange cycle, on small circles around (0, 0)
+// and (0.9, 0.2): no close pair at any slice.
+PathSet swapped_pair(const SimulationCell& cell, std::size_t M, double tau) {
+    PathSet path(M, 2, 2, tau, cell);
+    for (std::size_t k = 0; k < M; ++k) {
+        const double t = 2.0 * std::numbers::pi * static_cast<double>(k) / static_cast<double>(M);
+        path.pos(0, 0, k) = 0.05 * std::cos(t);
+        path.pos(0, 1, k) = 0.05 * std::sin(t);
+        path.pos(1, 0, k) = 0.9 + 0.04 * std::sin(t);
+        path.pos(1, 1, k) = 0.2 + 0.04 * std::cos(t);
+    }
+    path.wrap_positions();
+    path.rebuild_tables();
+    const std::vector<std::size_t> class_id(2, 0), swap{1, 0};
+    const std::vector<char> bosonic(2, 0);
+    path.set_exchange_classes(class_id, bosonic);
+    path.set_permutation(swap);
+    return path;
+}
+
+Action takahashi_imada_action(const ParticleGroup& g, const Hamiltonian& ham) {
+    // The group constructor (no primitive pieces) fixes dim and N for windows.
+    Action action(std::span<const ParticleGroup>(&g, 1), ham, 2, false, false);
+    action.add_component(std::make_unique<PrimitiveKineticAction>(
+        std::span<const ParticleGroup>(&g, 1), 2));
+    action.add_component(std::make_unique<TakahashiImadaPotentialAction>(
+        std::span<const ParticleGroup>(&g, 1), ham, 2));
+    return action;
+}
+
+std::vector<double> table_snapshot(const PathSet& path) {
+    const auto values = path.dist_tables().data();
+    return {values.begin(), values.end()};
+}
+}  // namespace
+
+// A centroid move of the whole cycle stages member 0's beads before member
+// 1's.  The rigid shift s brings member 0's bead at slice k* within eps of
+// member 1's bead there while member 1 has not moved yet; neither the initial
+// nor the final path has a close pair, so their total actions give the exact
+// change.  A sum of bead deltas through that intermediate state carries a
+// slice action ~ eps^-8 and lost all precision: -1.6e4 at eps = 1e-3 and
+// -4.4e12 at eps = 1e-4 for an exact -2.9.
+TEST_CASE("A whole-cycle shift past a near-coincidence changes the Takahashi-Imada action exactly",
+          "[pimc][takahashi_imada][exchange]") {
+    const SimulationCell cell = hexagonal_cell();
+    const std::size_t M = 8, n = 2, k_star = 3;
+    const double tau = 0.02;
+    const auto g = group(0, n, {1.0, 1.0});
+    Action action = takahashi_imada_action(g, dipolar_moire(n, cell));
+    // S_V alone: the springs are the moves' business, as for a bead delta.
+    const auto s_v = [&](const PathSet& p) { return action.components()[1]->total_action(p); };
+    for (const double eps : {1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6}) {
+        CAPTURE(eps);
+        PathSet path = swapped_pair(cell, M, tau);
+        const double s[2] = {path.pos(1, 0, k_star) - path.pos(0, 0, k_star) - eps,
+                             path.pos(1, 1, k_star) - path.pos(0, 1, k_star)};
+        // The cycle window from bead (0, 0): member 0's beads, then member 1's.
+        std::vector<double> proposed(n * M * 2);
+        PathSet moved = swapped_pair(cell, M, tau);
+        for (std::size_t j = 0; j < n; ++j)
+            for (std::size_t k = 0; k < M; ++k) {
+                double r[2] = {path.pos(j, 0, k) + s[0], path.pos(j, 1, k) + s[1]};
+                cell.wrap(r);
+                for (std::size_t d = 0; d < 2; ++d) {
+                    proposed[(j * M + k) * 2 + d] = r[d];
+                    moved.pos(j, d, k) = r[d];
+                }
+            }
+        moved.rebuild_tables();
+        const auto saved = path.all_positions();
+        const auto saved_tables = table_snapshot(path);
+        const double exact = s_v(moved) - s_v(path);
+        REQUIRE(std::abs(exact) < 10.0);
+        CHECK(action.delta_potential_window(path, 0, 0, proposed) ==
+              Approx(exact).epsilon(1e-10).margin(1e-10));
+        CHECK(path.all_positions() == saved);
+        CHECK(table_snapshot(path) == saved_tables);
+    }
+}
+
+// Staged beads on slices they share and on slices they hold alone: member 0
+// on every slice, member 1 on the first half only.
+TEST_CASE("Staged Takahashi-Imada beads on shared and unshared slices change the action exactly",
+          "[pimc][takahashi_imada][exchange]") {
+    const SimulationCell cell = hexagonal_cell();
+    const std::size_t M = 8, n = 2;
+    const auto g = group(0, n, {1.0, 1.0});
+    Action action = takahashi_imada_action(g, dipolar_moire(n, cell));
+    // S_V alone: the springs are the moves' business, as for a bead delta.
+    const auto s_v = [&](const PathSet& p) { return action.components()[1]->total_action(p); };
+    PathSet path = swapped_pair(cell, M, 0.02);
+    std::vector<PathSet::Bead> beads;
+    std::vector<double> proposed;
+    PathSet moved = swapped_pair(cell, M, 0.02);
+    for (std::size_t j = 0; j < n; ++j)
+        for (std::size_t k = 0; k < (j == 0 ? M : M / 2); ++k) {
+            double r[2] = {path.pos(j, 0, k) + 0.07 * std::sin(3.1 * k + j),
+                           path.pos(j, 1, k) - 0.05 * std::cos(1.7 * k - j)};
+            cell.wrap(r);
+            beads.push_back({j, k});
+            for (std::size_t d = 0; d < 2; ++d) {
+                proposed.push_back(r[d]);
+                moved.pos(j, d, k) = r[d];
+            }
+        }
+    moved.rebuild_tables();
+    const auto saved = path.all_positions();
+    const auto saved_tables = table_snapshot(path);
+    const double exact = s_v(moved) - s_v(path);
+    CHECK(action.delta_potential_beads(path, beads, proposed) ==
+          Approx(exact).epsilon(1e-10).margin(1e-12));
+    CHECK(path.all_positions() == saved);
+    CHECK(table_snapshot(path) == saved_tables);
+}
+
 TEST_CASE("A Takahashi-Imada bead action is the change of the slice action when the bead joins",
           "[pimc][takahashi_imada][grand_canonical]") {
     // A grand-canonical slice: capacity rows, the first n_rows in use, at most

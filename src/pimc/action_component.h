@@ -32,6 +32,19 @@ public:
     virtual void prepare_time_step(double) {}
     // Opt in only when per-slice deltas add without cross-slice coupling.
     virtual bool slice_local_deltas() const noexcept { return false; }
+    // Opt in (with slice_local_deltas) when potential_action_slice(path, k)
+    // is this component's whole action on slice k.  Beads staged together on
+    // one slice (an exchange cycle moved as a whole, a permutation move) are
+    // then evaluated as S_k after minus S_k before the complete move.  Without
+    // it, Action telescopes bead deltas through intermediate states in which
+    // only some of those beads have moved: exact in exact arithmetic, but a
+    // moved bead that passes within eps of a not-yet-moved one adds and
+    // removes a slice action S_k(eps), leaving a rounding error ~ 1e-16
+    // S_k(eps).  One-body terms telescope exactly; an O(1) error needs eps ~
+    // 1e-17 for a 1/r core and ~ 1e-6 for C/r^3 in the primitive action
+    // (C ~ 5, tau = 0.02), but only ~ 3e-3 for the Takahashi-Imada W of that
+    // core, ~ r^-8.
+    virtual bool joint_slice_deltas() const noexcept { return false; }
     virtual double total_action(const PathSet& path) = 0;
     // Energy pieces at fixed M: -d_beta log(normalization) and d_beta S.
     // Components can expose these independently, including nonprimitive actions.

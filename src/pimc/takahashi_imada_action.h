@@ -74,6 +74,12 @@ public:
                                     std::span<const double> proposed) override;
     bool supports_free_bridge() const noexcept override { return true; }
     bool slice_local_deltas() const noexcept override { return true; }
+    // Staged beads that share a slice are evaluated together: W ~ r^{-2p-2}
+    // of an r^-p core is too singular to telescope through intermediate
+    // states (ActionComponent::joint_slice_deltas), and a bead delta already
+    // evaluates every force on its slice, O(N^2), so the two slice actions of
+    // a shared slice cost the same order as its L >= 2 bead deltas.
+    bool joint_slice_deltas() const noexcept override { return true; }
     // tau e(r) + tau^3 [W(R + r) - W(R)], e the Hamiltonian's bead energy.
     bool supports_bead_action() const noexcept override { return ham_.supports_bead_energy(); }
     double bead_action(const PathSet& path, std::size_t k, std::size_t p,
