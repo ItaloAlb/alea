@@ -157,4 +157,50 @@ void HfdTerm::bead_gradient(const ParticleBatch& configs, std::size_t w, std::si
                          [this](double r) { return slope_over_r(r); }, self, rows);
 }
 
+// The conditions of the torus identity are in the header (PIMC periodic
+// virial); what depends on the run is only that the cell is periodic and the
+// groups are rows of it.
+bool HfdTerm::supports_periodic_virial(const SimulationCell& cell, std::size_t np) const noexcept {
+    return cell.is_periodic() && group_a_.first <= group_a_.last &&
+           group_b_.first <= group_b_.last && group_a_.last <= np && group_b_.last <= np;
+}
+
+std::unique_ptr<PotentialGradientWorkspace>
+HfdTerm::make_potential_gradient_workspace(const ParticleBatch& batch) const {
+    if (group_a_.first > group_a_.last || group_b_.first > group_b_.last ||
+        group_a_.last > batch.n_particles() || group_b_.last > batch.n_particles())
+        throw std::invalid_argument("hfd: the potential gradient groups do not fit the batch");
+    return HamiltonianComponent::make_potential_gradient_workspace(batch);
+}
+
+void HfdTerm::evaluate_potential_gradient(const ParticleBatch& batch, std::span<double> out,
+                                          PotentialGradientWorkspace& workspace,
+                                          std::size_t w_begin, std::size_t w_end) const {
+    w_end = workspace.checked_end(batch, *this, out, w_begin, w_end);
+    const std::size_t nw = batch.num_walkers(), dim = batch.dim();
+    const auto positions = batch.positions();  // [np * dim * nw]
+    const SimulationCell& cell = batch.cell();
+    auto add_pair = [&](std::size_t i, std::size_t j) {
+        for (std::size_t w = w_begin; w < w_end; ++w) {
+            double delta[SimulationCell::kMaxDim];  // [dim] Δ = r_i − r_j, minimum image
+            for (std::size_t d = 0; d < dim; ++d)
+                delta[d] = positions[(i * dim + d) * nw + w] - positions[(j * dim + d) * nw + w];
+            const double r2 = cell.min_image_dist2(delta);
+            if (r2 == 0.0) continue;  // the tip of the cone V(Δ) (header)
+            const double g = slope_over_r(std::sqrt(r2));
+            for (std::size_t d = 0; d < dim; ++d) {
+                out[(i * dim + d) * nw + w] += g * delta[d];
+                out[(j * dim + d) * nw + w] -= g * delta[d];
+            }
+        }
+    };
+    if (is_intragroup_) {
+        for (std::size_t i = group_a_.first; i < group_a_.last; ++i)
+            for (std::size_t j = i + 1; j < group_a_.last; ++j) add_pair(i, j);
+    } else {
+        for (std::size_t i = group_a_.first; i < group_a_.last; ++i)
+            for (std::size_t j = group_b_.first; j < group_b_.last; ++j) add_pair(i, j);
+    }
+}
+
 }  // namespace alea

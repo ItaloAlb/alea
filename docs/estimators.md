@@ -646,6 +646,7 @@ tests potential names.
 | `moire` | yes (needs a trap for confinement) | yes | every g commensurate with the cell (g·a/2π an integer) |
 | `screened_coulomb` (open FSC fit) | yes | yes | controlled fit finite in value and slope on a 1025-point scan of its band |
 | `ewald` (Coulomb, RK, screened kernels) | — | yes, 2D | real-space cutoff value matches the long-range endpoint; finite weights and charges; same cell as built |
+| `hfd` | no | yes (minimum-image pairs; the continuum tail is a constant) | groups within the cell's particles; V is continuous on the torus, bounded, a cone at r = 0 |
 | pair-product action | no | no | experimental; thermodynamic only |
 | Takahashi–Imada potential | no | no | a virial of $\tau^3 W$ needs the Hessian of $V$; thermodynamic only |
 | fixed-node restriction (`nodes`) | no | no | the nodal surface carries a singular force the virials do not include; thermodynamic only |
@@ -738,8 +739,10 @@ order 10⁶ % near ρ_min despite sub-percent value errors.
 - `test_potential_gradient.cpp`: gradient contracts, finite differences at
   three steps, Parry force reference.
 - `test_pimc_centroid_virial.cpp`, `test_pimc_periodic_virial.cpp`: exact
-  finite-M Gaussian traces, transfer-matrix traces on the torus,
-  temperature-scaling derivatives, refusal of every unadmitted case.
+  finite-M Gaussian traces (also of a 3-D box), transfer-matrix traces on the
+  torus, temperature-scaling derivatives, the `hfd` forces' contraction
+  against finite differences of the action and a paired ⁴He run, refusal of
+  every unadmitted case.
 - `test_pimc_rk_admission.cpp`, `test_pimc_kernel_admission.cpp`,
   `test_pimc_fsc_diagnostics.cpp`, `test_screened_table_continuity.cpp`: the
   represented kernels of §8 and their admission.

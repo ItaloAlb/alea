@@ -8,6 +8,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <random>
@@ -218,6 +219,74 @@ TEST_CASE("bead_gradient is the change of the forces when a bead joins the confi
             CHECK(rows[j * 3 + d] ==
                   Approx(with[j * 3 + d] - without[j * 3 + d]).margin(1e-12));
     }
+}
+
+TEST_CASE("evaluate_potential_gradient equals configuration_gradient at every configuration, "
+          "and a crowd split equals the full batch",
+          "[hfd][gradient]") {
+    // configuration_gradient is checked against finite differences above; the
+    // batched gradient of the periodic virial must be the same forces, laid
+    // out [np * dim * nw].
+    const std::array<double, 3> L{9.0, 9.5, 10.0};
+    for (const bool periodic : {false, true})
+        for (const bool intragroup : {true, false}) {
+            INFO((periodic ? "periodic box" : "open") << ", "
+                                                       << (intragroup ? "one group" : "two groups"));
+            const SimulationCell cell = periodic ? box(L[0], L[1], L[2]) : SimulationCell(3);
+            const std::size_t np = 7, nw = 3;
+            WalkerSet ws(nw, np, 3, cell);
+            for (std::size_t w = 0; w < nw; ++w) place(ws, spread(np, L, 2.2, 31 + 7 * unsigned(w)), w);
+            const HfdTerm term = intragroup ? HfdTerm(group(0, np), group(0, np), kHe, cell)
+                                            : HfdTerm(group(0, 3), group(3, np), kHe, cell);
+            REQUIRE(term.supports_potential_gradient());
+            auto workspace = term.make_potential_gradient_workspace(ws);
+            std::vector<double> full(np * 3 * nw, 0.0), split(np * 3 * nw, 0.0);
+            term.evaluate_potential_gradient(ws, full, *workspace);
+            term.evaluate_potential_gradient(ws, split, *workspace, 0, 1);
+            term.evaluate_potential_gradient(ws, split, *workspace, 1, nw);
+            CHECK(split == full);
+            double largest = 0.0;
+            for (std::size_t w = 0; w < nw; ++w) {
+                std::vector<double> reference(np * 3, 0.0);
+                term.configuration_gradient(ws, w, HfdTerm::npos, np, HfdTerm::npos, reference);
+                for (std::size_t i = 0; i < np; ++i)
+                    for (std::size_t d = 0; d < 3; ++d) {
+                        INFO("configuration " << w << ", particle " << i << ", axis " << d);
+                        CHECK(full[(i * 3 + d) * nw + w] ==
+                              Approx(reference[i * 3 + d]).epsilon(1e-14).margin(1e-14));
+                        largest = std::max(largest, std::abs(reference[i * 3 + d]));
+                    }
+            }
+            CHECK(largest > 1.0);  // the configurations carry forces of a few K/A
+        }
+}
+
+TEST_CASE("the batched gradient gives no force to a pair that coincides exactly, and the "
+          "periodic virial is admitted only in a periodic cell that holds the groups",
+          "[hfd][gradient][periodic-virial]") {
+    const SimulationCell cell = box(9.0, 9.5, 10.0);
+    const std::size_t np = 3;
+    WalkerSet ws(1, np, 3, cell);
+    // Rows 0 and 1 coincide: V is a cone there (v'(0) != 0) and its gradient
+    // undefined; row 2 is an ordinary partner of both.
+    place(ws, Points{{1.0, 2.0, 3.0}, {1.0, 2.0, 3.0}, {4.1, 2.3, 2.6}}, 0);
+    const HfdTerm term(group(0, np), group(0, np), kHe, cell);
+    auto workspace = term.make_potential_gradient_workspace(ws);
+    std::vector<double> gradient(np * 3, 0.0);
+    term.evaluate_potential_gradient(ws, gradient, *workspace);
+    for (std::size_t d = 0; d < 3; ++d) {
+        CHECK(std::isfinite(gradient[d]));
+        CHECK(gradient[d] == gradient[3 + d]);           // the same partner, the same force
+        CHECK(gradient[6 + d] == Approx(-2.0 * gradient[d]));  // Newton's third law
+    }
+    CHECK(std::abs(gradient[0]) > 0.0);
+
+    CHECK(term.supports_periodic_virial(cell, np));
+    CHECK_FALSE(term.supports_periodic_virial(SimulationCell(3), np));
+    CHECK_FALSE(term.supports_periodic_virial(cell, np - 1));
+    CHECK_FALSE(term.supports_open_centroid_virial());
+    WalkerSet too_few(1, np - 1, 3, cell);
+    CHECK_THROWS_AS(term.make_potential_gradient_workspace(too_few), std::invalid_argument);
 }
 
 TEST_CASE("bead_energy is V(R + r) - V(R), the continuum tail included", "[hfd][gc]") {

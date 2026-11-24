@@ -68,9 +68,21 @@ struct HfdParameters {
 //
 // Supplies the per-configuration gradient (configuration_gradient,
 // bead_gradient) for the Takahashi–Imada action, a grand-canonical bead
-// energy (intra-group), and an O(N) single-bead potential change.  The
-// batched evaluate_potential_gradient is not offered, so PIMC virial
-// estimators refuse the term.
+// energy (intra-group), and an O(N) single-bead potential change.
+//
+// ── PIMC periodic virial ────────────────────────────────────────────────────
+// The batched gradient evaluate_potential_gradient (every pair, the same
+// formula as configuration_gradient) and the periodic admission let the
+// primitive action measure the energy with `energy: periodic_virial`, the
+// torus integration by parts of docs/estimators.md §5.  Its identity needs
+// the sampled V continuous on the torus and independent of the temperature:
+// the minimum-image distance is continuous (a pair on a Wigner–Seitz face has
+// the same radius to both images), v is continuous and bounded, and the tail
+// is a constant.  The force jumps on the faces where v'(r) ≠ 0, which adds no
+// boundary flux for a continuous weight.  V is also a cone at r = 0
+// (v'(0) = −ε α A / r_m ≠ 0): Lipschitz, so integration by parts holds, and a
+// pair that coincides exactly (a set of measure zero) adds no force.  The open
+// centroid virial is not admitted (no test of it here).
 class HfdTerm : public HamiltonianComponent {
 public:
     // Throws on a non-finite parameter, ε, r_m or D not positive, A < 0, a
@@ -123,6 +135,17 @@ public:
     void bead_gradient(const ParticleBatch&, std::size_t, std::size_t, std::span<const double>,
                        std::size_t, std::size_t, std::span<double>,
                        std::span<double>) const override;
+
+    // Batched over the configurations [w_begin, w_end): out[(i*dim + d)*nw + w]
+    // += ∂V/∂r_{i,d}, with ∂V/∂r_i = (v'(r)/r) Δ = −∂V/∂r_j, Δ = r_i − r_j at
+    // minimum image.  out [np * dim * nw], accumulated.  O(N²) per configuration.
+    bool supports_potential_gradient() const noexcept override { return true; }
+    bool supports_periodic_virial(const SimulationCell& cell, std::size_t np) const noexcept override;
+    [[nodiscard]] std::unique_ptr<PotentialGradientWorkspace>
+    make_potential_gradient_workspace(const ParticleBatch&) const override;
+    void evaluate_potential_gradient(const ParticleBatch&, std::span<double>,
+                                     PotentialGradientWorkspace&, std::size_t = 0,
+                                     std::size_t = npos) const override;
 
 private:
     ParticleGroup group_a_;
