@@ -244,7 +244,7 @@ the canonical worm has $g = 0$, one cut link. The grand-canonical worm
 changes $N$ by appending and removing rows and computes its potential changes
 from `HamiltonianComponent::bead_energy`, the energy of one bead against the
 beads present at its slice, which includes the $N$-dependent constants of a
-term (the continuum tail of `inverse_power`).
+term (the continuum tail of `inverse_power` and `hfd`).
 
 For a grand-canonical stage the `App` builds the driver for the capacity
 $n_\text{max}$ of the window (groups, `Hamiltonian`, the worm's `Action`, the

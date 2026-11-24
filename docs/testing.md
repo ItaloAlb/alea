@@ -27,6 +27,10 @@ interaction, for the `inverse_power` term) and `pair_bound_state.py` (the
 isolated pair of a bilayer, for the pairing-determinant test). Each solves a finite-volume
 radial eigenproblem, extrapolated by Richardson over spacings h and h/2;
 `--check` reports the remaining grid and box errors.
+`hfd_reference.py` prints the numbers of `test_hfd`: the HFD-B(HE) potential
+and its slope at 30 digits, the continuum tail of 64 atoms in a cube by
+Cartesian quadrature (not the face rule the code uses), and the exterior
+integral of $r^{-4}$ outside a cube.
 `inverse_power_trap_primitive.py` is the PIMC counterpart of the trap
 reference: the partition function of two bosons with C/r^p at a finite number
 of slices in the primitive approximation, by a radial transfer matrix over
@@ -41,6 +45,7 @@ separates), the reference of the Takahashi–Imada grand-canonical test:
 python tests/references/dot_two_electron_exact.py --w0 0.25 --B 0 0.2 0.4 --m 0 -1
 python tests/references/inverse_power_trap_exact.py --omega 1 5 20 --strength 1 --exponent 3
 python tests/references/pair_bound_state.py --d 0.4 --check
+python tests/references/hfd_reference.py
 python tests/references/inverse_power_trap_primitive.py --beta 2 --slices 16 --strength 1 --exponent 3
 python tests/references/inverse_power_trap_primitive.py --beta 2 --slices 8 --strength 1 --exponent 3 --action takahashi_imada
 ```

@@ -449,9 +449,10 @@ Hamiltonian build_hamiltonian(const io::Config& cfg,
         for (const io::ScreenedCoulombSpec& s : cfg.screened)
             h.add_component(build_component(s, ctx));
     }
-    // Absolutely convergent image sum: one term per spec, Ewald or not.
+    // Absolutely convergent image sums: one term per spec, Ewald or not.
     for (const io::InversePowerSpec& s : cfg.inverse_powers)
         h.add_component(build_component(s, ctx));
+    for (const io::HfdSpec& s : cfg.hfds) h.add_component(build_component(s, ctx));
     for (const io::MoireSpec& m : cfg.moires) h.add_component(build_component(m, ctx));
     return h;
 }
@@ -626,7 +627,7 @@ GrandCanonicalStage build_grand_canonical_stage(const io::Config& cfg, const io:
             missing += (missing.empty() ? "" : ", ") + component->name();
     if (!missing.empty())
         throw std::runtime_error("pimc: grand_canonical: no bead energy for " + missing +
-                                 " (implemented: moire, inverse_power, harmonic_trap and the "
+                                 " (implemented: moire, inverse_power, hfd, harmonic_trap and the "
                                  "pair coulomb term; the periodic Ewald term carries an "
                                  "N-dependent background)");
     const Action worm_action = build_action(capacity, groups, ham, dim);

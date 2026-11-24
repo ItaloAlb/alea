@@ -370,14 +370,18 @@ must then all be of one family (all `coulomb`, all `rytova_keldysh`, or all
 `screened_coulomb`), and Coulomb terms must share one `epsilon`. Every pair of
 groups interacts under PBC, listed or not.
 
-`inverse_power` is the exception: its sum over periodic images converges
-absolutely (exponent $p$ greater than the dimension), so it is never part of the
-Ewald term and only the listed pair interacts. Under PBC each pair is taken at
-its minimum image, and the images outside the Wigner–Seitz cell are replaced by
-a uniform continuum, $E_\text{tail} = \tfrac12 N_a n_a \int_{\text{outside WS}} C r^{-p}\,d^dr$
+`inverse_power` and `hfd` are the exception: their sums over periodic images
+converge absolutely (an exponent $p$ greater than the dimension; $r^{-6}$ for
+`hfd`), so they are never part of the Ewald term and only the listed pair
+interacts. Under PBC each pair is taken at its minimum image, and the images
+outside the Wigner–Seitz cell are replaced by a uniform continuum,
+$E_\text{tail} = \tfrac12 N_a n_a \int_{\text{outside WS}} v(r)\,d^dr$
 (or $N_a n_b\int\ldots$ for two groups), which is included in the local energy and
 printed in the log. Its error, $g(r)\neq n$ outside the cell, vanishes as
-$N\to\infty$ and is removed by extrapolating in $N$.
+$N\to\infty$ and is removed by extrapolating in $N$. This is the usual tail
+correction of simulations of liquid helium, taken outside the Wigner–Seitz cell
+rather than outside the sphere of radius $L/2$; the pairs in the corners of the
+cell are summed explicitly instead, so the total energy agrees.
 
 | `type` | Keys | Meaning |
 |---|---|---|
@@ -385,6 +389,7 @@ $N\to\infty$ and is removed by extrapolating in $N$.
 | `rytova_keldysh` | `pair`, `epsilon` (1.0), `r0` (1.0) | 2D screened interaction with screening length $r_0$ (see [Concepts](concepts.md#cells-and-interactions)) |
 | `screened_coulomb` | `pair`, `epsilons`, `interfaces`, `source_layer` (1), `target_layer` (0), `z_offset`, `fit_tol` (0.1) | Dielectric multilayer: `epsilons` lists ε per layer from bottom to top (N values); `interfaces` lists the N−1 interface positions in Bohr; `source_layer`/`target_layer` are 1-based (0 = same as source); `z_offset` overrides the out-of-plane offset derived from the particles' `z`; `fit_tol` is the fit accuracy in % |
 | `inverse_power` | `pair`, `strength`, `exponent` (all required) | $C/r^p$ with $C$ = `strength`, $p$ = `exponent`; $p = 3$ is dipoles polarized perpendicular to the plane. Refuses $C<0$ with $p\ge 2$ (no ground state), $p \le d$ under PBC, and groups in different planes |
+| `hfd` | `pair`, `epsilon`, `r_m`, `A`, `alpha`, `beta`, `C6`, `C8`, `C10`, `D` (all required) | The HFD-B pair potential of Aziz, $V = \varepsilon V^*(r/r_m)$, $V^*(x) = A e^{-\alpha x + \beta x^2} - F(x)\,(C_6/x^6 + C_8/x^8 + C_{10}/x^{10})$, $F(x) = e^{-(D/x - 1)^2}$ for $x < D$ and 1 beyond. `epsilon` is an energy and `r_m` a length in the run's units; see below. Refuses a repulsion that does not decay ($\beta > 0$, or $\beta = 0$ with $\alpha \le 0$) and groups in different planes |
 | `harmonic_trap` | `omega` (required), `groups` (all), `center` (origin) | $\tfrac12 m\omega^2\vert r - c\vert^2$ on the listed groups |
 | `moire` (or `moiré`) | `group` (list of groups), `V0`, `Vtilde`, `phi`, `a_M` (1.0), `theta0` (0) | $V_0 + 2\tilde V\sum_{i=1}^3\cos(g_i\cdot r + \phi)$, triangular superlattice of period $a_M$ |
 | `magnetic_field` | `B` (required) | Uniform field along $z$ (symmetric gauge about the origin; 2D open cells). At most one. Not supported by PIMC |
@@ -392,6 +397,21 @@ $N\to\infty$ and is removed by extrapolating in $N$.
 
 Note the plural difference: `harmonic_trap` uses `groups`, `moire` uses `group`
 (both take a list).
+
+**`hfd` parameter sets.** The ⁴He potential HFD-B(HE) (R. A. Aziz,
+F. R. W. McCourt and C. C. K. Wong, *Mol. Phys.* **61**, 1487 (1987)) and the Ne
+potential of R. A. Aziz and M. J. Slaman, *Chem. Phys.* **130**, 187 (1989),
+both with $\varepsilon$ in K and $r_m$ in Å:
+
+| | `epsilon` | `r_m` | `A` | `alpha` | `beta` | `C6` | `C8` | `C10` | `D` |
+|---|---|---|---|---|---|---|---|---|---|
+| ⁴He | 10.948 | 2.963 | 1.8443101e5 | 10.43329537 | −2.27965105 | 1.36745214 | 0.42123807 | 0.17473318 | 1.4826 |
+| Ne | 42.25 | 3.091 | 895717.95 | 13.86434671 | −0.12993822 | 1.21317545 | 0.53222749 | 0.24570703 | 1.36 |
+
+With `beta: 0` the same form is the earlier HFDHE2 potential. To work in K and
+Å, give each particle the mass $m$ for which $\hbar^2/(2m) = 1/(2m)$ in
+K Å²: for ⁴He, $\hbar^2/(2 m_\text{He} k_B) = 6.0596$ K Å², so `mass: 0.082513`
+(that is, $1/12.1193$); temperatures and `beta` are then in K and K⁻¹.
 
 ---
 
@@ -405,7 +425,7 @@ a single key.
 | `- primitive: {}` | Kinetic springs plus $\tau V$ per slice. **Default** when `action:` is absent |
 | `- kinetic: primitive` | The kinetic (spring) part alone |
 | `- potential: primitive` | The $\tau V$ part alone |
-| `- potential: takahashi_imada` | $\tau V + \tau^3 W$ per slice, $W = \frac{1}{24}\sum_{j,d} m_{jd}^{-1} (\partial V/\partial r_{jd})^2$ (Takahashi–Imada). Use with `- kinetic: primitive`. Every potential term must supply its forces: `moire`, `inverse_power`, `harmonic_trap` and `coulomb` do, `rytova_keldysh`, `screened_coulomb` and Ewald sums do not yet. Only the thermodynamic energy estimator |
+| `- potential: takahashi_imada` | $\tau V + \tau^3 W$ per slice, $W = \frac{1}{24}\sum_{j,d} m_{jd}^{-1} (\partial V/\partial r_{jd})^2$ (Takahashi–Imada). Use with `- kinetic: primitive`. Every potential term must supply its forces: `moire`, `inverse_power`, `hfd`, `harmonic_trap` and `coulomb` do, `rytova_keldysh`, `screened_coulomb` and Ewald sums do not yet. Only the thermodynamic energy estimator |
 | `- pair_product: { extent: <float>, grid_points: 17, form: finite_grid }` | Numerical pair-product action on a finite grid (experimental). `extent` is required; `grid_points` is odd, 5 to 33. Replaces the primitive potential |
 | `- nodes: wavefunction` | Fixed-node restriction: every path keeps the sign of each determinant of the `wavefunction:` block's `slater` items on all of its slices (time-independent nodes). Requires `statistics: fixed_node` in the PIMC stage, real determinants, and no `optimizer` stage. Gaussian orbitals in a periodic cell are refused when their minimum-image fold neglects more than $10^{-6}$ of the peak |
 
@@ -619,7 +639,7 @@ A grand-canonical stage samples one species of bosons: the system holds one
 particle group, the worm's, with `type: bosons` and every particle in `up`. It
 needs the primitive action, the thermodynamic energy estimator, a cell that
 does not depend on N (give `L` or `vectors`, not `rs`) and potential terms that
-can price a single bead: `moire`, `inverse_power`, `harmonic_trap` and the pair
+can price a single bead: `moire`, `inverse_power`, `hfd` (within one group), `harmonic_trap` and the pair
 `coulomb` term (open cells, or `truncation: minimum_image`). It refuses
 `statistics`, `permutation` and `joint_permutation` moves, a second worm, the
 virial estimators and the off-diagonal estimators (`momentum_distribution`).

@@ -457,7 +457,7 @@ used to approach the thermodynamic limit. Give it by `shape` + `L`, by
 the cell is a box along the axes (`L` scalar or `[Lx, Ly, Lz]`).
 
 **Short-range pairs in a periodic cell.** A pair potential that decays faster
-than $r^{-d}$ (`inverse_power` with $p > d$) is not an Ewald term: each
+than $r^{-d}$ (`inverse_power` with $p > d$, `hfd`) is not an Ewald term: each
 pair is taken at its minimum image, and the images outside the Wigner–Seitz
 cell are a uniform continuum that adds a constant tail to the energy.
 

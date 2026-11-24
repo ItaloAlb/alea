@@ -231,8 +231,8 @@ TEST_CASE("the integral outside a 3-D box matches a closed form and an independe
           "[inverse_power][periodic][3d]") {
     using alea::outside_wigner_seitz_integral;
     // Cube of half-side h, p = 4: (1/h) ∮ dΩ max_i |u_i| = 24 I / h with
-    // I = ∫_0^1 ∫_0^1 (1 + a² + b²)^{-2} da db
-    // (mpmath: 24 I = 10.44503701640523837).
+    // I = ∫_0^1 ∫_0^1 (1 + a² + b²)^{-2} da db (tests/references/hfd_reference.py,
+    // mpmath: 24 I = 10.44503701640523837).
     for (const double h : {0.5, 2.0}) {
         CHECK(outside_wigner_seitz_integral(box_3d(2 * h, 2 * h, 2 * h), 4.0) ==
               Approx(10.44503701640523837 / h).epsilon(1e-12));

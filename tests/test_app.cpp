@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "hamiltonian/ewald_term.h"
+#include "hamiltonian/hfd.h"
 #include "hamiltonian/moire.h"
 #include "builders/exchange_classes.h"
 #include "io/parser.h"
@@ -1309,6 +1310,38 @@ TEST_CASE("a 3-D periodic cell is a cube or a box, and 2-D shapes are refused in
     CHECK_THROWS(cell_of("{ type: periodic, dimension: 3, rs: 1.0 }"));
     CHECK_THROWS(cell_of("{ type: periodic, dimension: 3, "
                          "vectors: [[0, 1, 1], [1, 0, 1], [1, 1, 0]] }"));
+}
+
+TEST_CASE("a periodic hfd term in a 3-D box is built per spec with its continuum tail",
+          "[app][hfd][3d]") {
+    // 64 He atoms at n = 0.02186 A^-3, HFD-B(HE): the term's tail is the one
+    // of test_hfd (tests/references/hfd_reference.py, -49.8070424167 K).
+    const auto cfg = alea::io::parse_config(R"(
+system:
+  lattice: { type: periodic, dimension: 3, L: 14.305727189732 }
+  particles:
+    - { name: he, group: he, type: boltzmannon, mass: 0.0825127, up: 64, down: 0 }
+hamiltonian:
+  terms:
+    - { type: hfd, pair: [he, he], epsilon: 10.948, r_m: 2.963, A: 1.8443101e5,
+        alpha: 10.43329537, beta: -2.27965105, C6: 1.36745214, C8: 0.42123807,
+        C10: 0.17473318, D: 1.4826 }
+)");
+    const auto groups = build_groups(cfg);
+    const alea::SimulationCell cell = alea::build_cell(cfg, 64);
+    const auto ham = build_hamiltonian(cfg, groups, cell);
+    std::vector<std::string> names;
+    for (const auto& c : ham.components()) names.push_back(c->name());
+    CHECK(std::count(names.begin(), names.end(), "hfd") == 1);
+    CHECK(std::count(names.begin(), names.end(), "ewald") == 0);
+    // Every parameter reaches the term in its place: the well (eps, r_m) and
+    // the tail, which depends on all nine.
+    const alea::HfdTerm* term = nullptr;
+    for (const auto& c : ham.components())
+        if (const auto* h = dynamic_cast<const alea::HfdTerm*>(c.get())) term = h;
+    REQUIRE(term != nullptr);
+    CHECK(term->pair_value(2.963) == Catch::Approx(-10.9480023632594).epsilon(1e-12));
+    CHECK(term->tail_energy() == Catch::Approx(-49.8070424167).epsilon(1e-9));
 }
 
 TEST_CASE("a zero_energy jastrow reads its core from the Hamiltonian and its cutoff "
