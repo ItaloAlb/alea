@@ -1286,6 +1286,31 @@ hamiltonian:
     CHECK(v[0] == Catch::Approx(pair_sum[0] + 0.5 * 16.0 * n * 6.0 / h).epsilon(1e-9));
 }
 
+TEST_CASE("a 3-D periodic cell is a cube or a box, and 2-D shapes are refused in 3-D",
+          "[app][3d]") {
+    const auto cell_of = [](const std::string& lattice) {
+        const auto cfg = alea::io::parse_config("system:\n  lattice: " + lattice +
+                                                "\n  particles:\n"
+                                                "    - { name: a, group: a, up: 2, down: 0 }\n");
+        return alea::build_cell(cfg, 2);
+    };
+    const alea::SimulationCell cube = cell_of("{ type: periodic, dimension: 3, L: 6.0 }");
+    CHECK(cube.dim() == 3);
+    CHECK(cube.orthorhombic());
+    CHECK(cube.volume() == Catch::Approx(216.0));
+    CHECK(cell_of("{ type: periodic, dimension: 3, L: 6.0, shape: cubic }").volume() ==
+          Catch::Approx(216.0));
+    const alea::SimulationCell box = cell_of("{ type: periodic, dimension: 3, L: [4, 5, 6] }");
+    CHECK(box.volume() == Catch::Approx(120.0));
+    CHECK(box.ws_radius() == Catch::Approx(2.0));
+    CHECK_THROWS(cell_of("{ type: periodic, dimension: 3, L: 6.0, shape: hexagonal }"));
+    CHECK_THROWS(cell_of("{ type: periodic, dimension: 3, L: 6.0, shape: square }"));
+    CHECK_THROWS(cell_of("{ type: periodic, dimension: 2, L: 6.0, shape: cubic }"));
+    CHECK_THROWS(cell_of("{ type: periodic, dimension: 3, rs: 1.0 }"));
+    CHECK_THROWS(cell_of("{ type: periodic, dimension: 3, "
+                         "vectors: [[0, 1, 1], [1, 0, 1], [1, 1, 0]] }"));
+}
+
 TEST_CASE("a zero_energy jastrow reads its core from the Hamiltonian and its cutoff "
           "from the cell",
           "[app][zero_energy]") {

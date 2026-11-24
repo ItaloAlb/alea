@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# 3-D isotropic harmonic oscillator with the Takahashi-Imada action: the 1-D
+# case of pimc_ho_1d_takahashi_imada.yaml on each of three axes.
+#
+# One distinguishable particle in V = (1/2) w^2 |r|^2, w = 1, m = 1, beta = 2,
+# M = 4 slices (tau = 0.5).  The ring separates into three 1-D Gaussian rings
+# with w_eff^2 = w^2 (1 + tau^2 w^2 / 12), so every 1-D value triples:
+#   E = 3 x 0.6562772779106 = 1.9688318337318,  <V> = <K> = 0.9844159168659
+# (primitive at this M: E = 3 x 0.6405228757944 = 1.9215686273832).
+project:
+  name: pimc_ho_3d_takahashi_imada
+  seed: 4418
+
+system:
+  lattice:
+    type: open
+    dimension: 3
+    L: 3.0
+  particles:
+    - name: p
+      group: particle
+      type: boltzmannon
+      mass: 1.0
+      charge: 0
+      up: 1
+      down: 0
+
+hamiltonian:
+  terms:
+    - type: harmonic_trap
+      omega: 1.0
+
+action:
+  - kinetic: primitive
+  - potential: takahashi_imada
+
+qmc:
+  - method: pimc
+    threads: 2
+    samples: 64
+    time_step: 0.5
+    beta: 2.0
+    equilibration_blocks: 100
+    accumulation_blocks: 1600
+    steps_per_block: 20
+    sub_steps: 1
+    moves:
+      - bisection: { levels: 1, weight: 1.0 }
+      - centroid:  { step: 0.6, weight: 1.0 }
+    energy: thermodynamic

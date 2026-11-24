@@ -667,6 +667,12 @@ components 0
   w1 0 0 0
   w2 0 0 0
   w3 0 0 0
+config tests/configs/pimc_free_3d_box_pbc.yaml
+components 0
+  w0 0 0 0
+  w1 0 0 0
+  w2 0 0 0
+  w3 0 0 0
 config tests/configs/pimc_gc_moire_dipoles.yaml
 components 0
   w0 0 38.749258497322586 0
@@ -697,6 +703,12 @@ components 0
   w1 0 0.85367034124264685 0
   w2 0 0.23297904492378596 0
   w3 0 0.76705006520416075 0
+config tests/configs/pimc_ho_3d_takahashi_imada.yaml
+components 0
+  w0 0 1.8132998490305852 0
+  w1 0 1.4795163809926424 0
+  w2 0 0.97456000817189614 0
+  w3 0 0.6366616040717703 0
 config tests/configs/pimc_many_body_eh.yaml
 components 0
   w0 0 8.2046786071103401 0

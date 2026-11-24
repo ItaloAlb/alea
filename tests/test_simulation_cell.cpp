@@ -43,17 +43,21 @@ double brute_min_image(const SimulationCell& c, const double* del, int shells = 
     double            best = std::numeric_limits<double>::max();
     const int n1_lo = (dim > 1) ? -shells : 0;
     const int n1_hi = (dim > 1) ? shells : 0;
+    const int n2_lo = (dim > 2) ? -shells : 0;
+    const int n2_hi = (dim > 2) ? shells : 0;
     for (int n0 = -shells; n0 <= shells; ++n0)
-        for (int n1 = n1_lo; n1 <= n1_hi; ++n1) {
-            const double n[2] = {static_cast<double>(n0), static_cast<double>(n1)};
-            double       r2   = 0.0;
-            for (std::size_t d = 0; d < dim; ++d) {
-                double s = del[d];
-                for (std::size_t i = 0; i < dim; ++i) s += n[i] * a[i * dim + d];
-                r2 += s * s;
+        for (int n1 = n1_lo; n1 <= n1_hi; ++n1)
+            for (int n2 = n2_lo; n2 <= n2_hi; ++n2) {
+                const double n[3] = {static_cast<double>(n0), static_cast<double>(n1),
+                                     static_cast<double>(n2)};
+                double       r2   = 0.0;
+                for (std::size_t d = 0; d < dim; ++d) {
+                    double s = del[d];
+                    for (std::size_t i = 0; i < dim; ++i) s += n[i] * a[i * dim + d];
+                    r2 += s * s;
+                }
+                best = std::min(best, r2);
             }
-            best = std::min(best, r2);
-        }
     return std::sqrt(best);
 }
 
@@ -74,6 +78,9 @@ TEST_CASE("min_image matches an exhaustive image search on every cell shape",
         {"square rotated 45", make({14.142135623730951, 14.142135623730951,
                                    -14.142135623730951, 14.142135623730951}, 2), 50.0},
         {"1D",                make({7.0}, 1),                          30.0},
+        {"3D cube",           make({8.0, 0, 0, 0, 8.0, 0, 0, 0, 8.0}, 3), 30.0},
+        {"3D box",            make({8.0, 0, 0, 0, 11.0, 0, 0, 0, 14.0}, 3), 40.0},
+        {"3D rows permuted",  make({0, 11.0, 0, 0, 0, 14.0, -8.0, 0, 0}, 3), 40.0},
     };
 
     for (auto& [name, cell, span] : cases) {
@@ -131,6 +138,37 @@ TEST_CASE("min_image_batch folds every walker bit-for-bit like min_image",
                 const double want1 = w < w0 ? -1.0 : del[1];
                 REQUIRE(out[w] == want0);
                 REQUIRE(out[nw + w] == want1);
+            }
+        }
+    }
+}
+
+TEST_CASE("a 3-D box folds every walker of a batch bit-for-bit like min_image",
+          "[cell][3d]") {
+    const SimulationCell cell = make({8.0, 0, 0, 0, 11.0, 0, 0, 0, 14.0}, 3);
+    REQUIRE(cell.orthorhombic());
+    std::mt19937_64 rng(79);
+    std::uniform_real_distribution<double> U(-40.0, 40.0);
+    constexpr std::size_t nw = 37;
+    std::vector<double> xi(3 * nw), xj(3 * nw);  // [d * nw + w]
+    for (double& x : xi) x = U(rng);
+    for (double& x : xj) x = U(rng);
+    const double c[3] = {U(rng), U(rng), U(rng)};
+    for (std::size_t w0 : {std::size_t{0}, std::size_t{3}}) {
+        std::vector<double> out(3 * nw, -1.0), from(3 * nw, -1.0);
+        cell.min_image_batch(xi.data(), xj.data(), nw, out.data(), w0, nw);
+        cell.min_image_batch_from(xi.data(), c, nw, from.data(), w0, nw);
+        for (std::size_t w = 0; w < nw; ++w) {
+            double del[3], to_c[3];
+            for (std::size_t d = 0; d < 3; ++d) {
+                del[d]  = xi[d * nw + w] - xj[d * nw + w];
+                to_c[d] = xi[d * nw + w] - c[d];
+            }
+            cell.min_image(del);
+            cell.min_image(to_c);
+            for (std::size_t d = 0; d < 3; ++d) {
+                REQUIRE(out[d * nw + w] == (w < w0 ? -1.0 : del[d]));
+                REQUIRE(from[d * nw + w] == (w < w0 ? -1.0 : to_c[d]));
             }
         }
     }
@@ -349,11 +387,18 @@ TEST_CASE("volume and Wigner-Seitz inradius take their known values", "[cell]") 
 
     // Reduction is unimodular, so a skewed basis keeps its cell area.
     CHECK(make({10.0, 0.0, 35.0, 10.0}, 2).volume() == Approx(100.0));
+
+    // 3-D box, rows in any order and sign: V = Lx Ly Lz, inradius min(L)/2.
+    const SimulationCell box = make({0, 11.0, 0, 0, 0, 14.0, -8.0, 0, 0}, 3);
+    CHECK(box.orthorhombic());
+    CHECK(box.volume() == Approx(8.0 * 11.0 * 14.0));
+    CHECK(box.ws_radius() == Approx(4.0));
 }
 
 TEST_CASE("the reciprocal lattice satisfies b_i . a_j = 2 pi delta_ij", "[cell]") {
     for (const SimulationCell& c :
-         {square(10.0), hexagonal(10.0), make({12.0, 3.0, -4.0, 9.0}, 2)}) {
+         {square(10.0), hexagonal(10.0), make({12.0, 3.0, -4.0, 9.0}, 2),
+          make({0, 11.0, 0, 0, 0, 14.0, -8.0, 0, 0}, 3)}) {
         const auto a = c.vectors();
         const auto b = c.reciprocal();
         for (std::size_t i = 0; i < c.dim(); ++i)
@@ -411,9 +456,53 @@ TEST_CASE("an open cell leaves separations and positions untouched", "[cell]") {
 TEST_CASE("a periodic cell is rejected in unsupported dimensions", "[cell]") {
     std::vector<double> v27(27, 1.0);
     CHECK_THROWS(SimulationCell(3, std::span<const double>(v27)));
+    std::vector<double> v16(16, 0.0);
+    for (std::size_t d = 0; d < 4; ++d) v16[d * 4 + d] = 1.0;
+    CHECK_THROWS(SimulationCell(4, std::span<const double>(v16)));
     // Singular basis (the two vectors are parallel).
     std::vector<double> sing = {1.0, 1.0, 2.0, 2.0};
     CHECK_THROWS(SimulationCell(2, std::span<const double>(sing)));
+    // 3-D: only boxes along the axes.  A skewed cell (here fcc-like) would
+    // need a reduced basis and a 27-image fold; a singular one has no volume.
+    std::vector<double> skew = {0, 1, 1, 1, 0, 1, 1, 1, 0};
+    CHECK_THROWS(SimulationCell(3, std::span<const double>(skew)));
+    std::vector<double> sheared = {8, 0, 0, 0, 8, 0, 1e-9, 0, 8};
+    CHECK_THROWS(SimulationCell(3, std::span<const double>(sheared)));
+    std::vector<double> flat = {8, 0, 0, 0, 8, 0, 0, 0, 0};
+    CHECK_THROWS(SimulationCell(3, std::span<const double>(flat)));
+    std::vector<double> box = {8, 0, 0, 0, 9, 0, 0, 0, 10};
+    CHECK_NOTHROW(SimulationCell(3, std::span<const double>(box)));
+}
+
+TEST_CASE("given_reciprocal of a 3-D box is dual to the vectors as given", "[cell][3d]") {
+    const std::vector<double> v = {0, 11.0, 0, 0, 0, 14.0, -8.0, 0, 0};
+    const SimulationCell cell(3, std::span<const double>(v));
+    const auto bg = cell.given_reciprocal();
+    for (std::size_t i = 0; i < 3; ++i)
+        for (std::size_t j = 0; j < 3; ++j) {
+            double s = 0.0;
+            for (std::size_t d = 0; d < 3; ++d) s += bg[i * 3 + d] * v[j * 3 + d];
+            CHECK(s == Approx(i == j ? kTwoPi : 0.0).margin(1e-12));
+        }
+}
+
+TEST_CASE("wrap in a 3-D box is idempotent and keeps minimum-image distances",
+          "[cell][3d]") {
+    const SimulationCell cell = make({8.0, 0, 0, 0, 11.0, 0, 0, 0, 14.0}, 3);
+    std::mt19937_64 rng(8);
+    std::uniform_real_distribution<double> U(-100.0, 100.0);
+    for (int t = 0; t < 2000; ++t) {
+        double p[3] = {U(rng), U(rng), U(rng)}, q[3] = {U(rng), U(rng), U(rng)};
+        double before[3] = {p[0] - q[0], p[1] - q[1], p[2] - q[2]};
+        const double r_before = std::sqrt(cell.min_image_dist2(before));
+        cell.wrap(p);
+        cell.wrap(q);
+        double f[3];
+        cell.fractional(p, f);
+        for (double fi : f) REQUIRE(std::abs(fi) <= 0.5 + 1e-12);
+        double after[3] = {p[0] - q[0], p[1] - q[1], p[2] - q[2]};
+        REQUIRE(std::sqrt(cell.min_image_dist2(after)) == Approx(r_before).margin(1e-10));
+    }
 }
 
 // ── Distance table under periodic boundaries ──────────────────────────────

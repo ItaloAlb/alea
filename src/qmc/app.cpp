@@ -285,7 +285,16 @@ SimulationCell build_cell(const io::Config& cfg, std::size_t n_particles) {
         return SimulationCell(dim, lat.vectors);
     }
 
-    const std::string shape = lat.shape.empty() ? "square" : lat.shape;
+    // A scalar L builds a square (2-D) or a cube (3-D) unless `shape` says
+    // otherwise; the 2-D shapes have no 3-D meaning and are refused there.
+    const std::string shape =
+        !lat.shape.empty() ? lat.shape : (dim == 3 ? "cubic" : "square");
+    if (dim == 3 && shape != "cubic")
+        throw std::runtime_error(
+            "lattice.shape '" + shape + "' is a 2-D cell; in 3-D a scalar L builds a "
+            "cube (shape: cubic, or omit shape) and `L: [Lx, Ly, Lz]` a box");
+    if (dim != 3 && shape == "cubic")
+        throw std::runtime_error("lattice.shape 'cubic' needs dimension 3");
 
     if (!lat.lengths.empty()) {
         if (lat.lengths.size() != dim)
@@ -319,11 +328,12 @@ SimulationCell build_cell(const io::Config& cfg, std::size_t n_particles) {
     } else if (shape == "hexagonal") {
         v[0] = L;        v[1] = 0.0;
         v[2] = 0.5 * L;  v[3] = L * std::sqrt(3.0) / 2.0;
-    } else if (shape == "square" || shape == "rectangular") {
+    } else if (shape == "square" || shape == "rectangular" || shape == "cubic") {
         for (std::size_t d = 0; d < dim; ++d) v[d * dim + d] = L;
     } else {
         throw std::runtime_error("unknown lattice shape: '" + shape +
-                                 "' (expected square, rectangular or hexagonal)");
+                                 "' (expected square, rectangular or hexagonal in "
+                                 "2-D, cubic in 3-D)");
     }
     return SimulationCell(dim, v);
 }

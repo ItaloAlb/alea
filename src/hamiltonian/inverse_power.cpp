@@ -14,6 +14,7 @@
 
 #include "numerics/special_functions.h"
 #include "population/particle_batch.h"
+#include "population/wigner_seitz_exterior.h"
 
 namespace alea {
 
@@ -32,39 +33,11 @@ double outside_wigner_seitz_integral(const SimulationCell& cell, double exponent
     if (!(exponent > d))
         throw std::invalid_argument(
             "outside_wigner_seitz_integral: needs exponent > dimension");
-    const std::span<const double> a = cell.vectors();  // [i*dim + d]
-
-    // 1-D: the WS cell is [−L/2, L/2]; two directions, ρ = L/2 each.
-    if (dim == 1) return 2.0 * std::pow(0.5 * std::abs(a[0]), 1.0 - exponent) / (exponent - 1.0);
-
-    // 2-D.  vectors() is the Gauss-reduced basis (SimulationCell's ctor), so
-    // every WS face is the bisector of one of ±a₁, ±a₂, ±(a₁ ± a₂); the range
-    // [−2, 2] is a margin, and a translation that is not a face never wins the
-    // minimum below.
-    std::vector<double> lx, ly;  // translations L = s a₁ + t a₂ ≠ 0
-    for (int s = -2; s <= 2; ++s)
-        for (int t = -2; t <= 2; ++t) {
-            if (s == 0 && t == 0) continue;
-            lx.push_back(s * a[0] + t * a[2]);
-            ly.push_back(s * a[1] + t * a[3]);
-        }
-    constexpr std::size_t n_theta = std::size_t{1} << 18;
-    const double dtheta = 2.0 * numerics::PI / static_cast<double>(n_theta);
-    double sum = 0.0;
-    for (std::size_t k = 0; k < n_theta; ++k) {
-        const double theta = (static_cast<double>(k) + 0.5) * dtheta;
-        const double ux = std::cos(theta), uy = std::sin(theta);
-        // The bisector of L is {r : r·L = |L|²/2}; along u it is reached at
-        // ρ = |L|²/(2 u·L), for the translations that u points towards.
-        double rho = std::numeric_limits<double>::infinity();
-        for (std::size_t c = 0; c < lx.size(); ++c) {
-            const double proj = ux * lx[c] + uy * ly[c];
-            if (proj > 0.0)
-                rho = std::min(rho, 0.5 * (lx[c] * lx[c] + ly[c] * ly[c]) / proj);
-        }
-        sum += std::pow(rho, d - exponent);
-    }
-    return sum * dtheta / (exponent - d);
+    // f(ρ) = ∫_ρ^∞ r^{−p} r^{d−1} dr = ρ^{d−p}/(p − d); the division is done
+    // once, outside the angular rule.
+    return wigner_seitz_exterior_integral(
+               cell, [&](double rho) { return std::pow(rho, d - exponent); }) /
+           (exponent - d);
 }
 
 InversePowerTerm::InversePowerTerm(ParticleGroup group_a, ParticleGroup group_b,

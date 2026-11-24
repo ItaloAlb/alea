@@ -58,6 +58,23 @@ TEST_CASE("The Takahashi-Imada action reproduces the discretized harmonic oscill
     });
 }
 
+TEST_CASE("The Takahashi-Imada action reproduces the discretized 3-D harmonic oscillator",
+          "[pimc][physics][takahashi_imada][3d]") {
+    // Three independent 1-D rings (pimc_ho_3d_takahashi_imada.yaml): the
+    // moves, the forces and the |grad V|^2 sum run over three axes.
+    constexpr double kEnergy = 1.9688318337318;           // TI, M = 4
+    constexpr double kHalf = 0.9844159168659;             // <V> = <K>
+    constexpr double kPrimitiveEnergy = 1.9215686273832;  // primitive, M = 4
+    run_single_stage(load_config("pimc_ho_3d_takahashi_imada.yaml"), [&](const alea::Pimc& pimc) {
+        INFO(pimc.summary());
+        const double e = pimc.energy(), se = pimc.energy_error();
+        CHECK(std::abs(e - kEnergy) <= 4.0 * se + 1e-4);
+        CHECK(std::abs(kPrimitiveEnergy - kEnergy) > 5.0 * se);
+        CHECK(std::abs(pimc.potential() - kHalf) <= 4.0 * pimc.potential_error() + 1e-4);
+        CHECK(std::abs(pimc.kinetic() - kHalf) <= 4.0 * pimc.kinetic_error() + 1e-4);
+    });
+}
+
 TEST_CASE("A Takahashi-Imada run refuses the virial energy estimators", "[pimc][takahashi_imada]") {
     auto cfg = load_config("pimc_ho_1d_takahashi_imada.yaml");
     cfg.pimc.front().energy = "centroid_virial";

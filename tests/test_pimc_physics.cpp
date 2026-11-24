@@ -217,6 +217,41 @@ TEST_CASE("the same config and seed reproduce bit-identical PIMC results",
     REQUIRE(a.acceptance == b.acceptance);
 }
 
+TEST_CASE("PIMC free particle in a 3-D periodic box: energy and winding tensor",
+          "[pimc][physics][winding][3d]") {
+    // pimc_free_3d_box_pbc.yaml: L = (4, 4.5, 5), beta = 2, m = 1.  The axes
+    // separate: E is the sum of three 1-D momentum sums, the tensor is
+    // diagonal with T_aa = <W_a^2> of P(W_a) ~ exp(-L_a^2 n^2 / (2 beta)).
+    const double e_exact = 0.635662029203328;
+    const double t_exact[3] = {0.5654032771836074, 0.2531490116385513, 0.09615147755121721};
+    const double w2_exact = 0.017228316561984203;
+    const std::string path = std::string(ALEA_CONFIG_DIR) + "/pimc_free_3d_box_pbc.yaml";
+    alea::App app(alea::io::parse_config_file(path));
+    alea::DriverPack pack = app.build_drivers();
+    REQUIRE(pack.drivers.size() == 1);
+    auto* pimc = dynamic_cast<alea::Pimc*>(pack.drivers[0].get());
+    REQUIRE(pimc != nullptr);
+    pimc->run();
+    INFO("summary: " << pimc->summary());
+    INFO("E = " << pimc->energy() << " +/- " << pimc->energy_error() << "  exact " << e_exact);
+    CHECK(std::abs(pimc->energy() - e_exact) <= tolerance(pimc->energy_error()));
+    CHECK(pimc->energy_error() < e_exact / 20.0);
+    CHECK(std::abs(pimc->potential()) < 1e-15);
+    // Components in the order xx, xy, yy, xz, yz, zz (winding_tensor_indices).
+    REQUIRE(pimc->winding_tensor_components() == 6);
+    const std::size_t diagonal[3] = {0, 2, 5}, off[3] = {1, 3, 4};
+    for (std::size_t a = 0; a < 3; ++a) {
+        const double t = pimc->winding_tensor(diagonal[a]);
+        const double e = pimc->winding_tensor_error(diagonal[a]);
+        INFO("axis " << a << ": T = " << t << " +/- " << e << "  exact " << t_exact[a]);
+        CHECK(std::abs(t - t_exact[a]) <= tolerance(e));
+        CHECK(e < t_exact[a] / 5.0);
+        CHECK(std::abs(pimc->winding_tensor(off[a])) <=
+              tolerance(pimc->winding_tensor_error(off[a])));
+    }
+    CHECK(std::abs(pimc->winding2() - w2_exact) <= tolerance(pimc->winding2_error()));
+}
+
 TEST_CASE("PIMC free particle in a hexagonal cell: Cartesian winding tensor",
           "[pimc][physics][winding]") {
     // Exact: P(W) ~ exp(-|W|^2 / (2 beta)) over the lattice vectors of the

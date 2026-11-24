@@ -54,9 +54,9 @@ and [`configs/`](../configs) (studies: 2D electron gas, bilayers, PIMC).
 |---|---|---|---|
 | `type` | `open` \| `periodic` | `open` | No boundaries, or a periodic Bravais cell |
 | `dimension` | int | — (required) | Spatial dimension of the motion (1, 2 or 3) |
-| `L` | float or list | `0` | **open:** half-width of the box in which walkers start. **periodic:** lattice constant; a list `[Lx, Ly]` gives a rectangular cell |
-| `shape` | `square` \| `rectangular` \| `hexagonal` | `square` | Periodic cell shape when built from a scalar `L` or `rs` |
-| `vectors` | `[[a1x, a1y], [a2x, a2y]]` | — | Periodic: explicit primitive vectors (row per vector). Overrides `L`, `rs`, `shape` |
+| `L` | float or list | `0` | **open:** half-width of the box in which walkers start. **periodic:** lattice constant; a list `[Lx, Ly]` gives a rectangular cell, `[Lx, Ly, Lz]` a 3D box |
+| `shape` | `square` \| `rectangular` \| `hexagonal` \| `cubic` | `square` (2D), `cubic` (3D) | Periodic cell shape when built from a scalar `L` or `rs`. The 2D shapes are refused in 3D, `cubic` outside 3D |
+| `vectors` | `[[a1x, a1y], [a2x, a2y]]` | — | Periodic: explicit primitive vectors (row per vector; three rows of three in 3D). Overrides `L`, `rs`, `shape` |
 | `rs` | float | — | Periodic, 2D only: density parameter; the cell area is $N\pi r_s^2$ for $N$ particles |
 | `ewald_tol` | float | `1e-6` | Periodic: relative accuracy of the Ewald sum |
 | `capacitor` | `include` \| `exclude` | `include` | Periodic, groups in several layers: `include` keeps the parallel-plate energy of the layers' net charges (it is in $E_L$, and the log reports it) and needs a neutral cell; `exclude` drops every $k = 0$ term between layers, as if each layer were neutralized in its own plane. That is CASINO's convention, and it allows a charged multilayer cell (e.g. an extra electron in an electron–hole bilayer) |
@@ -65,6 +65,13 @@ and [`configs/`](../configs) (studies: 2D electron gas, bilayers, PIMC).
 
 A periodic cell needs exactly one of: `vectors`, `rs`, `L` as a list, or a scalar
 `L` (with `shape`).
+
+A periodic 3D cell must be orthorhombic: a cube or a box whose vectors lie along
+the x, y and z axes, for which the minimum image is the exact per-axis fold. A
+skewed 3D cell (fcc, bcc, hexagonal prisms) is refused; it would need a reduced
+basis and a scan over 27 images. The 2D-only machinery refuses 3D cells
+itself: Ewald sums, `kspace_jastrow`, the image-summed Padé Jastrow,
+plane-wave and pairing orbitals, `structure_factor`, `bragg` and `bond_order`.
 
 ### `system.particles`
 
@@ -367,7 +374,7 @@ groups interacts under PBC, listed or not.
 absolutely (exponent $p$ greater than the dimension), so it is never part of the
 Ewald term and only the listed pair interacts. Under PBC each pair is taken at
 its minimum image, and the images outside the Wigner–Seitz cell are replaced by
-a uniform continuum, $E_\text{tail} = \tfrac12 N_a n_a \int_{\text{outside WS}} C r^{-p}\,d^2r$
+a uniform continuum, $E_\text{tail} = \tfrac12 N_a n_a \int_{\text{outside WS}} C r^{-p}\,d^dr$
 (or $N_a n_b\int\ldots$ for two groups), which is included in the local energy and
 printed in the log. Its error, $g(r)\neq n$ outside the cell, vanishes as
 $N\to\infty$ and is removed by extrapolating in $N$.
