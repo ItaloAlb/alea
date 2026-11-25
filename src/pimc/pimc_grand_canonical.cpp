@@ -114,7 +114,7 @@ void Pimc::setup_grand_canonical(const PimcGrandCanonicalSectors& sectors,
         throw std::logic_error("pimc: the fixed permutation sector has no grand-canonical meaning");
     if (!base_action.supports_bead_action())
         throw std::runtime_error("pimc: the grand-canonical worm needs a bead energy for every "
-                                 "potential term (moire, inverse_power, harmonic_trap, coulomb)");
+                                 "potential term (moire, inverse_power, hfd, harmonic_trap, coulomb)");
 
     gc_initial_ = sectors.initial_particles;
     if (gc_initial_ < gc_n_min_ || gc_initial_ > gc_n_max_)

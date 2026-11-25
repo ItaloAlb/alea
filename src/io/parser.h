@@ -332,6 +332,16 @@ struct InversePowerSpec {
     double                     exponent = 0.0;  // p
 };
 
+// `type: hfd` — the HFD-B pair potential of Aziz (hamiltonian/hfd.h),
+// V = ε V*(r/r_m).  Every parameter is required.  Under PBC each pair is taken
+// at its minimum image plus a continuum tail outside the Wigner–Seitz cell, as
+// for inverse_power; it is never part of the Ewald sum.
+struct HfdSpec {
+    std::array<std::string, 2> pair;
+    double epsilon = 0.0, r_m = 0.0, A = 0.0, alpha = 0.0, beta = 0.0;
+    double C6 = 0.0, C8 = 0.0, C10 = 0.0, D = 0.0;
+};
+
 // Screened Coulomb for an arbitrary multilayer dielectric stack, evaluated by the
 // fast-screened-coulomb library (ETM method, Cavalcante PRB 97, 125427 (2018)).
 // Each term self-contains the whole stack (per-layer ε + interface positions) and
@@ -707,6 +717,7 @@ struct Config {
     std::vector<KeldyshSpec>  keldysh;
     std::vector<ScreenedCoulombSpec> screened;
     std::vector<InversePowerSpec> inverse_powers;
+    std::vector<HfdSpec>      hfds;
     std::vector<MoireSpec>    moires;
     std::vector<HarmonicTrapSpec> traps;
     // Uniform fields along z (2-D, open cells), via a vector potential in the

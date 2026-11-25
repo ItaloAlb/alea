@@ -22,6 +22,7 @@
 #include <yaml-cpp/yaml.h>
 #include "hamiltonian/coulomb.h"
 #include "hamiltonian/harmonic_trap.h"
+#include "hamiltonian/hfd.h"
 #include "hamiltonian/moire.h"
 #include "hamiltonian/rytova_keldysh.h"
 #include "io/config_writer.h"
@@ -248,6 +249,148 @@ TEST_CASE("Periodic virial integrates free rectangular anisotropic and skew isot
             if (n == 255) CHECK(error<8e-5);
         }
     }
+}
+
+TEST_CASE("Periodic virial integrates the free two-bead trace of a three dimensional box", "[periodic-virial][physics]") {
+    // The minimum-image action of an orthorhombic box is a sum over axes, so
+    // the exact energy is the sum of three one-dimensional truncated Gaussians
+    // (first test of this file): with bead 0 at the origin and bead 1 at x,
+    // the weight is exp(-|x|^2 m/tau) over the box, and
+    //   E = sum_d [1/(2 beta) + u_d exp(-u_d^2)/(beta sqrt(pi) erf u_d)],
+    //   u_d = (L_d/2) sqrt(m/tau).
+    const std::vector groups{particle(0,{1.,1.,1.})};
+    const std::array<double,3> L{4.,5.,3.};
+    const SimulationCell cell(3,std::vector{L[0],0.,0.,0.,L[1],0.,0.,0.,L[2]});
+    const Hamiltonian ham; const double beta=4,tau=2;
+    PathSet path(2,1,3,tau,cell); Action action(groups,ham,3); action.prepare_periodic_virial(path);
+    double exact=0;
+    for (double l : L) {
+        const double u=.5*l/std::sqrt(tau);
+        exact+=1/(2*beta)+u*std::exp(-u*u)/(beta*std::sqrt(std::numbers::pi)*std::erf(u));
+    }
+    CHECK(exact-3/(2*beta)>.05); // every axis carries a boundary term
+    double previous=1;
+    for (int n : {16,32,64}) {
+        std::vector<double> x(n+1),w(n+1); // composite Simpson on [-1/2, 1/2]
+        for (int j=0; j<=n; ++j) { x[j]=-.5+double(j)/n; w[j]=(j==0 || j==n) ? 1 : (j%2 ? 4 : 2); }
+        double z=0,thermal=0,virial=0;
+        for (int a=0; a<=n; ++a) for (int b=0; b<=n; ++b) for (int c=0; c<=n; ++c) {
+            const double r[3]={x[a]*L[0],x[b]*L[1],x[c]*L[2]};
+            for (std::size_t d=0; d<3; ++d) { path.pos(0,d,0)=0; path.pos(0,d,1)=r[d]; }
+            const double weight=w[a]*w[b]*w[c]*std::exp(-(r[0]*r[0]+r[1]*r[1]+r[2]*r[2])/tau);
+            z+=weight; thermal+=weight*action.measure_thermo(path).energy;
+            virial+=weight*action.measure_periodic_virial(path).energy;
+        }
+        const double error=std::max(std::abs(thermal/z-exact),std::abs(virial/z-exact));
+        INFO("n=" << n << " thermal=" << thermal/z << " virial=" << virial/z << " exact=" << exact);
+        CHECK(error<previous/8); // Simpson converges as h^4
+        previous=error;
+        if (n == 64) {
+            CHECK(thermal/z == Approx(exact).margin(1e-7));
+            CHECK(virial/z == Approx(exact).margin(1e-7));
+        }
+    }
+}
+
+TEST_CASE("Periodic virial with the hfd term matches Cartesian finite differences of the action in a three dimensional box", "[periodic-virial][derivatives][hfd]") {
+    // 4He in K and Angstrom (HFD-B(HE)): one pair close through the x face,
+    // one inside the damping range x < D, one pair beyond L/2 in a corner.
+    const HfdParameters he{10.948,2.963,1.8443101e5,10.43329537,-2.27965105,
+                           1.36745214,0.42123807,0.17473318,1.4826};
+    const double m=1/12.1193;
+    ParticleGroup atoms; atoms.name="he"; atoms.first=0; atoms.last=4; atoms.count=4;
+    atoms.mass={m,m,m}; atoms.inv_mass={1/m,1/m,1/m};
+    const std::vector groups{atoms};
+    const SimulationCell cell(3,std::vector{9.,0.,0.,0.,10.,0.,0.,0.,11.});
+    Hamiltonian ham; ham.add_component(std::make_unique<HfdTerm>(atoms,atoms,he,cell));
+    const std::size_t M=5; const double tau=.04;
+    PathSet path(M,4,3,tau,cell);
+    const double centre[4][3]={{-3.9,.3,.2},{-.9,1.1,-.6},{2.7,1.3,-1.1},{.8,-3.6,4.9}};
+    for (std::size_t p=0; p<4; ++p) for (std::size_t d=0; d<3; ++d) for (std::size_t k=0; k<M; ++k)
+        path.pos(p,d,k)=centre[p][d]+.3*std::sin(.37*double(p*3+d)+1.3*double(k));
+    const auto saved=path.all_positions();
+    Action action(groups,ham,3); action.prepare_periodic_virial(path);
+    const auto pv=action.measure_periodic_virial(path),th=action.measure_thermo(path);
+    const Hamiltonian none; Action free(groups,none,3); free.prepare_periodic_virial(path);
+    const double contraction=pv.kinetic-free.measure_periodic_virial(path).kinetic;
+    PeriodicVirialField field; field.prepare(path); field.evaluate(path);
+    const std::vector frozen(field.field().begin(),field.field().end());
+    const double divergence=field.divergence();
+    double largest_error=0;
+    for (double step : {1e-4,3e-5,1e-5}) {
+        double numeric_divergence=0;
+        for (std::size_t i=0; i<saved.size(); ++i) {
+            path.positions()[i]=saved[i]+step; field.evaluate(path); const double plus=field.field()[i];
+            path.positions()[i]=saved[i]-step; field.evaluate(path); const double minus=field.field()[i];
+            numeric_divergence+=(plus-minus)/(2*step); path.positions()[i]=saved[i];
+        }
+        CHECK(numeric_divergence == Approx(divergence).margin(2e-7));
+        for (std::size_t i=0; i<saved.size(); ++i) path.positions()[i]=saved[i]+step*frozen[i];
+        const double plus=action.total_action(path);
+        for (std::size_t i=0; i<saved.size(); ++i) path.positions()[i]=saved[i]-step*frozen[i];
+        const double minus=action.total_action(path);
+        const double reference=th.energy+((plus-minus)/(2*step)-numeric_divergence)/(2*path.beta());
+        INFO("step=" << step << " virial=" << pv.energy << " reference=" << reference);
+        largest_error=std::max(largest_error,std::abs(pv.energy-reference));
+        std::copy(saved.begin(),saved.end(),path.positions().begin());
+    }
+    CHECK(largest_error<1e-5);
+    // Power: the hfd forces' share of the estimator is many tolerances large,
+    // so a wrong or missing gradient cannot pass.
+    CHECK(std::abs(contraction)>1e4*1e-5);
+    CHECK(pv.energy == Approx(pv.kinetic+pv.potential).margin(1e-11));
+    CHECK(pv.potential == th.potential);
+}
+
+TEST_CASE("Periodic virial with the hfd term agrees with the thermodynamic estimator on the same 4He paths", "[periodic-virial][physics][hfd]") {
+    // Eight 4He atoms at the liquid density 0.02186 A^-3 of Brualla et al.,
+    // J. Chem. Phys. 121, 636 (2004), T = 5.1 K, M = 8, through YAML and App.
+    // Both estimators have the same finite-M mean; their paired difference
+    // must vanish within its error.
+    const std::string yaml=R"(project: {name: hfd_periodic_virial, seed: 20261124, output: false, log: false}
+system:
+  lattice: {type: periodic, dimension: 3, L: 7.152863594865851}
+  particles:
+    - {name: he, group: he, type: boltzmannon, mass: 0.08251304278741832, up: 8, down: 0}
+hamiltonian:
+  terms:
+    - {type: hfd, pair: [he, he], epsilon: 10.948, r_m: 2.963, A: 184431.01, alpha: 10.43329537, beta: -2.27965105, C6: 1.36745214, C8: 0.42123807, C10: 0.17473318, D: 1.4826}
+action:
+  - primitive: {}
+qmc:
+  - method: pimc
+    threads: 1
+    samples: 4
+    beta: 0.19607843137254904
+    time_step: 0.024509803921568627
+    equilibration_blocks: 100
+    accumulation_blocks: 800
+    steps_per_block: 20
+    sub_steps: 8
+    moves:
+      - bisection: {levels: 2, weight: 1.0}
+      - centroid: {step: 0.3, weight: 1.0}
+    energy: periodic_virial
+    compare_thermodynamic: true
+)";
+    App app(io::parse_config(yaml)); auto pack=app.build_drivers();
+    auto* pv=dynamic_cast<Pimc*>(pack.drivers[0].get()); REQUIRE(pv != nullptr); pv->run();
+    const auto result=pv->run_result();
+    const auto paired=numerics::reblock(series(result,"acc_block_energy_difference"));
+    INFO("E = " << pv->energy() << " +- " << pv->energy_error() << ", K = " << pv->kinetic()
+         << ", paired difference " << paired.mean << " +- " << paired.error);
+    CHECK(std::abs(paired.mean)<4*paired.error);
+    // Power: the quantum part of K, K - 3N/(2 beta), is the hfd forces' share
+    // of the virial (for rings that do not wind), ~48 K here.  The test
+    // resolves 10 % of it at 4 sigma: a missing or wrong-sign gradient would
+    // move the difference by ~50 sigma.  This run checks the wiring (YAML, App,
+    // admission, 3-D field); the forces themselves are checked pointwise by the
+    // finite-difference test above.  (Fixed seed, one thread: deterministic.)
+    const double quantum=pv->kinetic()-1.5*8*5.1;
+    CHECK(quantum>20);
+    CHECK(4*paired.error<.1*quantum);
+    CHECK(pv->energy() == Approx(pv->kinetic()+pv->potential()).margin(1e-10));
+    CHECK(metadata(result,"energy_estimator") == "periodic_virial");
 }
 
 TEST_CASE("Periodic virial is invariant to bead images origin and cyclic labels and has regular limits", "[periodic-virial][geometry]") {

@@ -18,6 +18,7 @@
 #include "population/particle_group.h"
 #include "population/simulation_cell.h"
 #include "population/walker_set.h"
+#include "population/wigner_seitz_exterior.h"
 
 using alea::InversePowerTerm;
 using alea::ParticleGroup;
@@ -44,6 +45,32 @@ SimulationCell cell_2d(double a1x, double a1y, double a2x, double a2y) {
 
 SimulationCell hexagonal(double L) {
     return cell_2d(L, 0.0, 0.5 * L, 0.5 * std::sqrt(3.0) * L);
+}
+
+SimulationCell box_3d(double lx, double ly, double lz) {
+    const std::vector<double> v{lx, 0, 0, 0, ly, 0, 0, 0, lz};
+    return SimulationCell(3, std::span<const double>(v));
+}
+
+// ∮ dΩ ρ(Ω)^{3−p}/(p − 3) over a box of half-sides h, by a midpoint rule in
+// (cos θ, φ) with ρ(Ω) = min_i h_i/|u_i|: a different parameterization from
+// the face rule of wigner_seitz_exterior_integral.  Its error comes from the
+// kinks of ρ along the box's edges, O(Δ²).
+double box_exterior_midpoint(const double h[3], double p, int n) {
+    double sum = 0.0;
+    const double dc = 2.0 / n, dphi = 2.0 * std::numbers::pi / (2 * n);
+    for (int i = 0; i < n; ++i) {
+        const double c = -1.0 + (i + 0.5) * dc, s = std::sqrt(1.0 - c * c);
+        for (int j = 0; j < 2 * n; ++j) {
+            const double phi = (j + 0.5) * dphi;
+            const double u[3] = {s * std::cos(phi), s * std::sin(phi), c};
+            double rho = std::numeric_limits<double>::infinity();
+            for (int d = 0; d < 3; ++d)
+                if (u[d] != 0.0) rho = std::min(rho, h[d] / std::abs(u[d]));
+            sum += std::pow(rho, 3.0 - p);
+        }
+    }
+    return sum * dc * dphi / (p - 3.0);
 }
 
 // One configuration (nw = 1) at the given 2-D points, tables built.
@@ -176,6 +203,49 @@ TEST_CASE("the integral outside the Wigner-Seitz cell matches closed forms",
                                         3.0) == Approx(2.0 * std::pow(h, -2.0) / 2.0));
 }
 
+TEST_CASE("the exterior rule integrates the full solid angle and the cell volume",
+          "[inverse_power][periodic]") {
+    // f = 1 gives ∮ dΩ (2, 2π, 4π) and f(ρ) = ρ^d/d the WS cell's volume,
+    // whatever the method: exact identities of wigner_seitz_exterior_integral.
+    using alea::wigner_seitz_exterior_integral;
+    const double two_pi = 2.0 * std::numbers::pi;
+    const std::vector<double> v1{3.0};
+    const SimulationCell line(1, std::span<const double>(v1));
+    CHECK(wigner_seitz_exterior_integral(line, [](double) { return 1.0; }) == 2.0);
+    CHECK(wigner_seitz_exterior_integral(line, [](double r) { return r; }) == Approx(3.0));
+    for (const SimulationCell& c : {cell_2d(3, 0, 0, 5), hexagonal(4.0)}) {
+        CHECK(wigner_seitz_exterior_integral(c, [](double) { return 1.0; }) ==
+              Approx(two_pi).epsilon(1e-12));
+        CHECK(wigner_seitz_exterior_integral(c, [](double r) { return 0.5 * r * r; }) ==
+              Approx(c.volume()).epsilon(1e-9));
+    }
+    for (const SimulationCell& c : {box_3d(5, 5, 5), box_3d(4, 7, 13)}) {
+        CHECK(wigner_seitz_exterior_integral(c, [](double) { return 1.0; }) ==
+              Approx(2.0 * two_pi).epsilon(1e-12));
+        CHECK(wigner_seitz_exterior_integral(c, [](double r) { return r * r * r / 3.0; }) ==
+              Approx(c.volume()).epsilon(1e-12));
+    }
+}
+
+TEST_CASE("the integral outside a 3-D box matches a closed form and an independent rule",
+          "[inverse_power][periodic][3d]") {
+    using alea::outside_wigner_seitz_integral;
+    // Cube of half-side h, p = 4: (1/h) ∮ dΩ max_i |u_i| = 24 I / h with
+    // I = ∫_0^1 ∫_0^1 (1 + a² + b²)^{-2} da db (tests/references/hfd_reference.py,
+    // mpmath: 24 I = 10.44503701640523837).
+    for (const double h : {0.5, 2.0}) {
+        CHECK(outside_wigner_seitz_integral(box_3d(2 * h, 2 * h, 2 * h), 4.0) ==
+              Approx(10.44503701640523837 / h).epsilon(1e-12));
+    }
+    // A box with three different sides against the (cos θ, φ) midpoint rule.
+    const double half[3] = {2.0, 3.5, 6.5};
+    for (const double p : {4.0, 6.0, 10.0}) {
+        INFO("p = " << p);
+        CHECK(outside_wigner_seitz_integral(box_3d(4, 7, 13), p) ==
+              Approx(box_exterior_midpoint(half, p, 1500)).epsilon(2e-6));
+    }
+}
+
 TEST_CASE("InversePowerTerm in a periodic cell uses the minimum image plus the tail",
           "[inverse_power][periodic]") {
     // Square L = 4.  (0,0) and (2.2, 2.2): the nearest image of the second is
@@ -236,4 +306,6 @@ TEST_CASE("InversePowerTerm refuses inputs with no physical meaning", "[inverse_
     // Periodic: the image sum needs p > d.
     CHECK_THROWS_AS(InversePowerTerm(g, g, 1.0, 2.0, box), std::invalid_argument);
     CHECK_NOTHROW(InversePowerTerm(g, g, 1.0, 2.0, open));
+    CHECK_THROWS_AS(InversePowerTerm(g, g, 1.0, 3.0, box_3d(4, 4, 4)), std::invalid_argument);
+    CHECK_NOTHROW(InversePowerTerm(g, g, 1.0, 3.5, box_3d(4, 4, 4)));
 }

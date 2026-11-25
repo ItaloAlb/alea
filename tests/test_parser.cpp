@@ -497,6 +497,45 @@ TEST_CASE("parse_config reads an inverse_power term and requires every key",
                               " exponent: 3, epsilon: 2 }\n"));
 }
 
+TEST_CASE("parse_config reads an hfd term and requires every key", "[parser][hfd]") {
+    const std::string full =
+        "hamiltonian:\n  terms:\n"
+        "    - { type: hfd, pair: [he, he], epsilon: 10.948, r_m: 2.963, A: 1.8443101e5,\n"
+        "        alpha: 10.43329537, beta: -2.27965105, C6: 1.36745214, C8: 0.42123807,\n"
+        "        C10: 0.17473318, D: 1.4826 }\n";
+    auto c = parse_config(full);
+    REQUIRE(c.hfds.size() == 1);
+    const auto& h = c.hfds[0];
+    CHECK(h.pair[0] == "he");
+    CHECK(h.pair[1] == "he");
+    CHECK(h.epsilon == 10.948);
+    CHECK(h.r_m == 2.963);
+    CHECK(h.A == 1.8443101e5);
+    CHECK(h.alpha == 10.43329537);
+    CHECK(h.beta == -2.27965105);
+    CHECK(h.C6 == 1.36745214);
+    CHECK(h.C8 == 0.42123807);
+    CHECK(h.C10 == 0.17473318);
+    CHECK(h.D == 1.4826);
+    CHECK(c.inverse_powers.empty());
+
+    // No defaults: every parameter is required, and an unknown key is refused.
+    using Catch::Matchers::ContainsSubstring;
+    for (const std::string key :
+         {"epsilon", "r_m", "A", "alpha", "beta", "C6", "C8", "C10", "D"}) {
+        std::string missing = full;
+        const std::size_t at = missing.find(" " + key + ":");
+        REQUIRE(at != std::string::npos);
+        const std::size_t end = missing.find_first_of(",}", at);
+        missing.erase(at, end - at + (missing[end] == ',' ? 1 : 0));
+        INFO(missing);
+        CHECK_THROWS_WITH(parse_config(missing), ContainsSubstring("`" + key + "`"));
+    }
+    std::string extra = full;
+    extra.insert(extra.find("D: 1.4826"), "C12: 0.1, ");
+    CHECK_THROWS(parse_config(extra));
+}
+
 TEST_CASE("parse_config reads a zero_energy jastrow and refuses keys it does not use",
           "[parser][zero_energy]") {
     auto c = parse_config(

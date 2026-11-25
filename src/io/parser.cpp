@@ -709,6 +709,29 @@ Config parse_config(const std::string& yaml_text) {
                 ip.strength = term["strength"].as<double>();
                 ip.exponent = term["exponent"].as<double>();
                 c.inverse_powers.push_back(std::move(ip));
+            } else if (type == "hfd") {
+                term_keys({"type", "pair", "epsilon", "r_m", "A", "alpha", "beta", "C6", "C8",
+                           "C10", "D"});
+                // No defaults: every published parameter set differs, and a
+                // missing one must not quietly take some other value.
+                for (const char* key :
+                     {"pair", "epsilon", "r_m", "A", "alpha", "beta", "C6", "C8", "C10", "D"})
+                    if (!term[key])
+                        throw std::runtime_error(
+                            std::string("hamiltonian term 'hfd' needs `") + key + "`");
+                HfdSpec hs;
+                hs.pair[0] = term["pair"][0].as<std::string>();
+                hs.pair[1] = term["pair"][1].as<std::string>();
+                hs.epsilon = term["epsilon"].as<double>();
+                hs.r_m     = term["r_m"].as<double>();
+                hs.A       = term["A"].as<double>();
+                hs.alpha   = term["alpha"].as<double>();
+                hs.beta    = term["beta"].as<double>();
+                hs.C6      = term["C6"].as<double>();
+                hs.C8      = term["C8"].as<double>();
+                hs.C10     = term["C10"].as<double>();
+                hs.D       = term["D"].as<double>();
+                c.hfds.push_back(std::move(hs));
             } else if (type == "screened_coulomb") {
                 term_keys({"type", "pair", "epsilons", "interfaces", "source_layer",
                            "target_layer", "z_offset", "fit_tol"});

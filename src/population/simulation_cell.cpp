@@ -35,6 +35,26 @@ void gauss_reduce_2d(double* a) noexcept {
     }
 }
 
+// Rows of (Aᵀ)⁻¹ for a 3-D basis a (rows a_0, a_1, a_2, [i*3 + d]): the dual
+// basis a*_i = (a_j × a_k)/det, (i, j, k) cyclic, det = a_0 · (a_1 × a_2), so
+// a*_i · a_j = δ_ij.  Returns det; the rows are left unset when it is zero.
+double dual_rows_3d(const double* a, double* rows) noexcept {
+    const double c0[3] = {a[4] * a[8] - a[5] * a[7], a[5] * a[6] - a[3] * a[8],
+                          a[3] * a[7] - a[4] * a[6]};  // a_1 × a_2
+    const double c1[3] = {a[7] * a[2] - a[8] * a[1], a[8] * a[0] - a[6] * a[2],
+                          a[6] * a[1] - a[7] * a[0]};  // a_2 × a_0
+    const double c2[3] = {a[1] * a[5] - a[2] * a[4], a[2] * a[3] - a[0] * a[5],
+                          a[0] * a[4] - a[1] * a[3]};  // a_0 × a_1
+    const double det = a[0] * c0[0] + a[1] * c0[1] + a[2] * c0[2];
+    if (det == 0.0) return det;
+    for (std::size_t d = 0; d < 3; ++d) {
+        rows[d]     = c0[d] / det;
+        rows[3 + d] = c1[d] / det;
+        rows[6 + d] = c2[d] / det;
+    }
+    return det;
+}
+
 }  // namespace
 
 SimulationCell::SimulationCell(std::size_t dim) : boundary_(Boundary::Open), dim_(dim) {
@@ -45,13 +65,10 @@ SimulationCell::SimulationCell(std::size_t dim) : boundary_(Boundary::Open), dim
 
 SimulationCell::SimulationCell(std::size_t dim, std::span<const double> vectors)
     : boundary_(Boundary::Periodic), dim_(dim) {
-    if (dim != 1 && dim != 2)
+    if (dim < 1 || dim > kMaxDim)
         throw std::runtime_error(
-            "SimulationCell: periodic boundaries are implemented for dimension 1 "
-            "and 2 only (got " +
-            std::to_string(dim) +
-            ").  A rigorous 3-D minimum image needs an LLL-reduced basis, which "
-            "this milestone does not build.");
+            "SimulationCell: periodic boundaries need dimension 1, 2 or 3 (got " +
+            std::to_string(dim) + ")");
     if (vectors.size() != dim * dim)
         throw std::runtime_error(
             "SimulationCell: expected " + std::to_string(dim * dim) +
@@ -62,7 +79,7 @@ SimulationCell::SimulationCell(std::size_t dim, std::span<const double> vectors)
     constexpr double kTwoPi = 6.283185307179586476925286766559;
     if (dim == 1) {
         if (vectors[0] != 0.0) given_b_[0] = kTwoPi / vectors[0];
-    } else {
+    } else if (dim == 2) {
         const double det = vectors[0] * vectors[3] - vectors[1] * vectors[2];
         if (det != 0.0) {
             given_b_[0] = kTwoPi * vectors[3] / det;
@@ -70,6 +87,10 @@ SimulationCell::SimulationCell(std::size_t dim, std::span<const double> vectors)
             given_b_[2] = -kTwoPi * vectors[1] / det;
             given_b_[3] = kTwoPi * vectors[0] / det;
         }
+    } else {
+        double rows[kMaxDim * kMaxDim];
+        if (dual_rows_3d(vectors.data(), rows) != 0.0)
+            for (std::size_t k = 0; k < 9; ++k) given_b_[k] = kTwoPi * rows[k];
     }
     finalize_periodic();
 }
@@ -110,12 +131,25 @@ void SimulationCell::finalize_periodic() {
     ortho_ = axis_align(a_, dim_);
     if (!ortho_ && dim_ == 2) gauss_reduce_2d(a_);
 
-    // Volume and (Aᵀ)⁻¹.  Only dim 1 and 2 reach here.
+    // Volume and (Aᵀ)⁻¹.
     if (dim_ == 1) {
         volume_ = std::abs(a_[0]);
         if (volume_ == 0.0)
             throw std::runtime_error("SimulationCell: lattice vector has zero length");
         ainv_[0] = 1.0 / a_[0];
+    } else if (dim_ == 3) {
+        const double det = dual_rows_3d(a_, ainv_);
+        volume_          = std::abs(det);
+        if (volume_ == 0.0)
+            throw std::runtime_error(
+                "SimulationCell: lattice vectors are singular (zero cell volume)");
+        // Only the per-axis fold is implemented in 3-D (see the constructor).
+        if (!ortho_)
+            throw std::runtime_error(
+                "SimulationCell: a 3-D periodic cell must be orthorhombic, with its "
+                "three vectors along the x, y and z axes (lattice.L, or axis-aligned "
+                "lattice.vectors).  A skewed 3-D cell needs a reduced basis and a "
+                "27-image minimum-image scan, which are not implemented.");
     } else {
         const double det = a_[0] * a_[3] - a_[1] * a_[2];
         volume_          = std::abs(det);
@@ -170,19 +204,23 @@ void SimulationCell::finalize_periodic() {
     constexpr int span = 2;
     const int     lo1  = (dim_ > 1) ? -span : 0;
     const int     hi1  = (dim_ > 1) ? span : 0;
+    const int     lo2  = (dim_ > 2) ? -span : 0;
+    const int     hi2  = (dim_ > 2) ? span : 0;
     double        shortest2 = 0.0;
     for (int n0 = -span; n0 <= span; ++n0)
-        for (int n1 = lo1; n1 <= hi1; ++n1) {
-            if (n0 == 0 && n1 == 0) continue;
-            const double n[2] = {static_cast<double>(n0), static_cast<double>(n1)};
-            double       r2   = 0.0;
-            for (std::size_t d = 0; d < dim_; ++d) {
-                double s = 0.0;
-                for (std::size_t i = 0; i < dim_; ++i) s += n[i] * a_[i * dim_ + d];
-                r2 += s * s;
+        for (int n1 = lo1; n1 <= hi1; ++n1)
+            for (int n2 = lo2; n2 <= hi2; ++n2) {
+                if (n0 == 0 && n1 == 0 && n2 == 0) continue;
+                const double n[3] = {static_cast<double>(n0), static_cast<double>(n1),
+                                     static_cast<double>(n2)};
+                double       r2   = 0.0;
+                for (std::size_t d = 0; d < dim_; ++d) {
+                    double s = 0.0;
+                    for (std::size_t i = 0; i < dim_; ++i) s += n[i] * a_[i * dim_ + d];
+                    r2 += s * s;
+                }
+                if (shortest2 == 0.0 || r2 < shortest2) shortest2 = r2;
             }
-            if (shortest2 == 0.0 || r2 < shortest2) shortest2 = r2;
-        }
     ws_radius_ = 0.5 * std::sqrt(shortest2);
 }
 

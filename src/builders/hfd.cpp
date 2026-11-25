@@ -1,0 +1,40 @@
+// SPDX-FileCopyrightText: 2026 The Alea Authors
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+// `type: hfd` → the HFD-B pair potential of Aziz between two groups.  One
+// HfdTerm per spec in open AND periodic cells: the dispersion tail decays as
+// r^{-6}, so the term carries its own periodic form (minimum image over the
+// Wigner–Seitz cell plus a continuum tail outside it), as inverse_power does.
+#include "builders/hamiltonian_builders.h"
+
+#include <stdexcept>
+#include <string>
+
+#include "hamiltonian/hfd.h"
+#include "io/logger.h"
+
+namespace alea {
+
+std::unique_ptr<HamiltonianComponent> build_component(const io::HfdSpec& s,
+                                                      const HamiltonianContext& ctx) {
+    const ParticleGroup& a = find_group(ctx.groups, s.pair[0]);
+    const ParticleGroup& b = find_group(ctx.groups, s.pair[1]);
+    // A layer offset would make the pair interact through sqrt(r^2 + d^2),
+    // which the term does not implement; refuse rather than drop the offset.
+    if (layer_separation(ctx.cfg, s.pair[0], s.pair[1]) != 0.0)
+        throw std::runtime_error(
+            "hfd between groups in different planes (" + s.pair[0] + ", " + s.pair[1] +
+            "): an out-of-plane offset is not implemented for this term; put both groups "
+            "in the same plane (equal `z`).");
+    const HfdParameters q{s.epsilon, s.r_m, s.A, s.alpha, s.beta, s.C6, s.C8, s.C10, s.D};
+    auto term = std::make_unique<HfdTerm>(a, b, q, ctx.cell);
+    if (ctx.cell.is_periodic())
+        io::Logger::info(
+            "hfd [" + s.pair[0] + ", " + s.pair[1] + "]: pairs at their minimum image; "
+            "continuum tail outside the Wigner-Seitz cell E_tail = " +
+            std::to_string(term->tail_energy()) + " per cell, included in the local energy.");
+    return term;
+}
+
+}  // namespace alea

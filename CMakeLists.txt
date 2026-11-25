@@ -118,6 +118,7 @@ set(SOURCES
     src/builders/common.cpp
     src/builders/coulomb.cpp
     src/builders/inverse_power.cpp
+    src/builders/hfd.cpp
     src/builders/estimators.cpp
     src/builders/ewald.cpp
     src/builders/exchange_classes.cpp
@@ -176,6 +177,7 @@ set(SOURCES
     src/wavefunction/center_of_mass_momentum.cpp
     src/hamiltonian/harmonic_trap.cpp
     src/hamiltonian/inverse_power.cpp
+    src/hamiltonian/hfd.cpp
     src/wavefunction/complex_slater_determinant.cpp
     src/wavefunction/complex_backflow_slater_determinant.cpp
     src/wavefunction/pade_jastrow.cpp

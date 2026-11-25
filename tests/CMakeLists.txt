@@ -307,6 +307,19 @@ target_include_directories(test_inverse_power PRIVATE ${SRC_DIR})
 target_link_libraries(test_inverse_power PRIVATE Catch2::Catch2WithMain)
 target_compile_options(test_inverse_power PRIVATE -Wall -Wextra -Wpedantic -fopenmp-simd)
 
+add_executable(test_hfd
+    test_hfd.cpp
+    ${SRC_DIR}/hamiltonian/hfd.cpp
+    ${SRC_DIR}/population/particle_batch.cpp
+    ${SRC_DIR}/population/walker_set.cpp
+    ${SRC_DIR}/population/walker.cpp
+    ${SRC_DIR}/population/batched_distance_table.cpp
+    ${SRC_DIR}/population/simulation_cell.cpp
+)
+target_include_directories(test_hfd PRIVATE ${SRC_DIR})
+target_link_libraries(test_hfd PRIVATE Catch2::Catch2WithMain)
+target_compile_options(test_hfd PRIVATE -Wall -Wextra -Wpedantic -fopenmp-simd)
+
 add_executable(test_long_range_breakup
     test_long_range_breakup.cpp
     ${SRC_DIR}/numerics/long_range_breakup.cpp
@@ -660,6 +673,7 @@ set(APP_SOURCES
     ${SRC_DIR}/builders/common.cpp
     ${SRC_DIR}/builders/coulomb.cpp
     ${SRC_DIR}/builders/inverse_power.cpp
+    ${SRC_DIR}/builders/hfd.cpp
     ${SRC_DIR}/builders/ewald.cpp
     ${SRC_DIR}/builders/exchange_classes.cpp
     ${SRC_DIR}/builders/kinetic.cpp
@@ -681,6 +695,7 @@ set(APP_SOURCES
     ${SRC_DIR}/wavefunction/center_of_mass_momentum.cpp
     ${SRC_DIR}/hamiltonian/harmonic_trap.cpp
     ${SRC_DIR}/hamiltonian/inverse_power.cpp
+    ${SRC_DIR}/hamiltonian/hfd.cpp
     ${SRC_DIR}/wavefunction/complex_slater_determinant.cpp
     ${SRC_DIR}/wavefunction/complex_backflow_slater_determinant.cpp
     ${SRC_DIR}/hamiltonian/ewald_term.cpp
@@ -1389,6 +1404,7 @@ target_link_libraries(test_finite_grid_pair PRIVATE Catch2::Catch2WithMain)
 target_compile_options(test_finite_grid_pair PRIVATE -Wall -Wextra -Wpedantic -O2)
 catch_discover_tests(test_finite_grid_pair)
 catch_discover_tests(test_inverse_power)
+catch_discover_tests(test_hfd)
 catch_discover_tests(test_zero_energy_jastrow)
 catch_discover_tests(test_nosanow_jastrow)
 catch_discover_tests(test_long_range_breakup)

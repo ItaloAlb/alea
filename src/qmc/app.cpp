@@ -285,7 +285,16 @@ SimulationCell build_cell(const io::Config& cfg, std::size_t n_particles) {
         return SimulationCell(dim, lat.vectors);
     }
 
-    const std::string shape = lat.shape.empty() ? "square" : lat.shape;
+    // A scalar L builds a square (2-D) or a cube (3-D) unless `shape` says
+    // otherwise; the 2-D shapes have no 3-D meaning and are refused there.
+    const std::string shape =
+        !lat.shape.empty() ? lat.shape : (dim == 3 ? "cubic" : "square");
+    if (dim == 3 && shape != "cubic")
+        throw std::runtime_error(
+            "lattice.shape '" + shape + "' is a 2-D cell; in 3-D a scalar L builds a "
+            "cube (shape: cubic, or omit shape) and `L: [Lx, Ly, Lz]` a box");
+    if (dim != 3 && shape == "cubic")
+        throw std::runtime_error("lattice.shape 'cubic' needs dimension 3");
 
     if (!lat.lengths.empty()) {
         if (lat.lengths.size() != dim)
@@ -319,11 +328,12 @@ SimulationCell build_cell(const io::Config& cfg, std::size_t n_particles) {
     } else if (shape == "hexagonal") {
         v[0] = L;        v[1] = 0.0;
         v[2] = 0.5 * L;  v[3] = L * std::sqrt(3.0) / 2.0;
-    } else if (shape == "square" || shape == "rectangular") {
+    } else if (shape == "square" || shape == "rectangular" || shape == "cubic") {
         for (std::size_t d = 0; d < dim; ++d) v[d * dim + d] = L;
     } else {
         throw std::runtime_error("unknown lattice shape: '" + shape +
-                                 "' (expected square, rectangular or hexagonal)");
+                                 "' (expected square, rectangular or hexagonal in "
+                                 "2-D, cubic in 3-D)");
     }
     return SimulationCell(dim, v);
 }
@@ -439,9 +449,10 @@ Hamiltonian build_hamiltonian(const io::Config& cfg,
         for (const io::ScreenedCoulombSpec& s : cfg.screened)
             h.add_component(build_component(s, ctx));
     }
-    // Absolutely convergent image sum: one term per spec, Ewald or not.
+    // Absolutely convergent image sums: one term per spec, Ewald or not.
     for (const io::InversePowerSpec& s : cfg.inverse_powers)
         h.add_component(build_component(s, ctx));
+    for (const io::HfdSpec& s : cfg.hfds) h.add_component(build_component(s, ctx));
     for (const io::MoireSpec& m : cfg.moires) h.add_component(build_component(m, ctx));
     return h;
 }
@@ -616,7 +627,7 @@ GrandCanonicalStage build_grand_canonical_stage(const io::Config& cfg, const io:
             missing += (missing.empty() ? "" : ", ") + component->name();
     if (!missing.empty())
         throw std::runtime_error("pimc: grand_canonical: no bead energy for " + missing +
-                                 " (implemented: moire, inverse_power, harmonic_trap and the "
+                                 " (implemented: moire, inverse_power, hfd, harmonic_trap and the "
                                  "pair coulomb term; the periodic Ewald term carries an "
                                  "N-dependent background)");
     const Action worm_action = build_action(capacity, groups, ham, dim);

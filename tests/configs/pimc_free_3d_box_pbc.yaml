@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: 2026 The Alea Authors
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# 3-D free particle in a periodic orthorhombic box L = (4, 4.5, 5) via PIMC:
+# the 1-D check of pimc_free_1d_pbc.yaml on three axes of different length.
+#
+# One distinguishable particle with V = 0, m = 1, beta = 2, M = 32 slices
+# (tau = 0.0625).  The axes separate, so with the momentum sums
+#   E_a = sum_n eps_n e^{-beta eps_n} / sum_n e^{-beta eps_n},
+#   eps_n = (2 pi n / L_a)^2 / 2,
+# E = E_x + E_y + E_z = 0.635662029203328 (E_x = 0.1793245903520491 is the
+# 1-D value at L = 4), and the winding tensor is diagonal with
+#   T_aa = <W_a^2> = sum_n L_a^2 n^2 e^{-L_a^2 n^2/(2 beta)} / sum_n e^{...}
+#        = 0.5654032771836074, 0.2531490116385513, 0.09615147755121721,
+# and winding2 = (1/3) sum_a <n_a^2> = 0.017228316561984203.  At this tau the
+# min-image spring agrees with the image sum to ~2e-8 in E (pimc_free_1d_pbc).
+project:
+  name: pimc_free_3d_box_pbc
+  seed: 97531
+
+system:
+  lattice:
+    type: periodic
+    dimension: 3
+    L: [4.0, 4.5, 5.0]
+  particles:
+    - name: p
+      group: particle
+      type: boltzmannon
+      mass: 1.0
+      charge: 0
+      up: 1
+      down: 0
+
+hamiltonian:
+  terms: []
+
+qmc:
+  - method: pimc
+    threads: 2
+    samples: 24
+    time_step: 0.0625
+    beta: 2.0
+    equilibration_blocks: 50
+    accumulation_blocks: 400
+    steps_per_block: 20
+    sub_steps: 5
+    moves:
+      - bisection: { levels: 5, weight: 1.0 }
+      - centroid:  { step: 0.3, weight: 1.0 }
+    energy: thermodynamic

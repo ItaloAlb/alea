@@ -10,7 +10,7 @@
 //   kinetic (with the uniform-field gauge) + traps + centrifugal trap
 //   + pair interactions: ONE Ewald term for a periodic run, else one open-
 //     boundary term per spec
-//   + inverse-power pairs (C/r^p): one term per spec in any cell
+//   + inverse-power pairs (C/r^p) and HFD-B pairs: one term per spec in any cell
 //   + one-body moiré potentials
 //
 // A pair-potential family (Coulomb, Rytova–Keldysh, screened Coulomb) lives in
@@ -70,6 +70,11 @@ struct HamiltonianContext {
 // alike: its image sum converges absolutely, so it is not an Ewald family.
 [[nodiscard]] std::unique_ptr<HamiltonianComponent> build_component(
     const io::InversePowerSpec& spec, const HamiltonianContext& ctx);
+
+// The HFD-B pair potential: one term per spec in any cell (its dispersion
+// tail r^{-6} converges absolutely), like inverse_power.
+[[nodiscard]] std::unique_ptr<HamiltonianComponent> build_component(
+    const io::HfdSpec& spec, const HamiltonianContext& ctx);
 
 // A family's Ewald kernel for the group pair (a, b).  Under PBC every pair of
 // groups interacts, listed in a spec or not, so each family decides what an

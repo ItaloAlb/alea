@@ -453,7 +453,13 @@ the box in which walkers start.
 
 **Periodic cell** (`type: periodic`). A Bravais cell repeated in every direction,
 used to approach the thermodynamic limit. Give it by `shape` + `L`, by
-`vectors`, or by the density parameter `rs` (2D: area $= N\pi r_s^2$).
+`vectors`, or by the density parameter `rs` (2D: area $= N\pi r_s^2$). In 3D
+the cell is a box along the axes (`L` scalar or `[Lx, Ly, Lz]`).
+
+**Short-range pairs in a periodic cell.** A pair potential that decays faster
+than $r^{-d}$ (`inverse_power` with $p > d$, `hfd`) is not an Ewald term: each
+pair is taken at its minimum image, and the images outside the Wigner–Seitz
+cell are a uniform continuum that adds a constant tail to the energy.
 
 **Ewald sum.** In a periodic cell, $1/r$ interactions summed over images
 converge only conditionally. Alea replaces all pair terms of a periodic run with

@@ -58,8 +58,11 @@ public:
     explicit SimulationCell(std::size_t dim);
 
     // Periodic cell from primitive vectors, row-major [i*dim + d].
-    // Throws if the vectors are singular, or if dim is not 1 or 2 (a rigorous
-    // 3-D minimum image needs an LLL-reduced basis; this project is 2-D).
+    // Throws if the vectors are singular, if dim is not 1, 2 or 3, or if a 3-D
+    // cell is not orthorhombic.  A 3-D cell must be a box whose vectors lie
+    // along the x, y and z axes: its minimum image is the per-axis fold, which
+    // is exact.  A skewed 3-D cell would need a reduced basis (LLL) and a
+    // 27-image scan, which are not implemented.
     SimulationCell(std::size_t dim, std::span<const double> vectors);
 
     [[nodiscard]] Boundary    boundary() const noexcept { return boundary_; }

@@ -36,8 +36,9 @@ namespace alea {
 //     E_tail = ½ N_a n_a T    (a == b),     E_tail = N_a n_b T    (a != b),
 //     T = ∫_{outside WS} C r^{−p} d^d r = C/(p − d) ∮ dΩ ρ(Ω)^{d−p},
 //
-// with n = N/A the group's number density and ρ(Ω) the distance from the
-// cell's centre to the WS boundary in direction Ω.  This is Eq. (2) of the
+// with n = N/A the group's number density (A the cell's area, or its volume
+// in 3-D) and ρ(Ω) the distance from the cell's centre to the WS boundary in
+// direction Ω.  This is Eq. (2) of the
 // paper above with the WS cell, rather than a circle of radius L/2, as the
 // region summed exactly.  The density counts every particle of the group
 // (n, not (N−1)/A): outside the WS cell a particle also meets its own images.
@@ -126,10 +127,10 @@ private:
 };
 
 // ∫ over everything outside the Wigner–Seitz cell of r^{−p} d^d r, for a
-// periodic 1-D or 2-D cell and p > d:  (1/(p − d)) ∮ dΩ ρ(Ω)^{d−p}.  In 2-D,
-// ρ(θ) = min over lattice vectors L with u·L > 0 of |L|²/(2 u·L), u = (cos θ,
-// sin θ); the angular integral is a midpoint rule whose only error comes from
-// the ≤ 6 corners of the WS polygon, O(Δθ²) ≈ 1e−10 relative.  Setup only.
+// periodic cell (1-D, 2-D, or an orthorhombic 3-D box) and p > d:
+// (1/(p − d)) ∮ dΩ ρ(Ω)^{d−p}, by wigner_seitz_exterior_integral
+// (population/wigner_seitz_exterior.h), whose header gives the angular rules
+// and their errors.  Setup only.
 [[nodiscard]] double outside_wigner_seitz_integral(const SimulationCell& cell,
                                                    double exponent);
 

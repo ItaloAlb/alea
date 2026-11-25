@@ -204,12 +204,20 @@ TEST_CASE("path_io rejects malformed or nonfinite lattice vectors", "[path_io]")
     SECTION("singular lattice") { cp.lattice = {4.0, 0.0, 8.0, 0.0}; }
     SECTION("nonfinite lattice") { cp.lattice[2] = std::numeric_limits<double>::quiet_NaN(); }
     SECTION("infinite lattice") { cp.lattice[2] = std::numeric_limits<double>::infinity(); }
-    SECTION("unsupported periodic dimension") {
+    SECTION("unsupported skewed 3-D lattice") {
         cp.dim = 3;
         cp.positions.resize(cp.replicas * cp.np * cp.dim * cp.m);
-        cp.lattice = {4,0,0, 0,4,0, 0,0,4};
+        cp.lattice = {0,4,4, 4,0,4, 4,4,0};
     }
     REQUIRE_THROWS_AS(alea::io::validate_path_checkpoint(cp), std::runtime_error);
+}
+
+TEST_CASE("path_io accepts a 3-D periodic box", "[path_io]") {
+    auto cp = example(true);
+    cp.dim = 3;
+    cp.positions.resize(cp.replicas * cp.np * cp.dim * cp.m);
+    cp.lattice = {4,0,0, 0,5,0, 0,0,6};
+    REQUIRE_NOTHROW(alea::io::validate_path_checkpoint(cp));
 }
 
 TEST_CASE("path_io accepts supported open dimensions", "[path_io]") {
