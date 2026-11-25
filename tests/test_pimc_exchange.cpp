@@ -513,7 +513,7 @@ TEST_CASE("A fixed 2-cycle of free particles winds like one ring at 2 beta",
         w2_sum += static_cast<double>(n) * n * weight;
     }
     const double e_exact = 2.0 * e_sum / z;            // E_P = 2 E_1(2 beta)
-    const double w2_exact = (w2_sum / zw) / 2.0;        // sum_c W_c^2 / (np * dim)
+    const double w2_exact = (w2_sum / zw) / 2.0;        // |W|^2 / (np * dim), one cycle
 
     const std::vector groups{group("g", 0, 2, 0.0, 1)};
     const SimulationCell cell(1, std::vector<double>{L});

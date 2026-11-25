@@ -19,7 +19,8 @@
 // E = -d ln Z_N / d beta at fixed M (d/d beta = (1/M) d/d tau), the average
 // sign is Z_F / Z_B, and in the |weight| (bosonic) ensemble a particle sits
 // in a k-cycle with probability z(kM) Z_{N-k} / (N Z_N).  Under PBC the cycle
-// windings are independent, so <sum_c W_c^2> = sum_k (N P_k / k) <W^2>_{k beta}
+// windings of ideal bosons are independent and symmetric, so the cross terms
+// of the total vanish: <|sum_c W_c|^2> = <sum_c W_c^2> = sum_k (N P_k / k) <W^2>_{k beta}
 // with <W^2>_{b} = sum_W W^2 exp(-L^2 W^2 / 2b) / sum_W exp(-L^2 W^2 / 2b).
 //
 // Energies and signs compare within the driver's reblocked / jackknife error

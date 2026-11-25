@@ -7,17 +7,30 @@
 // Winding estimators of a closed path (Pollock & Ceperley, PRB 36, 8343 (1987)).
 //
 // For each closed loop c (a ring when pi = identity, otherwise a whole
-// permutation cycle) the winding is the sum of the minimum-image link vectors
-// around the loop.  It is a lattice vector of the simulation cell,
+// permutation cycle) the loop winding W_c is the sum of the minimum-image link
+// vectors around the loop.  It is a lattice vector of the simulation cell,
 // W_c = sum_i n_ci a_i, with integer n_ci = the fractional coordinates of the
-// sum in the cell basis (SimulationCell::vectors()).
+// sum in the cell basis (SimulationCell::vectors()).  The winding of the path
+// is the total over its loops,
+//   W = sum_c W_c = sum_i n_i a_i,   n_i = sum_c n_ci,
+// the displacement of all particles around imaginary time (Pollock & Ceperley
+// Eq. (19), sum_i (r_P(i) - r_i) = W L).  The superfluid fraction needs this
+// total: a phase twist phi across the cell multiplies the weight of each path
+// by exp(i phi . W) (their Eq. (20)), so the second derivative of the free
+// energy in phi is <W W^T>, which gives rho_s / rho = m <|W|^2> / (d beta N)
+// (their Eq. (22), W in length units).  The sum over loops of |W_c|^2 is not
+// the same quantity: it misses the cross terms sum_{c != c'} <W_c . W_c'>,
+// which vanish for ideal particles (their loops wind independently, with
+// symmetric distributions) but not with interactions, where one loop's
+// winding is correlated with the others'.
 //
-//  - winding2_of: sum_c sum_i n_ci^2 / (N dim), the lattice-basis components.
-//    In an orthogonal cell with equal sides L it equals <|W|^2>/(L^2 N dim).
-//    In a skew cell it is NOT proportional to the superfluid fraction: in a
-//    hexagonal cell W = a1 - a2 has |W| = L but sum_i n_i^2 = 2.
-//  - winding_tensor_of: T_ab = sum_c W_c,a W_c,b / N, Cartesian components in
-//    length units (bohr) in the cell's Cartesian frame, valid for any cell
+//  - winding2_of: sum_i n_i^2 / (N dim), the lattice-basis components of the
+//    total.  In an orthogonal cell with equal sides L it equals
+//    <|W|^2>/(L^2 N dim).  In a skew cell it is NOT proportional to the
+//    superfluid fraction: in a hexagonal cell W = a1 - a2 has |W| = L but
+//    sum_i n_i^2 = 2.
+//  - winding_tensor_of: T_ab = W_a W_b / N, Cartesian components of the total
+//    in length units (bohr) in the cell's Cartesian frame, valid for any cell
 //    shape.  For one species of mass m (hbar = 1) the superfluid-fraction
 //    tensor is rho_s,ab / rho = m T_ab / beta, and in d dimensions
 //    rho_s / rho = m tr(T) / (d beta).  A C3- or C4-symmetric fluid has
@@ -99,37 +112,39 @@ void for_each_loop_winding(const PathSet& path, Fn&& fn) {
 }  // namespace detail
 
 // One pass over the links of a closed path.  Returns the lattice-basis
-// winding2 (sum over loops of sum_i n_i^2, divided by N dim) and writes the
-// Cartesian tensor per particle, tensor[c] = sum_loops W_a W_b / N, for the
-// winding_tensor_size(dim) components c of winding_tensor_indices.  For the
-// tensor the loop windings are rounded to the exact lattice vectors; winding2
-// keeps the unrounded fractional sum.  Both are zero for open cells, where
-// winding is not defined.  Cost O(N M) min-image links, no allocation.
+// winding2 of the total winding (sum_i n_i^2 / (N dim), n_i = sum over loops of
+// n_ci) and writes the Cartesian tensor of the total per particle,
+// tensor[c] = W_a W_b / N, for the winding_tensor_size(dim) components c of
+// winding_tensor_indices.  For the tensor each loop winding is rounded to its
+// exact lattice vector before the sum; winding2 keeps the unrounded fractional
+// sum.  Both are zero for open cells, where winding is not defined.  Cost
+// O(N M) min-image links, no allocation.
 inline double winding_measure(const PathSet& path, double* tensor) {
     const std::size_t dim = path.dim();
     const std::size_t nc  = winding_tensor_size(dim);
     for (std::size_t c = 0; c < nc; ++c) tensor[c] = 0.0;
     if (!path.cell().is_periodic()) return 0.0;
     const std::span<const double> a = path.cell().vectors();   // [i * dim + d]
-    double w2 = 0.0;
+    double n_total[SimulationCell::kMaxDim] = {};   // lattice basis, unrounded [i]
+    double W[SimulationCell::kMaxDim] = {};         // Cartesian total [d]
     detail::for_each_loop_winding(path, [&](const double* f) {
-        double W[SimulationCell::kMaxDim] = {};                 // Cartesian [d]
         for (std::size_t i = 0; i < dim; ++i) {
-            w2 += f[i] * f[i];
+            n_total[i] += f[i];
             const double n = std::nearbyint(f[i]);
             for (std::size_t d = 0; d < dim; ++d) W[d] += n * a[i * dim + d];
-        }
-        for (std::size_t c = 0; c < nc; ++c) {
-            std::size_t p = 0, q = 0;
-            winding_tensor_indices(c, p, q);
-            tensor[c] += W[p] * W[q];
         }
     });
     // Per particle of the measured (closed) path; an empty path winds 0.
     const std::size_t np = path.active_particles();
     if (np == 0) return 0.0;
     const double inv = 1.0 / static_cast<double>(np);
-    for (std::size_t c = 0; c < nc; ++c) tensor[c] *= inv;
+    for (std::size_t c = 0; c < nc; ++c) {
+        std::size_t p = 0, q = 0;
+        winding_tensor_indices(c, p, q);
+        tensor[c] = W[p] * W[q] * inv;
+    }
+    double w2 = 0.0;
+    for (std::size_t i = 0; i < dim; ++i) w2 += n_total[i] * n_total[i];
     return w2 / static_cast<double>(np * dim);
 }
 

@@ -1248,6 +1248,76 @@ TEST_CASE("winding tensor of an exchange cycle sums the whole cycle", "[pimc][wi
     CHECK(T[2] == Catch::Approx(0.0).margin(1e-12));
 }
 
+// Two loops that wind: the estimators square the total W = W_0 + W_1
+// (Pollock & Ceperley), so they differ from the per-loop sum |W_0|^2 + |W_1|^2
+// by the cross term 2 W_0 . W_1.  Each ring of M beads advances by W_p / M per
+// link (shorter than half the cell), so its links add up to W_p exactly.
+TEST_CASE("winding estimators square the total winding of all loops, not each loop",
+          "[pimc][winding]") {
+    const double L = 4.0;
+    const std::vector<double> vecs = {L, 0.0, 0.0, L};
+    SimulationCell cell(2, vecs);
+    const std::size_t M = 8;
+    const auto measure = [&](const double (&w0)[2], const double (&w1)[2], double* T) {
+        PathSet path(M, 2, 2, 0.1, cell);
+        for (std::size_t k = 0; k < M; ++k)
+            for (std::size_t d = 0; d < 2; ++d) {
+                const double s = static_cast<double>(k) / static_cast<double>(M);
+                path.pos(0, d, k) = 0.3 + w0[d] * s;
+                path.pos(1, d, k) = 1.9 + w1[d] * s;
+            }
+        return alea::winding_measure(path, T);
+    };
+    double T[alea::kMaxWindingTensor];
+    // Same direction: W = 2 a1, T_xx = 4 L^2 / N (the per-loop sum gives 2 L^2 / N),
+    // winding2 = 2^2 / (N dim) = 1 (per loop: 1/2).
+    CHECK(measure({L, 0.0}, {L, 0.0}, T) == Catch::Approx(1.0));
+    CHECK(T[0] == Catch::Approx(2.0 * L * L));
+    CHECK(T[1] == Catch::Approx(0.0).margin(1e-12));
+    CHECK(T[2] == Catch::Approx(0.0).margin(1e-12));
+    // Opposite directions cancel: W = 0 (per loop: T_xx = L^2, winding2 = 1/2).
+    CHECK(measure({L, 0.0}, {-L, 0.0}, T) == Catch::Approx(0.0).margin(1e-12));
+    for (std::size_t c = 0; c < 3; ++c) CHECK(T[c] == Catch::Approx(0.0).margin(1e-12));
+    // Along a1 and a2: W = (L, L) has T_xy = L^2 / N, which a per-loop sum sets to 0.
+    CHECK(measure({L, 0.0}, {0.0, L}, T) == Catch::Approx(0.5));
+    CHECK(T[0] == Catch::Approx(L * L / 2.0));
+    CHECK(T[1] == Catch::Approx(L * L / 2.0));
+    CHECK(T[2] == Catch::Approx(L * L / 2.0));
+}
+
+TEST_CASE("winding estimators add an exchange cycle and a ring before squaring",
+          "[pimc][winding]") {
+    // Particles 0 and 1 form one 2-cycle that winds by a1 over its 2M links;
+    // particle 2 is a ring that also winds by a1.  W = 2 a1, so
+    // T_xx = 4 L^2 / 3 (per loop: 2 L^2 / 3) and winding2 = 4 / (3 * 2).
+    const double L = 4.0, h = L * std::sqrt(3.0) / 2.0;
+    const std::vector<double> vecs = {L, 0.0, L / 2.0, h};
+    SimulationCell cell(2, vecs);
+    const std::size_t M = 6;
+    PathSet path(M, 3, 2, 0.1, cell);
+    path.set_exchange_classes(std::vector<std::size_t>{0, 0, 0}, std::vector<char>{0, 0, 0});
+    path.set_permutation(std::vector<std::size_t>{1, 0, 2});
+    for (std::size_t p = 0; p < 2; ++p)
+        for (std::size_t k = 0; k < M; ++k) {
+            path.pos(p, 0, k) = 0.1 + L * static_cast<double>(p * M + k) / static_cast<double>(2 * M);
+            path.pos(p, 1, k) = 0.2;
+        }
+    for (std::size_t k = 0; k < M; ++k) {
+        path.pos(2, 0, k) = 0.7 + L * static_cast<double>(k) / static_cast<double>(M);
+        path.pos(2, 1, k) = 2.1;
+    }
+    double T[alea::kMaxWindingTensor];
+    double n[2];
+    const double a1[2] = {L, 0.0};
+    cell.fractional(a1, n);   // a1 in the basis the cell stores
+    const double w2_expected = (4.0 * std::round(n[0]) * std::round(n[0]) +
+                                4.0 * std::round(n[1]) * std::round(n[1])) / 6.0;
+    CHECK(alea::winding_measure(path, T) == Catch::Approx(w2_expected));
+    CHECK(T[0] == Catch::Approx(4.0 * L * L / 3.0));
+    CHECK(T[1] == Catch::Approx(0.0).margin(1e-12));
+    CHECK(T[2] == Catch::Approx(0.0).margin(1e-12));
+}
+
 TEST_CASE("winding tensor is zero for straight rings and open cells", "[pimc][winding]") {
     const std::vector<double> vecs = {4.0, 0.0, 0.0, 5.0};
     SimulationCell cell(2, vecs);

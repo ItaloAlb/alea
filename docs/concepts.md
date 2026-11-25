@@ -434,12 +434,13 @@ lower variance but require potentials that provide their gradient. Both report
 $E$, kinetic $K$ and potential $V$. Formulas and the potentials each accepts:
 [Estimators](estimators.md#5-pimc-energy-estimators).
 
-**Winding number `W2`.** The mean squared winding of paths around a periodic
-cell, counted in the lattice basis. It is related to the superfluid fraction
-only in orthogonal cells with equal sides.
+**Winding number `W2`.** The mean squared total winding of the paths around a
+periodic cell (the windings of all loops summed, then squared), counted in the
+lattice basis. It is related to the superfluid fraction only in orthogonal
+cells with equal sides.
 
-**Winding tensor.** The Cartesian winding tensor $T_{ab}$ gives the superfluid
-fraction in any cell shape ($\rho_{s,ab}/\rho = m T_{ab}/\beta$) and its
+**Winding tensor.** The Cartesian tensor $T_{ab}$ of the same total winding
+gives the superfluid fraction in any cell shape ($\rho_{s,ab}/\rho = m T_{ab}/\beta$) and its
 anisotropy, so it is the one to use in hexagonal cells. Details:
 [Estimators](estimators.md).
 
